@@ -1,4 +1,4 @@
-use crate::flight_control::{FlightController, FlightObservation};
+use crate::flight_control::{FlightController, FlightObservation, NeighborObservation};
 use crate::simulation::{ShipInput, ShipState};
 use glam::Vec2;
 
@@ -47,16 +47,22 @@ impl Autopilot {
     pub fn destination(&self) -> Option<Vec2> {
         self.destination
     }
-    pub fn controls_for_tick(&mut self, ship: &ShipState) -> ShipInput {
+    pub fn controls_for_tick(
+        &mut self,
+        ship: &ShipState,
+        neighbors: &[NeighborObservation],
+    ) -> ShipInput {
         let Some(destination) = self.destination else {
             return ShipInput::default();
         };
         if !self.active {
             return ShipInput::default();
         }
-        let desired = self
-            .controller
-            .desired_input(FlightObservation::from_ship(ship, destination));
+        let desired = self.controller.desired_input(FlightObservation::from_ship(
+            ship,
+            destination,
+            neighbors,
+        ));
         if ship.position.distance(destination) <= self.config.arrival_radius_meters
             && ship.velocity.length() <= self.config.stopped_speed_meters_per_second
             && desired == ShipInput::default()
@@ -98,9 +104,9 @@ mod tests {
             velocity: Vec2::X,
             ..Default::default()
         };
-        assert!(a.controls_for_tick(&s) == ShipInput::default() && a.is_active());
+        assert!(a.controls_for_tick(&s, &[]) == ShipInput::default() && a.is_active());
         let s = ShipState::default();
-        assert_eq!(a.controls_for_tick(&s), ShipInput::default());
+        assert_eq!(a.controls_for_tick(&s, &[]), ShipInput::default());
         assert!(!a.is_active());
     }
     #[test]

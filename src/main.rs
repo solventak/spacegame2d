@@ -10,7 +10,7 @@ use std::{
 
 use autopilot::{Autopilot, AutopilotConfig};
 use bytemuck::{Pod, Zeroable};
-use flight_control::ArrivalController;
+use flight_control::{ArrivalController, NeighborObservation};
 use glam::Vec2;
 use input::{ControlKey, InputController};
 use simulation::{SIMULATION_HZ, ShipState, Simulation, step_ship};
@@ -24,7 +24,7 @@ use winit::{
 };
 
 const VIEW_HEIGHT_METERS: f32 = 20.0;
-const DRONE_COUNT: usize = 10;
+const DRONE_COUNT: usize = 30;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
 fn initial_drone_positions() -> Vec<ShipState> {
@@ -469,13 +469,31 @@ impl ApplicationHandler for App {
                 }
             }
             let controls = if self.autopilot.is_active() {
-                self.autopilot.controls_for_tick(self.simulation.ship())
+                self.autopilot
+                    .controls_for_tick(self.simulation.ship(), &[])
             } else {
                 self.input.controls()
             };
             self.simulation.step(controls);
-            for (drone, autopilot) in self.drones.iter_mut().zip(self.drone_autopilots.iter_mut()) {
-                let controls = autopilot.controls_for_tick(drone);
+            let drone_snapshot = self.drones.clone();
+            let drone_controls: Vec<_> = self
+                .drones
+                .iter()
+                .enumerate()
+                .map(|(index, drone)| {
+                    let neighbors: Vec<NeighborObservation> = drone_snapshot
+                        .iter()
+                        .enumerate()
+                        .filter(|(neighbor_index, _)| *neighbor_index != index)
+                        .map(|(_, neighbor)| NeighborObservation {
+                            position: neighbor.position,
+                            velocity: neighbor.velocity,
+                        })
+                        .collect();
+                    self.drone_autopilots[index].controls_for_tick(drone, &neighbors)
+                })
+                .collect();
+            for (drone, controls) in self.drones.iter_mut().zip(drone_controls) {
                 step_ship(drone, controls);
             }
             self.next_tick += TICK_DURATION;
