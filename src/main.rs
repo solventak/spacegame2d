@@ -24,7 +24,24 @@ use winit::{
 };
 
 const VIEW_HEIGHT_METERS: f32 = 20.0;
+const DRONE_COUNT: usize = 10;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
+
+fn initial_drone_positions() -> Vec<ShipState> {
+    let mut seed = 0x5EED_1234_u32;
+    (0..DRONE_COUNT)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let x = (seed as f32 / u32::MAX as f32) * 16.0 - 8.0;
+            seed = seed.rotate_left(13);
+            let y = (seed as f32 / u32::MAX as f32) * 10.0 - 5.0;
+            ShipState {
+                position: Vec2::new(x, y),
+                ..ShipState::default()
+            }
+        })
+        .collect()
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -111,12 +128,12 @@ struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    scene_buffer: wgpu::Buffer,
-    scene_bind_group: wgpu::BindGroup,
+    scene_buffers: Vec<wgpu::Buffer>,
+    scene_bind_groups: Vec<wgpu::BindGroup>,
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>) -> Result<Self, String> {
+    async fn new(window: Arc<Window>, drones: &[ShipState]) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -229,24 +246,34 @@ impl Renderer {
             contents: bytemuck::cast_slice(&notched_ship_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scene uniform"),
-            contents: bytemuck::bytes_of(&scene_uniform(
-                config.width,
-                config.height,
-                &ShipState::default(),
-                None,
-            )),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene bind group"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: scene_buffer.as_entire_binding(),
-            }],
-        });
+        let scene_uniforms = std::iter::once(ShipState::default())
+            .chain(drones.iter().copied())
+            .map(|ship| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("scene uniform"),
+                    contents: bytemuck::bytes_of(&scene_uniform(
+                        config.width,
+                        config.height,
+                        &ship,
+                        None,
+                    )),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+            })
+            .collect::<Vec<_>>();
+        let scene_bind_groups = scene_uniforms
+            .iter()
+            .map(|scene_buffer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("scene bind group"),
+                    layout: &layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: scene_buffer.as_entire_binding(),
+                    }],
+                })
+            })
+            .collect::<Vec<_>>();
         Ok(Self {
             window,
             surface,
@@ -255,8 +282,8 @@ impl Renderer {
             config,
             pipeline,
             vertex_buffer,
-            scene_buffer,
-            scene_bind_group,
+            scene_buffers: scene_uniforms,
+            scene_bind_groups,
         })
     }
     fn resize(&mut self, width: u32, height: u32) {
@@ -269,19 +296,10 @@ impl Renderer {
     }
     fn render(
         &mut self,
+        drones: &[ShipState],
         ship: &ShipState,
         marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
-        self.queue.write_buffer(
-            &self.scene_buffer,
-            0,
-            bytemuck::bytes_of(&scene_uniform(
-                self.config.width,
-                self.config.height,
-                ship,
-                marker,
-            )),
-        );
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -313,8 +331,32 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.scene_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            for (index, drone) in drones.iter().enumerate() {
+                self.queue.write_buffer(
+                    &self.scene_buffers[index + 1],
+                    0,
+                    bytemuck::bytes_of(&scene_uniform(
+                        self.config.width,
+                        self.config.height,
+                        drone,
+                        None,
+                    )),
+                );
+                pass.set_bind_group(0, &self.scene_bind_groups[index + 1], &[]);
+                pass.draw(0..24, 0..1);
+            }
+            self.queue.write_buffer(
+                &self.scene_buffers[0],
+                0,
+                bytemuck::bytes_of(&scene_uniform(
+                    self.config.width,
+                    self.config.height,
+                    ship,
+                    marker,
+                )),
+            );
+            pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
             pass.draw(0..30, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
@@ -326,6 +368,7 @@ impl Renderer {
 struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
+    drones: Vec<ShipState>,
     input: InputController,
     autopilot: Autopilot,
     pending_destination: Option<Vec2>,
@@ -337,6 +380,7 @@ impl Default for App {
         Self {
             renderer: None,
             simulation: Simulation::default(),
+            drones: initial_drone_positions(),
             input: InputController::default(),
             autopilot: Autopilot::new(
                 Box::new(ArrivalController::default()),
@@ -383,7 +427,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match pollster::block_on(Renderer::new(window.clone())) {
+        match pollster::block_on(Renderer::new(window.clone(), &self.drones)) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
@@ -473,7 +517,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render(self.simulation.ship(), self.autopilot.destination()) {
+                    match renderer.render(
+                        &self.drones,
+                        self.simulation.ship(),
+                        self.autopilot.destination(),
+                    ) {
                         Ok(()) => {}
                         Err(
                             wgpu::CurrentSurfaceTexture::Lost
@@ -504,6 +552,18 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_drones_are_deterministic_and_on_screen() {
+        let first = initial_drone_positions();
+        assert_eq!(first, initial_drone_positions());
+        assert_eq!(first.len(), DRONE_COUNT);
+        assert!(
+            first
+                .iter()
+                .all(|drone| { drone.position.x.abs() <= 8.0 && drone.position.y.abs() <= 5.0 })
+        );
+    }
+
     #[test]
     fn scene_uniform_uses_fixed_world_scale() {
         let u = scene_uniform(1000, 1000, &ShipState::default(), None);
