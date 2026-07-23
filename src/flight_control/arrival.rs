@@ -13,6 +13,8 @@ pub struct ArrivalControllerConfig {
     pub thrust_angle_radians: f32,
     pub angular_deadband: f32,
     pub arrival_radius_meters: f32,
+    pub collision_radius_meters: f32,
+    pub collision_strength: f32,
 }
 impl Default for ArrivalControllerConfig {
     fn default() -> Self {
@@ -25,6 +27,8 @@ impl Default for ArrivalControllerConfig {
             thrust_angle_radians: 20.0_f32.to_radians(),
             angular_deadband: 0.08,
             arrival_radius_meters: 0.30,
+            collision_radius_meters: 0.9,
+            collision_strength: 5.0,
         }
     }
 }

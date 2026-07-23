@@ -9,22 +9,30 @@ pub mod arrival;
 pub use arrival::ArrivalController;
 
 #[derive(Clone, Copy, Debug)]
-pub struct FlightObservation {
+pub struct NeighborObservation {
+    pub position: Vec2,
+    pub velocity: Vec2,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FlightObservation<'a> {
     pub position: Vec2,
     pub velocity: Vec2,
     pub heading_radians: f32,
     pub angular_velocity_radians_per_second: f32,
     pub destination: Vec2,
+    pub neighbors: &'static [NeighborObservation],
 }
 
 impl FlightObservation {
-    pub fn from_ship(ship: &ShipState, destination: Vec2) -> Self {
+    pub fn from_ship<'a>(ship: &ShipState, destination: Vec2, neighbors: &'a [NeighborObservation]) -> FlightObservation<'a> {
         Self {
             position: ship.position,
             velocity: ship.velocity,
             heading_radians: ship.heading_radians,
             angular_velocity_radians_per_second: ship.angular_velocity_radians_per_second,
             destination,
+            neighbors,
         }
     }
 }
@@ -32,7 +40,7 @@ impl FlightObservation {
 pub trait FlightController: std::fmt::Debug {
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
-    fn desired_input(&self, observation: FlightObservation) -> ShipInput;
+    fn desired_input(&self, observation: FlightObservation<'_>) -> ShipInput;
 }
 
 pub(crate) fn forward(heading: f32) -> Vec2 {
