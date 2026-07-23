@@ -1,13 +1,25 @@
-use std::sync::Arc;
+mod input;
+mod simulation;
+
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytemuck::{Pod, Zeroable};
+use input::{ControlKey, InputController};
+use simulation::{SIMULATION_HZ, ShipState, Simulation};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
+
+const VIEW_HEIGHT_METERS: f32 = 20.0;
+const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -15,11 +27,9 @@ struct Vertex {
     position: [f32; 2],
     color: [f32; 4],
 }
-
 impl Vertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-
     fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
@@ -31,9 +41,50 @@ impl Vertex {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct ViewportUniform {
-    aspect: f32,
-    _padding: [f32; 7],
+struct SceneUniform {
+    viewport: [f32; 4],
+    ship: [f32; 4],
+}
+
+fn scene_uniform(width: u32, height: u32, ship: &ShipState) -> SceneUniform {
+    let aspect = width.max(1) as f32 / height.max(1) as f32;
+    let half_height = VIEW_HEIGHT_METERS * 0.5;
+    let half_width = half_height * aspect;
+    SceneUniform {
+        viewport: [1.0 / half_width, 1.0 / half_height, 0.0, 0.0],
+        ship: [
+            ship.position.x,
+            ship.position.y,
+            ship.heading_radians.sin(),
+            ship.heading_radians.cos(),
+        ],
+    }
+}
+
+fn notched_ship_vertices() -> Vec<Vertex> {
+    let cyan = [0.0, 0.9, 1.0, 1.0];
+    let black = [0.0, 0.0, 0.0, 1.0];
+    let points = [
+        [0.0, 0.60],
+        [0.45, -0.40],
+        [0.14, -0.40],
+        [0.0, -0.15],
+        [-0.14, -0.40],
+        [-0.45, -0.40],
+    ];
+    let triangles = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
+    let mut vertices = Vec::with_capacity(24);
+    for color in [cyan, black] {
+        for triangle in triangles {
+            for index in triangle {
+                vertices.push(Vertex {
+                    position: points[index],
+                    color,
+                });
+            }
+        }
+    }
+    vertices
 }
 
 struct Renderer {
@@ -44,8 +95,8 @@ struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    viewport_buffer: wgpu::Buffer,
-    viewport_bind_group: wgpu::BindGroup,
+    scene_buffer: wgpu::Buffer,
+    scene_bind_group: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -54,16 +105,14 @@ impl Renderer {
         let instance = wgpu::Instance::default();
         let surface = instance
             .create_surface(window.clone())
-            .map_err(|error| format!("failed to create surface: {error}"))?;
+            .map_err(|e| format!("failed to create surface: {e}"))?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
                 ..Default::default()
             })
             .await
-            .map_err(|error| format!("failed to find a graphics adapter: {error}"))?;
+            .map_err(|e| format!("failed to find adapter: {e}"))?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("spacegame2d device"),
@@ -74,8 +123,7 @@ impl Renderer {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .map_err(|error| format!("failed to create device: {error}"))?;
-
+            .map_err(|e| format!("failed to create device: {e}"))?;
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
             .formats
@@ -91,44 +139,44 @@ impl Renderer {
         } else {
             capabilities.present_modes[0]
         };
-        let alpha_mode = capabilities.alpha_modes[0];
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
-            alpha_mode,
+            alpha_mode: capabilities.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Srgb,
         };
         surface.configure(&device, &config);
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("triangle shader"),
+            label: Some("ship shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
-        let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("viewport bind group layout"),
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(32),
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<SceneUniform>() as u64
+                    ),
                 },
                 count: None,
             }],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("triangle pipeline layout"),
-            bind_group_layouts: &[Some(&viewport_layout)],
+            label: Some("ship pipeline layout"),
+            bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("triangle pipeline"),
+            label: Some("ship pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -160,57 +208,28 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-
-        let outer = [
-            Vertex {
-                position: [0.0, 0.33],
-                color: [0.0, 0.9, 1.0, 1.0],
-            },
-            Vertex {
-                position: [-0.32, -0.25],
-                color: [0.0, 0.9, 1.0, 1.0],
-            },
-            Vertex {
-                position: [0.32, -0.25],
-                color: [0.0, 0.9, 1.0, 1.0],
-            },
-        ];
-        let inner = [
-            Vertex {
-                position: [0.0, 0.27],
-                color: [0.0, 0.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [-0.25, -0.19],
-                color: [0.0, 0.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [0.25, -0.19],
-                color: [0.0, 0.0, 0.0, 1.0],
-            },
-        ];
-        let mut vertices = Vec::with_capacity(6);
-        vertices.extend(outer);
-        vertices.extend(inner);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("drone triangle vertices"),
-            contents: bytemuck::cast_slice(&vertices),
+            label: Some("notched ship vertices"),
+            contents: bytemuck::cast_slice(&notched_ship_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("viewport uniform"),
-            contents: bytemuck::bytes_of(&viewport_uniform(&config)),
+        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("scene uniform"),
+            contents: bytemuck::bytes_of(&scene_uniform(
+                config.width,
+                config.height,
+                &ShipState::default(),
+            )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let viewport_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("viewport bind group"),
-            layout: &viewport_layout,
+        let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene bind group"),
+            layout: &layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: viewport_buffer.as_entire_binding(),
+                resource: scene_buffer.as_entire_binding(),
             }],
         });
-
         Ok(Self {
             window,
             surface,
@@ -219,11 +238,10 @@ impl Renderer {
             config,
             pipeline,
             vertex_buffer,
-            viewport_buffer,
-            viewport_bind_group,
+            scene_buffer,
+            scene_bind_group,
         })
     }
-
     fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -231,17 +249,16 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        self.queue.write_buffer(
-            &self.viewport_buffer,
-            0,
-            bytemuck::bytes_of(&viewport_uniform(&self.config)),
-        );
     }
-
-    fn render(&mut self) -> Result<(), wgpu::CurrentSurfaceTexture> {
+    fn render(&mut self, ship: &ShipState) -> Result<(), wgpu::CurrentSurfaceTexture> {
+        self.queue.write_buffer(
+            &self.scene_buffer,
+            0,
+            bytemuck::bytes_of(&scene_uniform(self.config.width, self.config.height, ship)),
+        );
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Success(f)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             error => return Err(error),
         };
         let view = frame
@@ -250,11 +267,11 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("triangle encoder"),
+                label: Some("ship encoder"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("triangle pass"),
+                label: Some("ship pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -270,9 +287,9 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+            pass.set_bind_group(0, &self.scene_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..6, 0..1);
+            pass.draw(0..24, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -280,15 +297,31 @@ impl Renderer {
     }
 }
 
-fn viewport_uniform(config: &wgpu::SurfaceConfiguration) -> ViewportUniform {
-    ViewportUniform {
-        aspect: config.width as f32 / config.height as f32,
-        _padding: [0.0; 7],
+struct App {
+    renderer: Option<Renderer>,
+    simulation: Simulation,
+    input: InputController,
+    next_tick: Instant,
+}
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            renderer: None,
+            simulation: Simulation::default(),
+            input: InputController::default(),
+            next_tick: Instant::now(),
+        }
     }
 }
 
-struct App {
-    renderer: Option<Renderer>,
+fn map_key(key: PhysicalKey) -> Option<ControlKey> {
+    match key {
+        PhysicalKey::Code(KeyCode::KeyW) => Some(ControlKey::Thrust),
+        PhysicalKey::Code(KeyCode::KeyA) => Some(ControlKey::TurnLeft),
+        PhysicalKey::Code(KeyCode::KeyD) => Some(ControlKey::TurnRight),
+        PhysicalKey::Code(KeyCode::KeyR) => Some(ControlKey::Reset),
+        _ => None,
+    }
 }
 
 impl ApplicationHandler for App {
@@ -296,55 +329,95 @@ impl ApplicationHandler for App {
         if self.renderer.is_some() {
             return;
         }
-        let attributes = Window::default_attributes().with_title("Spacegame 2D");
-        let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
-            Err(error) => {
-                eprintln!("failed to create window: {error}");
+        let window = match event_loop
+            .create_window(Window::default_attributes().with_title("Spacegame 2D"))
+        {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                eprintln!("failed to create window: {e}");
                 event_loop.exit();
                 return;
             }
         };
         match pollster::block_on(Renderer::new(window.clone())) {
             Ok(renderer) => {
+                self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
                 self.renderer = Some(renderer);
             }
-            Err(error) => {
-                eprintln!("failed to initialize renderer: {error}");
+            Err(e) => {
+                eprintln!("failed to initialize renderer: {e}");
                 event_loop.exit();
             }
         }
     }
-
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        while now >= self.next_tick {
+            if let Some(command) = self.input.take_command() {
+                self.simulation.apply_command(command);
+            }
+            self.simulation.step(self.input.controls());
+            self.next_tick += TICK_DURATION;
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+        if let Some(renderer) = &self.renderer {
+            renderer.window.request_redraw();
+        }
+    }
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => renderer.resize(size.width, size.height),
-            WindowEvent::RedrawRequested => match renderer.render() {
-                Ok(()) => renderer.window.request_redraw(),
-                Err(wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
-                    renderer.resize(renderer.config.width, renderer.config.height);
-                    renderer.window.request_redraw();
+            WindowEvent::Focused(false) => self.input.clear_for_focus_loss(),
+            WindowEvent::Resized(size) => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(size.width, size.height);
                 }
-                Err(
-                    wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded,
-                ) => {
-                    renderer.window.request_redraw();
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key,
+                        state,
+                        repeat,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(key) = map_key(physical_key) {
+                    match state {
+                        ElementState::Pressed if key != ControlKey::Reset || !repeat => {
+                            self.input.press(key)
+                        }
+                        ElementState::Released => self.input.release(key),
+                        _ => {}
+                    }
                 }
-                Err(error) => {
-                    eprintln!("surface error: {error:?}");
-                    event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    match renderer.render(self.simulation.ship()) {
+                        Ok(()) => {}
+                        Err(
+                            wgpu::CurrentSurfaceTexture::Lost
+                            | wgpu::CurrentSurfaceTexture::Outdated,
+                        ) => renderer.resize(renderer.config.width, renderer.config.height),
+                        Err(
+                            wgpu::CurrentSurfaceTexture::Timeout
+                            | wgpu::CurrentSurfaceTexture::Occluded,
+                        ) => {}
+                        Err(e) => {
+                            eprintln!("surface error: {e:?}");
+                            event_loop.exit();
+                        }
+                    }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -352,6 +425,21 @@ impl ApplicationHandler for App {
 
 fn main() -> Result<(), winit::error::EventLoopError> {
     let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut App { renderer: None })
+    event_loop.set_control_flow(ControlFlow::Wait);
+    event_loop.run_app(&mut App::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scene_uniform_uses_fixed_world_scale() {
+        let u = scene_uniform(1000, 1000, &ShipState::default());
+        assert!((u.viewport[0] - 0.1).abs() < 0.0001);
+        assert!((u.viewport[1] - 0.1).abs() < 0.0001);
+    }
+    #[test]
+    fn ship_mesh_preserves_rear_notch() {
+        assert_eq!(notched_ship_vertices().len(), 24);
+    }
 }
