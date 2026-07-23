@@ -13,7 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use flight_control::ArrivalController;
 use glam::Vec2;
 use input::{ControlKey, InputController};
-use simulation::{SIMULATION_HZ, ShipState, Simulation};
+use simulation::{SIMULATION_HZ, ShipState, Simulation, step_ship};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -369,6 +369,7 @@ struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
     drones: Vec<ShipState>,
+    drone_autopilots: Vec<Autopilot>,
     input: InputController,
     autopilot: Autopilot,
     pending_destination: Option<Vec2>,
@@ -381,6 +382,14 @@ impl Default for App {
             renderer: None,
             simulation: Simulation::default(),
             drones: initial_drone_positions(),
+            drone_autopilots: (0..DRONE_COUNT)
+                .map(|_| {
+                    Autopilot::new(
+                        Box::new(ArrivalController::default()),
+                        AutopilotConfig::default(),
+                    )
+                })
+                .collect(),
             input: InputController::default(),
             autopilot: Autopilot::new(
                 Box::new(ArrivalController::default()),
@@ -445,10 +454,19 @@ impl ApplicationHandler for App {
             if let Some(command) = self.input.take_command() {
                 self.simulation.apply_command(command);
                 self.autopilot.cancel_and_clear_destination();
+                for drone in &mut self.drones {
+                    *drone = ShipState::default();
+                }
+                for autopilot in &mut self.drone_autopilots {
+                    autopilot.cancel_and_clear_destination();
+                }
                 self.pending_destination = None;
             } else if let Some(destination) = self.pending_destination.take() {
                 self.input.suppress_held_movement_until_release();
                 self.autopilot.set_destination(destination);
+                for autopilot in &mut self.drone_autopilots {
+                    autopilot.set_destination(destination);
+                }
             }
             let controls = if self.autopilot.is_active() {
                 self.autopilot.controls_for_tick(self.simulation.ship())
@@ -456,6 +474,10 @@ impl ApplicationHandler for App {
                 self.input.controls()
             };
             self.simulation.step(controls);
+            for (drone, autopilot) in self.drones.iter_mut().zip(self.drone_autopilots.iter_mut()) {
+                let controls = autopilot.controls_for_tick(drone);
+                step_ship(drone, controls);
+            }
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));

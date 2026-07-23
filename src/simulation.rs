@@ -64,49 +64,46 @@ impl Simulation {
     }
 
     pub fn step(&mut self, input: ShipInput) {
-        let turn_axis = input.turn_left as i32 - input.turn_right as i32;
-        if turn_axis != 0 {
-            self.ship.angular_velocity_radians_per_second += turn_axis as f32
-                * (ANGULAR_THRUST_NEWTON_METERS / MOMENT_OF_INERTIA_KG_M2)
-                * FIXED_DT_SECONDS;
-        } else {
-            self.ship.angular_velocity_radians_per_second *=
-                (1.0 - ANGULAR_DAMPING_PER_SECOND * FIXED_DT_SECONDS).max(0.0);
-        }
-        self.ship.angular_velocity_radians_per_second =
-            self.ship.angular_velocity_radians_per_second.clamp(
-                -MAX_ANGULAR_SPEED_RADIANS_PER_SECOND,
-                MAX_ANGULAR_SPEED_RADIANS_PER_SECOND,
-            );
-        self.ship.heading_radians = wrap_angle(
-            self.ship.heading_radians
-                + self.ship.angular_velocity_radians_per_second * FIXED_DT_SECONDS,
-        );
-
-        if input.thrust {
-            let forward = Vec2::new(
-                -self.ship.heading_radians.sin(),
-                self.ship.heading_radians.cos(),
-            );
-            self.ship.velocity +=
-                forward * (FORWARD_THRUST_NEWTONS / SHIP_MASS_KG) * FIXED_DT_SECONDS;
-        } else {
-            self.ship.velocity *= (1.0 - LINEAR_DAMPING_PER_SECOND * FIXED_DT_SECONDS).max(0.0);
-        }
-        if self.ship.velocity.length() > MAX_SPEED_METERS_PER_SECOND {
-            self.ship.velocity = self.ship.velocity.normalize() * MAX_SPEED_METERS_PER_SECOND;
-        }
-        if self.ship.velocity.length_squared() < VELOCITY_EPSILON * VELOCITY_EPSILON {
-            self.ship.velocity = Vec2::ZERO;
-        }
-        if self.ship.angular_velocity_radians_per_second.abs() < VELOCITY_EPSILON {
-            self.ship.angular_velocity_radians_per_second = 0.0;
-        }
-        self.ship.position += self.ship.velocity * FIXED_DT_SECONDS;
+        step_ship(&mut self.ship, input);
         self.tick = self.tick.saturating_add(1);
     }
 }
 
+pub fn step_ship(ship: &mut ShipState, input: ShipInput) {
+    let turn_axis = input.turn_left as i32 - input.turn_right as i32;
+    if turn_axis != 0 {
+        ship.angular_velocity_radians_per_second += turn_axis as f32
+            * (ANGULAR_THRUST_NEWTON_METERS / MOMENT_OF_INERTIA_KG_M2)
+            * FIXED_DT_SECONDS;
+    } else {
+        ship.angular_velocity_radians_per_second *=
+            (1.0 - ANGULAR_DAMPING_PER_SECOND * FIXED_DT_SECONDS).max(0.0);
+    }
+    ship.angular_velocity_radians_per_second = ship.angular_velocity_radians_per_second.clamp(
+        -MAX_ANGULAR_SPEED_RADIANS_PER_SECOND,
+        MAX_ANGULAR_SPEED_RADIANS_PER_SECOND,
+    );
+    ship.heading_radians = wrap_angle(
+        ship.heading_radians + ship.angular_velocity_radians_per_second * FIXED_DT_SECONDS,
+    );
+
+    if input.thrust {
+        let forward = Vec2::new(-ship.heading_radians.sin(), ship.heading_radians.cos());
+        ship.velocity += forward * (FORWARD_THRUST_NEWTONS / SHIP_MASS_KG) * FIXED_DT_SECONDS;
+    } else {
+        ship.velocity *= (1.0 - LINEAR_DAMPING_PER_SECOND * FIXED_DT_SECONDS).max(0.0);
+    }
+    if ship.velocity.length() > MAX_SPEED_METERS_PER_SECOND {
+        ship.velocity = ship.velocity.normalize() * MAX_SPEED_METERS_PER_SECOND;
+    }
+    if ship.velocity.length_squared() < VELOCITY_EPSILON * VELOCITY_EPSILON {
+        ship.velocity = Vec2::ZERO;
+    }
+    if ship.angular_velocity_radians_per_second.abs() < VELOCITY_EPSILON {
+        ship.angular_velocity_radians_per_second = 0.0;
+    }
+    ship.position += ship.velocity * FIXED_DT_SECONDS;
+}
 fn wrap_angle(angle: f32) -> f32 {
     let two_pi = std::f32::consts::TAU;
     (angle + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
