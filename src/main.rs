@@ -74,11 +74,11 @@ fn notched_ship_vertices() -> Vec<Vertex> {
     ];
     let triangles = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
     let mut vertices = Vec::with_capacity(24);
-    for color in [cyan, black] {
+    for (color, scale) in [(cyan, 1.0), (black, 0.78)] {
         for triangle in triangles {
             for index in triangle {
                 vertices.push(Vertex {
-                    position: points[index],
+                    position: [points[index][0] * scale, points[index][1] * scale],
                     color,
                 });
             }
@@ -440,6 +440,8 @@ mod tests {
     }
     #[test]
     fn ship_mesh_preserves_rear_notch() {
-        assert_eq!(notched_ship_vertices().len(), 24);
+        let vertices = notched_ship_vertices();
+        assert_eq!(vertices.len(), 24);
+        assert!(vertices[12].position[1].abs() < vertices[0].position[1].abs());
     }
 }
