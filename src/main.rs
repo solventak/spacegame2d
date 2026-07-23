@@ -10,7 +10,7 @@ use std::{
 
 use autopilot::{Autopilot, AutopilotConfig};
 use bytemuck::{Pod, Zeroable};
-use flight_control::BrakingPursuitController;
+use flight_control::ArrivalController;
 use glam::Vec2;
 use input::{ControlKey, InputController};
 use simulation::{SIMULATION_HZ, ShipState, Simulation};
@@ -339,7 +339,7 @@ impl Default for App {
             simulation: Simulation::default(),
             input: InputController::default(),
             autopilot: Autopilot::new(
-                Box::new(BrakingPursuitController::default()),
+                Box::new(ArrivalController::default()),
                 AutopilotConfig::default(),
             ),
             pending_destination: None,
@@ -404,12 +404,10 @@ impl ApplicationHandler for App {
                 self.pending_destination = None;
             } else if let Some(destination) = self.pending_destination.take() {
                 self.input.suppress_held_movement_until_release();
-                self.autopilot
-                    .set_destination(destination, self.simulation.tick());
+                self.autopilot.set_destination(destination);
             }
             let controls = if self.autopilot.is_active() {
-                self.autopilot
-                    .controls_for_tick(self.simulation.tick(), self.simulation.ship())
+                self.autopilot.controls_for_tick(self.simulation.ship())
             } else {
                 self.input.controls()
             };

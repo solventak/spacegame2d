@@ -5,8 +5,8 @@ use crate::simulation::{
     ShipState,
 };
 
-pub mod braking_pursuit;
-pub use braking_pursuit::BrakingPursuitController;
+pub mod arrival;
+pub use arrival::ArrivalController;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FlightObservation {
