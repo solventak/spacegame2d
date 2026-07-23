@@ -1,6 +1,7 @@
 struct Scene {
     viewport: vec4<f32>,
     ship: vec4<f32>,
+    marker: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -26,13 +27,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         local.x * cosine - local.y * sine,
         local.x * sine + local.y * cosine,
     );
-    let world = rotated + scene.ship.xy;
+    let is_marker = input.color.r > 0.9 && input.color.g < 0.1;
+    let world = select(rotated + scene.ship.xy, input.position + scene.marker.xy, is_marker);
     output.clip_position = vec4<f32>(world * scene.viewport.xy, 0.0, 1.0);
-    output.color = input.color;
+    output.color = vec4<f32>(input.color.rgb, select(1.0, scene.marker.z, is_marker));
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if input.color.a < 0.5 { discard; }
     return input.color;
 }

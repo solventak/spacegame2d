@@ -63,6 +63,13 @@ impl InputController {
             SimulationCommand::ResetShip
         })
     }
+    pub fn suppress_held_movement_until_release(&mut self) {
+        for state in [&mut self.thrust, &mut self.left, &mut self.right] {
+            if state.physically_held {
+                state.blocked_until_release = true;
+            }
+        }
+    }
     pub fn clear_for_focus_loss(&mut self) {
         self.thrust = MovementKeyState::default();
         self.left = MovementKeyState::default();
