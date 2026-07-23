@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-commit] running test gate: cargo fmt --check && cargo clippy -- -D warnings && cargo test"
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
