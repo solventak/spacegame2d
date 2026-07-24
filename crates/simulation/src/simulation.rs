@@ -162,6 +162,9 @@ impl Simulation {
                 true
             }
         });
+        events.sort_by_key(|event| match event {
+            SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
+        });
         self.tick = self.tick.saturating_add(1);
         events
     }
@@ -233,8 +236,56 @@ mod tests {
     #[test]
     fn step_advances_tick_without_player_input() {
         let mut sim = Simulation::default();
-        sim.step();
+        assert!(sim.step().is_empty());
         assert_eq!(sim.tick(), 1);
+    }
+
+    #[test]
+    fn step_emits_boundary_crossed_and_removes_unit() {
+        let mut sim = Simulation::with_world_radius(1.0);
+        sim.world.units.truncate(1);
+        sim.world.units[0].state.position = Vec2::new(1.1, 0.0);
+        let unit_id = sim.world.units[0].id;
+
+        let events = sim.step();
+
+        assert_eq!(
+            events,
+            vec![SimulationEvent::BoundaryCrossed {
+                tick: 0,
+                unit_id,
+                position: Vec2::new(1.1, 0.0),
+            }]
+        );
+        assert!(sim.world.units.is_empty());
+        assert_eq!(sim.tick(), 1);
+    }
+
+    #[test]
+    fn boundary_events_are_sorted_by_unit_id() {
+        let mut sim = Simulation::with_world_radius(1.0);
+        sim.world.units.truncate(2);
+        sim.world.units.swap(0, 1);
+        for unit in &mut sim.world.units {
+            unit.state.position = Vec2::new(1.1, 0.0);
+        }
+        let mut expected = sim
+            .world
+            .units
+            .iter()
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+
+        let events = sim.step();
+        let actual = events
+            .iter()
+            .map(|event| match event {
+                SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
     }
     #[test]
     fn physics_input_remains_deterministic_for_autopilot() {
