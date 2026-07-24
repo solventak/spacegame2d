@@ -9,7 +9,8 @@ use spacegame2d_protocol::{
     AuthoritativeCommand, ClientHello, CommandRequest, Message, SIMULATION_VERSION, encode_message,
 };
 use spacegame2d_simulation::{
-    command::command_from_data, command::valid_authoritative, simulation::SIMULATION_HZ,
+    command::{PlayerId, command_from_data, valid_authoritative},
+    simulation::SIMULATION_HZ,
     simulation::Simulation,
 };
 use tokio::net::{TcpListener, TcpStream};
@@ -112,10 +113,19 @@ async fn run(address: SocketAddr) -> io::Result<()> {
         interval.tick().await;
         while let Ok((stream, address)) = listener.accept().await {
             stream.set_nodelay(true)?;
+            let slot = next_slot;
+            if let Some(unit) = simulation
+                .world
+                .units
+                .iter_mut()
+                .find(|unit| unit.owner.is_none())
+            {
+                unit.owner = PlayerId::new(slot as u8);
+            }
             clients.push(Client {
                 stream,
                 address,
-                slot: next_slot,
+                slot,
                 connected: false,
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),

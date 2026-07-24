@@ -7,6 +7,7 @@
 //! See the [`spacegame2d_simulation`] crate for the simulation model itself.
 
 mod geometry;
+pub mod network;
 
 use std::{
     sync::Arc,
@@ -22,8 +23,9 @@ use spacegame2d_simulation::{
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -345,6 +347,9 @@ struct App {
     pending_destination: Option<Vec2>,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
+    network: Option<network::NetworkSession>,
+    scheduled: std::collections::BTreeMap<u64, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
+    next_sequence: u32,
 }
 impl Default for App {
     fn default() -> Self {
@@ -355,6 +360,9 @@ impl Default for App {
             pending_destination: None,
             cursor_position: None,
             next_tick: Instant::now(),
+            network: None,
+            scheduled: std::collections::BTreeMap::new(),
+            next_sequence: 1,
         }
     }
 }
@@ -372,6 +380,31 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.renderer.is_some() {
             return;
+        }
+        let address = std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "127.0.0.1:4000".into());
+        match network::NetworkSession::connect(&address) {
+            Ok(session) => {
+                self.simulation = Simulation::default();
+                self.simulation.set_tick(session.server_tick);
+                if let Some(u) = self
+                    .simulation
+                    .world
+                    .units
+                    .iter_mut()
+                    .find(|u| u.owner.is_none())
+                {
+                    u.owner =
+                        spacegame2d_simulation::command::PlayerId::new(session.player_slot as u8);
+                }
+                self.network = Some(session);
+            }
+            Err(error) => {
+                eprintln!("failed to connect to server {address}: {error}");
+                event_loop.exit();
+                return;
+            }
         }
         let window = match event_loop
             .create_window(Window::default_attributes().with_title("Spacegame 2D"))
@@ -396,8 +429,26 @@ impl ApplicationHandler for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(session) = self.network.as_mut() {
+            match session.poll_commands() {
+                Ok(commands) => {
+                    for command in commands {
+                        self.scheduled
+                            .entry(command.execute_tick)
+                            .or_default()
+                            .push(command);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("server connection lost: {error}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
         let now = Instant::now();
         while now >= self.next_tick {
+            network::apply_due_commands(&mut self.simulation, &mut self.scheduled);
             if let Some(destination) = self.pending_destination.take() {
                 self.drones.set_destination(destination);
             }
@@ -442,6 +493,45 @@ impl ApplicationHandler for App {
                         renderer.config.width,
                         renderer.config.height,
                     ));
+                    if let Some(session) = self.network.as_mut() {
+                        let destination = self.pending_destination.expect("destination was set");
+                        let unit_id = self
+                            .simulation
+                            .world
+                            .units
+                            .iter()
+                            .find(|u| {
+                                u.owner
+                                    .is_some_and(|owner| owner.0 == session.player_slot as u8)
+                            })
+                            .map_or(1, |u| u.id.0);
+                        if let Err(error) = session.send_set_destination(
+                            self.next_sequence,
+                            unit_id,
+                            [destination.x.to_bits(), destination.y.to_bits()],
+                        ) {
+                            eprintln!("failed to send destination: {error}");
+                            event_loop.exit();
+                        }
+                        self.next_sequence = self.next_sequence.saturating_add(1);
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyR),
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(session) = self.network.as_mut() {
+                    if let Err(error) = session.send_reset_simulation(self.next_sequence) {
+                        eprintln!("failed to send reset: {error}");
+                        event_loop.exit();
+                    }
+                    self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }
             WindowEvent::RedrawRequested => {

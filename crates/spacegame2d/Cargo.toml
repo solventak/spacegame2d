@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 spacegame2d-simulation = { path = "../simulation" }
+spacegame2d-protocol = { path = "../protocol" }
 spacegame2d-logging = { path = "../logging" }
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 env_logger = "=0.11.11"

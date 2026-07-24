@@ -2237,6 +2237,7 @@ dependencies = [
  "log",
  "pollster",
  "spacegame2d-logging",
+ "spacegame2d-protocol",
  "spacegame2d-simulation",
  "tracing",
  "wgpu",

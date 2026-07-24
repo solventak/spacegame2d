@@ -102,6 +102,11 @@ impl Simulation {
         self.tick
     }
 
+    /// Align a mirror simulation with the authoritative server clock.
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
     pub fn with_world_radius(world_radius: f32) -> Self {
         Self {
             world_radius,
