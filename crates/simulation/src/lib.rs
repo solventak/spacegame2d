@@ -1,3 +1,24 @@
+//! Core simulation for `spacegame2d`: a fixed-timestep 2D space ship model
+//! with autopilot navigation and a drone fleet.
+//!
+//! # Modules
+//!
+//! - [`simulation`] — the ship physics integrator, world boundary, and the
+//!   [`Simulation`][simulation::Simulation] driver that ticks a single
+//!   player-controlled ship.
+//! - [`autopilot`] — high-level destination targeting built on top of a
+//!   swappable [`FlightController`][flight_control::FlightController].
+//! - [`flight_control`] — the trait abstraction and concrete controllers
+//!   (velocity-arrival) that turn a flight observation into ship input.
+//! - [`fleet`] — a collection of autonomous [`Unit`][fleet::Unit]s (drones)
+//!   sharing an arena, with spawn, step, cull, and reset operations.
+//!
+//! # Timestep
+//!
+//! The simulation runs at a fixed [`SIMULATION_HZ`][simulation::SIMULATION_HZ]
+//! of 60 Hz. All integration constants are expressed in SI units and consumed
+//! per-tick via [`FIXED_DT_SECONDS`][simulation::FIXED_DT_SECONDS].
+
 pub mod autopilot;
 pub mod fleet;
 pub mod flight_control;

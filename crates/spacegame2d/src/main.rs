@@ -1,3 +1,12 @@
+//! `spacegame2d` GUI application.
+//!
+//! Sets up a `wgpu` + `winit` window, runs the fixed-timestep frame loop
+//! driving the [`spacegame2d_simulation`] crate, and renders the arena ring,
+//! the player ship, and the drone fleet. Player input is handled by
+//! [`input::InputController`]; autopilot destinations are set by right-click.
+//!
+//! See the [`spacegame2d_simulation`] crate for the simulation model itself.
+
 mod geometry;
 mod input;
 
