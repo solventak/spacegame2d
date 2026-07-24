@@ -1,4 +1,5 @@
 mod autopilot;
+mod fleet;
 mod flight_control;
 mod geometry;
 mod input;
@@ -11,10 +12,11 @@ use std::{
 
 use autopilot::{Autopilot, AutopilotConfig};
 use bytemuck::{Pod, Zeroable};
-use flight_control::{ArrivalController, NeighborObservation};
+use fleet::Fleet;
+use flight_control::ArrivalController;
 use glam::Vec2;
 use input::{ControlKey, InputController};
-use simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation, is_out_of_bounds, step_ship};
+use simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -27,35 +29,7 @@ use winit::{
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 
 const VIEW_HEIGHT_METERS: f32 = 40.0;
-const DRONE_COUNT: usize = 30;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
-
-fn initial_drone_positions() -> Vec<ShipState> {
-    let mut seed = 0x5EED_1234_u32;
-    (0..DRONE_COUNT)
-        .map(|_| {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x = (seed as f32 / u32::MAX as f32) * 8.0 - 4.0;
-            seed = seed.rotate_left(13);
-            let y = (seed as f32 / u32::MAX as f32) * 6.0 - 3.0;
-            ShipState {
-                position: Vec2::new(x, y),
-                ..ShipState::default()
-            }
-        })
-        .collect()
-}
-
-fn initial_drone_autopilots() -> Vec<Autopilot> {
-    (0..DRONE_COUNT)
-        .map(|_| {
-            Autopilot::new(
-                Box::new(ArrivalController::default()),
-                AutopilotConfig::default(),
-            )
-        })
-        .collect()
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -98,7 +72,7 @@ struct Renderer {
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>, drones: &[ShipState]) -> Result<Self, String> {
+    async fn new(window: Arc<Window>, drones: &[fleet::Unit]) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -237,7 +211,7 @@ impl Renderer {
             }],
         });
         let scene_uniforms = std::iter::once(ShipState::default())
-            .chain(drones.iter().copied())
+            .chain(drones.iter().map(|u| u.state))
             .map(|ship| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scene uniform"),
@@ -290,7 +264,7 @@ impl Renderer {
     }
     fn render(
         &mut self,
-        drones: &[ShipState],
+        drones: &[fleet::Unit],
         ship: Option<&ShipState>,
         marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
@@ -326,14 +300,14 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            for (index, drone) in drones.iter().enumerate() {
+            for (index, unit) in drones.iter().enumerate() {
                 self.queue.write_buffer(
                     &self.scene_buffers[index + 1],
                     0,
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
                         self.config.height,
-                        drone,
+                        &unit.state,
                         None,
                     )),
                 );
@@ -377,8 +351,7 @@ impl Renderer {
 struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
-    drones: Vec<ShipState>,
-    drone_autopilots: Vec<Autopilot>,
+    drones: Fleet,
     input: InputController,
     autopilot: Autopilot,
     pending_destination: Option<Vec2>,
@@ -390,8 +363,7 @@ impl Default for App {
         Self {
             renderer: None,
             simulation: Simulation::default(),
-            drones: initial_drone_positions(),
-            drone_autopilots: initial_drone_autopilots(),
+            drones: Fleet::new(),
             input: InputController::default(),
             autopilot: Autopilot::new(
                 Box::new(ArrivalController::default()),
@@ -438,7 +410,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match pollster::block_on(Renderer::new(window.clone(), &self.drones)) {
+        match pollster::block_on(Renderer::new(window.clone(), self.drones.units())) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
@@ -456,15 +428,12 @@ impl ApplicationHandler for App {
             if let Some(command) = self.input.take_command() {
                 self.simulation.apply_command(command);
                 self.autopilot.cancel_and_clear_destination();
-                self.drones = initial_drone_positions();
-                self.drone_autopilots = initial_drone_autopilots();
+                self.drones.reset();
                 self.pending_destination = None;
             } else if let Some(destination) = self.pending_destination.take() {
                 self.input.suppress_held_movement_until_release();
                 self.autopilot.set_destination(destination);
-                for autopilot in &mut self.drone_autopilots {
-                    autopilot.set_destination(destination);
-                }
+                self.drones.set_destination(destination);
             }
             let controls = if self.autopilot.is_active() {
                 if let Some(ship) = self.simulation.ship() {
@@ -476,53 +445,8 @@ impl ApplicationHandler for App {
                 self.input.controls()
             };
             self.simulation.step(controls);
-            let drone_snapshot = self.drones.clone();
-            let drone_controls: Vec<_> = self
-                .drones
-                .iter()
-                .enumerate()
-                .map(|(index, drone)| {
-                    let neighbors: Vec<NeighborObservation> = drone_snapshot
-                        .iter()
-                        .enumerate()
-                        .filter(|(neighbor_index, _)| *neighbor_index != index)
-                        .map(|(_, neighbor)| NeighborObservation {
-                            position: neighbor.position,
-                            velocity: neighbor.velocity,
-                        })
-                        .collect();
-                    self.drone_autopilots[index].controls_for_tick(drone, &neighbors)
-                })
-                .collect();
-            for (drone, controls) in self.drones.iter_mut().zip(drone_controls) {
-                step_ship(drone, controls);
-            }
-            let alive: Vec<bool> = self
-                .drones
-                .iter()
-                .map(|d| !is_out_of_bounds(d.position, simulation::WORLD_RADIUS_M))
-                .collect();
-            for (index, drone) in self.drones.iter().enumerate() {
-                if !alive[index] {
-                    log::info!(
-                        "drone destroyed: out of bounds at ({:.1}, {:.1})",
-                        drone.position.x,
-                        drone.position.y
-                    );
-                }
-            }
-            let mut i = 0;
-            self.drones.retain(|_| {
-                let keep = alive[i];
-                i += 1;
-                keep
-            });
-            let mut i = 0;
-            self.drone_autopilots.retain(|_| {
-                let keep = alive[i];
-                i += 1;
-                keep
-            });
+            self.drones.step();
+            self.drones.cull(simulation::WORLD_RADIUS_M);
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -585,7 +509,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     match renderer.render(
-                        &self.drones,
+                        self.drones.units(),
                         self.simulation.ship(),
                         self.autopilot.destination(),
                     ) {
@@ -620,18 +544,6 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn initial_drones_are_deterministic_and_on_screen() {
-        let first = initial_drone_positions();
-        assert_eq!(first, initial_drone_positions());
-        assert_eq!(first.len(), DRONE_COUNT);
-        assert!(
-            first
-                .iter()
-                .all(|drone| { drone.position.x.abs() <= 8.0 && drone.position.y.abs() <= 5.0 })
-        );
-    }
-
     #[test]
     fn scene_uniform_uses_fixed_world_scale() {
         let u = scene_uniform(1000, 1000, &ShipState::default(), None);
