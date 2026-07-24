@@ -60,7 +60,7 @@ impl InputController {
     pub fn take_command(&mut self) -> Option<SimulationCommand> {
         self.pending_reset.then(|| {
             self.pending_reset = false;
-            SimulationCommand::ResetShip
+            SimulationCommand::ResetSimulation
         })
     }
     pub fn suppress_held_movement_until_release(&mut self) {
@@ -93,7 +93,7 @@ mod tests {
     fn reset_is_one_shot() {
         let mut c = InputController::default();
         c.press(ControlKey::Reset);
-        assert_eq!(c.take_command(), Some(SimulationCommand::ResetShip));
+        assert_eq!(c.take_command(), Some(SimulationCommand::ResetSimulation));
         assert_eq!(c.take_command(), None);
     }
     #[test]
@@ -103,7 +103,7 @@ mod tests {
         c.press(ControlKey::TurnLeft);
         c.press(ControlKey::Reset);
         assert_eq!(c.controls(), ShipInput::default());
-        assert_eq!(c.take_command(), Some(SimulationCommand::ResetShip));
+        assert_eq!(c.take_command(), Some(SimulationCommand::ResetSimulation));
         c.press(ControlKey::Thrust);
         assert_eq!(c.controls(), ShipInput::default());
         c.release(ControlKey::Thrust);
