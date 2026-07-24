@@ -26,7 +26,7 @@ use winit::{
 
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 
-const VIEW_HEIGHT_METERS: f32 = 220.0;
+const VIEW_HEIGHT_METERS: f32 = 40.0;
 const DRONE_COUNT: usize = 30;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
@@ -35,13 +35,24 @@ fn initial_drone_positions() -> Vec<ShipState> {
     (0..DRONE_COUNT)
         .map(|_| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x = (seed as f32 / u32::MAX as f32) * 16.0 - 8.0;
+            let x = (seed as f32 / u32::MAX as f32) * 8.0 - 4.0;
             seed = seed.rotate_left(13);
-            let y = (seed as f32 / u32::MAX as f32) * 10.0 - 5.0;
+            let y = (seed as f32 / u32::MAX as f32) * 6.0 - 3.0;
             ShipState {
                 position: Vec2::new(x, y),
                 ..ShipState::default()
             }
+        })
+        .collect()
+}
+
+fn initial_drone_autopilots() -> Vec<Autopilot> {
+    (0..DRONE_COUNT)
+        .map(|_| {
+            Autopilot::new(
+                Box::new(ArrivalController::default()),
+                AutopilotConfig::default(),
+            )
         })
         .collect()
 }
@@ -380,14 +391,7 @@ impl Default for App {
             renderer: None,
             simulation: Simulation::default(),
             drones: initial_drone_positions(),
-            drone_autopilots: (0..DRONE_COUNT)
-                .map(|_| {
-                    Autopilot::new(
-                        Box::new(ArrivalController::default()),
-                        AutopilotConfig::default(),
-                    )
-                })
-                .collect(),
+            drone_autopilots: initial_drone_autopilots(),
             input: InputController::default(),
             autopilot: Autopilot::new(
                 Box::new(ArrivalController::default()),
@@ -453,9 +457,7 @@ impl ApplicationHandler for App {
                 self.simulation.apply_command(command);
                 self.autopilot.cancel_and_clear_destination();
                 self.drones = initial_drone_positions();
-                for autopilot in &mut self.drone_autopilots {
-                    autopilot.cancel_and_clear_destination();
-                }
+                self.drone_autopilots = initial_drone_autopilots();
                 self.pending_destination = None;
             } else if let Some(destination) = self.pending_destination.take() {
                 self.input.suppress_held_movement_until_release();
@@ -498,7 +500,7 @@ impl ApplicationHandler for App {
             let alive: Vec<bool> = self
                 .drones
                 .iter()
-                .map(|d| !is_out_of_bounds(d.position))
+                .map(|d| !is_out_of_bounds(d.position, simulation::WORLD_RADIUS_M))
                 .collect();
             for (index, drone) in self.drones.iter().enumerate() {
                 if !alive[index] {
@@ -632,7 +634,8 @@ mod tests {
     #[test]
     fn scene_uniform_uses_fixed_world_scale() {
         let u = scene_uniform(1000, 1000, &ShipState::default(), None);
-        let expected = 1.0 / 110.0;
+        // Square viewport: half_width == half_height == VIEW_HEIGHT_METERS * 0.5.
+        let expected = 1.0 / (VIEW_HEIGHT_METERS * 0.5);
         assert!((u.viewport[0] - expected).abs() < 0.0001);
         assert!((u.viewport[1] - expected).abs() < 0.0001);
     }

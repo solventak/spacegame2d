@@ -10,7 +10,7 @@ pub const MOMENT_OF_INERTIA_KG_M2: f32 = 0.25;
 pub const ANGULAR_THRUST_NEWTON_METERS: f32 = 2.0;
 pub const MAX_ANGULAR_SPEED_RADIANS_PER_SECOND: f32 = 3.0;
 pub const ANGULAR_DAMPING_PER_SECOND: f32 = 2.5;
-pub const WORLD_RADIUS_M: f32 = 100.0;
+pub const WORLD_RADIUS_M: f32 = 16.0;
 const VELOCITY_EPSILON: f32 = 0.0001;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,6 +50,7 @@ impl Default for ShipState {
 pub struct Simulation {
     tick: u64,
     ship: Option<ShipState>,
+    world_radius: f32,
 }
 
 impl Default for Simulation {
@@ -57,6 +58,7 @@ impl Default for Simulation {
         Self {
             tick: 0,
             ship: Some(ShipState::default()),
+            world_radius: WORLD_RADIUS_M,
         }
     }
 }
@@ -65,6 +67,19 @@ impl Simulation {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+    /// Construct a simulation with a custom world boundary radius.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_world_radius(world_radius: f32) -> Self {
+        Self {
+            world_radius,
+            ..Self::default()
+        }
+    }
+    /// World boundary radius for this simulation's ship.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn world_radius(&self) -> f32 {
+        self.world_radius
     }
     pub fn ship(&self) -> Option<&ShipState> {
         self.ship.as_ref()
@@ -84,7 +99,7 @@ impl Simulation {
     pub fn step(&mut self, input: ShipInput) {
         if let Some(ref mut ship) = self.ship {
             step_ship(ship, input);
-            if is_out_of_bounds(ship.position) {
+            if is_out_of_bounds(ship.position, self.world_radius) {
                 let pos = ship.position;
                 log::info!(
                     "ship destroyed: out of bounds at ({:.1}, {:.1})",
@@ -98,8 +113,8 @@ impl Simulation {
     }
 }
 
-pub fn is_out_of_bounds(position: Vec2) -> bool {
-    position.length() > WORLD_RADIUS_M
+pub fn is_out_of_bounds(position: Vec2, world_radius: f32) -> bool {
+    position.length() > world_radius
 }
 
 pub fn step_ship(ship: &mut ShipState, input: ShipInput) {
@@ -237,8 +252,10 @@ mod tests {
     }
     #[test]
     fn total_velocity_is_capped() {
+        // Use a very large world boundary so the ship never escapes while ramping
+        // up to terminal velocity across the full 500-tick run.
         let sim = run(
-            Simulation::default(),
+            Simulation::with_world_radius(10_000.0),
             ShipInput {
                 thrust: true,
                 ..Default::default()
@@ -330,12 +347,21 @@ mod tests {
     }
     #[test]
     fn exact_boundary_is_in_bounds() {
-        assert!(!is_out_of_bounds(Vec2::new(WORLD_RADIUS_M, 0.0)));
-        assert!(!is_out_of_bounds(Vec2::new(0.0, WORLD_RADIUS_M)));
+        assert!(!is_out_of_bounds(
+            Vec2::new(WORLD_RADIUS_M, 0.0),
+            WORLD_RADIUS_M
+        ));
+        assert!(!is_out_of_bounds(
+            Vec2::new(0.0, WORLD_RADIUS_M),
+            WORLD_RADIUS_M
+        ));
     }
     #[test]
     fn epsilon_beyond_boundary_is_out_of_bounds() {
-        assert!(is_out_of_bounds(Vec2::new(WORLD_RADIUS_M + 0.01, 0.0)));
+        assert!(is_out_of_bounds(
+            Vec2::new(WORLD_RADIUS_M + 0.01, 0.0),
+            WORLD_RADIUS_M
+        ));
     }
     #[test]
     fn ship_at_exact_boundary_survives_tick() {
