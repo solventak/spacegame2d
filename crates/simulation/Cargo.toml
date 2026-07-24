@@ -1,0 +1,8 @@
+[package]
+name = "spacegame2d-simulation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glam = "=0.33.2"
+log = "=0.4.33"

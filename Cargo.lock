@@ -1796,8 +1796,30 @@ dependencies = [
  "glam",
  "log",
  "pollster",
+ "spacegame2d-simulation",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "spacegame2d-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "spacegame2d-server"
+version = "0.1.0"
+dependencies = [
+ "spacegame2d-protocol",
+ "spacegame2d-simulation",
+]
+
+[[package]]
+name = "spacegame2d-simulation"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "glam",
+ "log",
 ]
 
 [[package]]
