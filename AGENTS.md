@@ -126,7 +126,11 @@ If a new ticket depends on an unmerged PR's work, branch off that PR's branch in
 
 ## Logging
 
-Use `log` + `env_logger` for runtime messages. Use `println!` only for genuine startup banners or one-off diagnostics. Don't introduce `tracing` without sign-off from the maintainer; the codebase currently has minimal logging on purpose.
+Use `tracing` + `tracing-subscriber` for runtime messages, via the `spacegame2d-logging` crate. The logging crate provides dual stdout + non-blocking file output, per-run log files under `logs/` named `<timestamp>_<binary>_<pid>.log`, `EnvFilter`, and a JSON mode via `SPACEGAME_LOG_FORMAT=json`. Use `println!` only for genuine startup banners or one-off diagnostics.
+
+New networking code (server, client, protocol) emits structured `tracing` events using the canonical field vocabulary: `event`, `cmd` (formatted `slot:sequence`), `tick`, `execute_tick`, `receive_tick`, `local_tick`, `server_tick`, `kind`, `address`, `slot`, `recipients`, plus event-specific fields. Keep the codebase's logging minimal and purposeful — log state transitions and wire events, not per-tick noise.
+
+The pre-existing `log` + `env_logger` calls in the current 2D client/sim code are left as-is for now; only new networking code formalizes the `tracing` convention. `tracing` is permitted (maintainer sign-off recorded in SWA-11); do not introduce other logging frameworks.
 
 ## Pre-commit hook
 
