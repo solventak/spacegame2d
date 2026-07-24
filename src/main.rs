@@ -1,5 +1,6 @@
 mod autopilot;
 mod flight_control;
+mod geometry;
 mod input;
 mod simulation;
 
@@ -13,9 +14,7 @@ use bytemuck::{Pod, Zeroable};
 use flight_control::{ArrivalController, NeighborObservation};
 use glam::Vec2;
 use input::{ControlKey, InputController};
-use simulation::{
-    SIMULATION_HZ, ShipInput, ShipState, Simulation, WORLD_RADIUS_M, is_out_of_bounds, step_ship,
-};
+use simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation, is_out_of_bounds, step_ship};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -24,6 +23,8 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
+
+use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 
 const VIEW_HEIGHT_METERS: f32 = 220.0;
 const DRONE_COUNT: usize = 30;
@@ -43,24 +44,6 @@ fn initial_drone_positions() -> Vec<ShipState> {
             }
         })
         .collect()
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-    fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
 }
 
 #[repr(C)]
@@ -85,84 +68,6 @@ fn scene_uniform(width: u32, height: u32, ship: &ShipState, marker: Option<Vec2>
         ],
         marker: marker.map_or([0.0, 0.0, 0.0, 0.0], |p| [p.x, p.y, 1.0, 0.0]),
     }
-}
-
-fn notched_ship_vertices() -> Vec<Vertex> {
-    let cyan = [0.0, 0.9, 1.0, 1.0];
-    let black = [0.0, 0.0, 0.0, 1.0];
-    let points = [
-        [0.0, 0.60],
-        [0.45, -0.40],
-        [0.14, -0.40],
-        [0.0, -0.15],
-        [-0.14, -0.40],
-        [-0.45, -0.40],
-    ];
-    let triangles = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
-    let mut vertices = Vec::with_capacity(24);
-    for (color, scale) in [(cyan, 1.0), (black, 0.78)] {
-        for triangle in triangles {
-            for index in triangle {
-                vertices.push(Vertex {
-                    position: [points[index][0] * scale, points[index][1] * scale],
-                    color,
-                });
-            }
-        }
-    }
-    for triangle in [[0, 1, 2], [0, 2, 1]] {
-        for index in triangle {
-            let p = [[0.0, 0.18], [0.18, -0.12], [-0.18, -0.12]][index];
-            vertices.push(Vertex {
-                position: p,
-                color: [1.0, 0.0, 0.0, 1.0],
-            });
-        }
-    }
-    vertices
-}
-
-fn ring_vertices() -> Vec<Vertex> {
-    let color = [0.0, 0.0, 0.15, 1.0];
-    let segments = 128;
-    let inner_radius = WORLD_RADIUS_M - 0.5;
-    let outer_radius = WORLD_RADIUS_M + 0.5;
-    let mut vertices = Vec::with_capacity(segments * 6);
-    for i in 0..segments {
-        let a0 = (i as f32 / segments as f32) * std::f32::consts::TAU;
-        let a1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
-        let c0 = Vec2::new(a0.cos(), a0.sin());
-        let c1 = Vec2::new(a1.cos(), a1.sin());
-        let inner0 = c0 * inner_radius;
-        let outer0 = c0 * outer_radius;
-        let outer1 = c1 * outer_radius;
-        let inner1 = c1 * inner_radius;
-        vertices.push(Vertex {
-            position: [inner0.x, inner0.y],
-            color,
-        });
-        vertices.push(Vertex {
-            position: [outer0.x, outer0.y],
-            color,
-        });
-        vertices.push(Vertex {
-            position: [outer1.x, outer1.y],
-            color,
-        });
-        vertices.push(Vertex {
-            position: [inner0.x, inner0.y],
-            color,
-        });
-        vertices.push(Vertex {
-            position: [outer1.x, outer1.y],
-            color,
-        });
-        vertices.push(Vertex {
-            position: [inner1.x, inner1.y],
-            color,
-        });
-    }
-    vertices
 }
 
 struct Renderer {
