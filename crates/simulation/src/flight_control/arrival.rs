@@ -1,20 +1,43 @@
+//! Velocity-arrival flight controller.
+//!
+//! [`ArrivalController`] computes a desired velocity from the position error to
+//! the destination, derives a desired acceleration from the velocity error,
+//! and turns/thrusts the ship to align its facing with that acceleration. It
+//! settles (emits no input) once inside the arrival radius and below the
+//! stopped speed.
+
 use crate::flight_control::{
     FlightController, FlightObservation, forward, max_angular_speed, thrust_acceleration,
 };
 use crate::simulation::ShipInput;
 
+/// Tuning gains and thresholds for the [`ArrivalController`].
 #[derive(Clone, Copy, Debug)]
 pub struct ArrivalControllerConfig {
+    /// Maximum desired speed in meters per second, clamping the position-gain
+    /// term far from the destination.
     pub max_arrival_speed: f32,
+    /// Proportional gain on position error (distance → desired speed).
     pub position_gain: f32,
+    /// Proportional gain on velocity error (velocity error → desired
+    /// acceleration).
     pub velocity_gain: f32,
+    /// Proportional gain on heading error (angle → desired angular velocity).
     pub turn_gain: f32,
+    /// Gain applied to the current angular velocity when computing the angular
+    /// error term.
     pub angular_velocity_gain: f32,
+    /// Half-angle (in radians) within which the ship may apply forward thrust.
     pub thrust_angle_radians: f32,
+    /// Angular error deadband in radians; smaller magnitudes produce no turn
+    /// input.
     pub angular_deadband: f32,
+    /// Distance from the destination at which the controller settles.
     pub arrival_radius_meters: f32,
+    /// Reserved neighbor-collision radius in meters (currently unused).
     #[allow(dead_code)]
     pub collision_radius_meters: f32,
+    /// Reserved neighbor-collision repulsion strength (currently unused).
     #[allow(dead_code)]
     pub collision_strength: f32,
 }
@@ -34,8 +57,12 @@ impl Default for ArrivalControllerConfig {
         }
     }
 }
+/// Velocity-arrival controller. Stateless aside from its [`config`](ArrivalControllerConfig) field.
+///
+/// See the [module docs](crate::flight_control::arrival) for the control law.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArrivalController {
+    /// Tuning parameters.
     pub config: ArrivalControllerConfig,
 }
 impl FlightController for ArrivalController {
