@@ -1,5 +1,7 @@
 mod autopilot;
+mod fleet;
 mod flight_control;
+mod geometry;
 mod input;
 mod simulation;
 
@@ -10,10 +12,11 @@ use std::{
 
 use autopilot::{Autopilot, AutopilotConfig};
 use bytemuck::{Pod, Zeroable};
-use flight_control::{ArrivalController, NeighborObservation};
+use fleet::Fleet;
+use flight_control::ArrivalController;
 use glam::Vec2;
 use input::{ControlKey, InputController};
-use simulation::{SIMULATION_HZ, ShipState, Simulation, step_ship};
+use simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -23,43 +26,10 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const VIEW_HEIGHT_METERS: f32 = 20.0;
-const DRONE_COUNT: usize = 30;
+use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
+
+const VIEW_HEIGHT_METERS: f32 = 40.0;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
-
-fn initial_drone_positions() -> Vec<ShipState> {
-    let mut seed = 0x5EED_1234_u32;
-    (0..DRONE_COUNT)
-        .map(|_| {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x = (seed as f32 / u32::MAX as f32) * 16.0 - 8.0;
-            seed = seed.rotate_left(13);
-            let y = (seed as f32 / u32::MAX as f32) * 10.0 - 5.0;
-            ShipState {
-                position: Vec2::new(x, y),
-                ..ShipState::default()
-            }
-        })
-        .collect()
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-    fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -85,41 +55,6 @@ fn scene_uniform(width: u32, height: u32, ship: &ShipState, marker: Option<Vec2>
     }
 }
 
-fn notched_ship_vertices() -> Vec<Vertex> {
-    let cyan = [0.0, 0.9, 1.0, 1.0];
-    let black = [0.0, 0.0, 0.0, 1.0];
-    let points = [
-        [0.0, 0.60],
-        [0.45, -0.40],
-        [0.14, -0.40],
-        [0.0, -0.15],
-        [-0.14, -0.40],
-        [-0.45, -0.40],
-    ];
-    let triangles = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
-    let mut vertices = Vec::with_capacity(24);
-    for (color, scale) in [(cyan, 1.0), (black, 0.78)] {
-        for triangle in triangles {
-            for index in triangle {
-                vertices.push(Vertex {
-                    position: [points[index][0] * scale, points[index][1] * scale],
-                    color,
-                });
-            }
-        }
-    }
-    for triangle in [[0, 1, 2], [0, 2, 1]] {
-        for index in triangle {
-            let p = [[0.0, 0.18], [0.18, -0.12], [-0.18, -0.12]][index];
-            vertices.push(Vertex {
-                position: p,
-                color: [1.0, 0.0, 0.0, 1.0],
-            });
-        }
-    }
-    vertices
-}
-
 struct Renderer {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -128,12 +63,16 @@ struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    ring_vertex_buffer: wgpu::Buffer,
+    ring_vertex_count: u32,
+    ring_scene_buffer: wgpu::Buffer,
+    ring_bind_group: wgpu::BindGroup,
     scene_buffers: Vec<wgpu::Buffer>,
     scene_bind_groups: Vec<wgpu::BindGroup>,
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>, drones: &[ShipState]) -> Result<Self, String> {
+    async fn new(window: Arc<Window>, drones: &[fleet::Unit]) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -246,8 +185,33 @@ impl Renderer {
             contents: bytemuck::cast_slice(&notched_ship_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let ring_vertices = ring_vertices();
+        let ring_vertex_count = ring_vertices.len() as u32;
+        let ring_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ring vertices"),
+            contents: bytemuck::cast_slice(&ring_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ring_scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ring scene uniform"),
+            contents: bytemuck::bytes_of(&scene_uniform(
+                config.width,
+                config.height,
+                &ShipState::default(),
+                None,
+            )),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let ring_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ring bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ring_scene_buffer.as_entire_binding(),
+            }],
+        });
         let scene_uniforms = std::iter::once(ShipState::default())
-            .chain(drones.iter().copied())
+            .chain(drones.iter().map(|u| u.state))
             .map(|ship| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scene uniform"),
@@ -282,6 +246,10 @@ impl Renderer {
             config,
             pipeline,
             vertex_buffer,
+            ring_vertex_buffer,
+            ring_vertex_count,
+            ring_scene_buffer,
+            ring_bind_group,
             scene_buffers: scene_uniforms,
             scene_bind_groups,
         })
@@ -296,8 +264,8 @@ impl Renderer {
     }
     fn render(
         &mut self,
-        drones: &[ShipState],
-        ship: &ShipState,
+        drones: &[fleet::Unit],
+        ship: Option<&ShipState>,
         marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
         let frame = match self.surface.get_current_texture() {
@@ -332,32 +300,47 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            for (index, drone) in drones.iter().enumerate() {
+            for (index, unit) in drones.iter().enumerate() {
                 self.queue.write_buffer(
                     &self.scene_buffers[index + 1],
                     0,
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
                         self.config.height,
-                        drone,
+                        &unit.state,
                         None,
                     )),
                 );
                 pass.set_bind_group(0, &self.scene_bind_groups[index + 1], &[]);
                 pass.draw(0..24, 0..1);
             }
+            if let Some(ship) = ship {
+                self.queue.write_buffer(
+                    &self.scene_buffers[0],
+                    0,
+                    bytemuck::bytes_of(&scene_uniform(
+                        self.config.width,
+                        self.config.height,
+                        ship,
+                        marker,
+                    )),
+                );
+                pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
+                pass.draw(0..30, 0..1);
+            }
             self.queue.write_buffer(
-                &self.scene_buffers[0],
+                &self.ring_scene_buffer,
                 0,
                 bytemuck::bytes_of(&scene_uniform(
                     self.config.width,
                     self.config.height,
-                    ship,
-                    marker,
+                    &ShipState::default(),
+                    None,
                 )),
             );
-            pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
-            pass.draw(0..30, 0..1);
+            pass.set_vertex_buffer(0, self.ring_vertex_buffer.slice(..));
+            pass.set_bind_group(0, &self.ring_bind_group, &[]);
+            pass.draw(0..self.ring_vertex_count, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -368,8 +351,7 @@ impl Renderer {
 struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
-    drones: Vec<ShipState>,
-    drone_autopilots: Vec<Autopilot>,
+    drones: Fleet,
     input: InputController,
     autopilot: Autopilot,
     pending_destination: Option<Vec2>,
@@ -381,15 +363,7 @@ impl Default for App {
         Self {
             renderer: None,
             simulation: Simulation::default(),
-            drones: initial_drone_positions(),
-            drone_autopilots: (0..DRONE_COUNT)
-                .map(|_| {
-                    Autopilot::new(
-                        Box::new(ArrivalController::default()),
-                        AutopilotConfig::default(),
-                    )
-                })
-                .collect(),
+            drones: Fleet::new(),
             input: InputController::default(),
             autopilot: Autopilot::new(
                 Box::new(ArrivalController::default()),
@@ -436,7 +410,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match pollster::block_on(Renderer::new(window.clone(), &self.drones)) {
+        match pollster::block_on(Renderer::new(window.clone(), self.drones.units())) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
@@ -454,48 +428,25 @@ impl ApplicationHandler for App {
             if let Some(command) = self.input.take_command() {
                 self.simulation.apply_command(command);
                 self.autopilot.cancel_and_clear_destination();
-                for drone in &mut self.drones {
-                    *drone = ShipState::default();
-                }
-                for autopilot in &mut self.drone_autopilots {
-                    autopilot.cancel_and_clear_destination();
-                }
+                self.drones.reset();
                 self.pending_destination = None;
             } else if let Some(destination) = self.pending_destination.take() {
                 self.input.suppress_held_movement_until_release();
                 self.autopilot.set_destination(destination);
-                for autopilot in &mut self.drone_autopilots {
-                    autopilot.set_destination(destination);
-                }
+                self.drones.set_destination(destination);
             }
             let controls = if self.autopilot.is_active() {
-                self.autopilot
-                    .controls_for_tick(self.simulation.ship(), &[])
+                if let Some(ship) = self.simulation.ship() {
+                    self.autopilot.controls_for_tick(ship, &[])
+                } else {
+                    ShipInput::default()
+                }
             } else {
                 self.input.controls()
             };
             self.simulation.step(controls);
-            let drone_snapshot = self.drones.clone();
-            let drone_controls: Vec<_> = self
-                .drones
-                .iter()
-                .enumerate()
-                .map(|(index, drone)| {
-                    let neighbors: Vec<NeighborObservation> = drone_snapshot
-                        .iter()
-                        .enumerate()
-                        .filter(|(neighbor_index, _)| *neighbor_index != index)
-                        .map(|(_, neighbor)| NeighborObservation {
-                            position: neighbor.position,
-                            velocity: neighbor.velocity,
-                        })
-                        .collect();
-                    self.drone_autopilots[index].controls_for_tick(drone, &neighbors)
-                })
-                .collect();
-            for (drone, controls) in self.drones.iter_mut().zip(drone_controls) {
-                step_ship(drone, controls);
-            }
+            self.drones.step();
+            self.drones.cull(simulation::WORLD_RADIUS_M);
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -558,7 +509,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     match renderer.render(
-                        &self.drones,
+                        self.drones.units(),
                         self.simulation.ship(),
                         self.autopilot.destination(),
                     ) {
@@ -584,6 +535,7 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut App::default())
@@ -593,27 +545,22 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 mod tests {
     use super::*;
     #[test]
-    fn initial_drones_are_deterministic_and_on_screen() {
-        let first = initial_drone_positions();
-        assert_eq!(first, initial_drone_positions());
-        assert_eq!(first.len(), DRONE_COUNT);
-        assert!(
-            first
-                .iter()
-                .all(|drone| { drone.position.x.abs() <= 8.0 && drone.position.y.abs() <= 5.0 })
-        );
-    }
-
-    #[test]
     fn scene_uniform_uses_fixed_world_scale() {
         let u = scene_uniform(1000, 1000, &ShipState::default(), None);
-        assert!((u.viewport[0] - 0.1).abs() < 0.0001);
-        assert!((u.viewport[1] - 0.1).abs() < 0.0001);
+        // Square viewport: half_width == half_height == VIEW_HEIGHT_METERS * 0.5.
+        let expected = 1.0 / (VIEW_HEIGHT_METERS * 0.5);
+        assert!((u.viewport[0] - expected).abs() < 0.0001);
+        assert!((u.viewport[1] - expected).abs() < 0.0001);
     }
     #[test]
     fn ship_mesh_preserves_rear_notch() {
         let vertices = notched_ship_vertices();
         assert_eq!(vertices.len(), 30);
         assert!(vertices[12].position[1].abs() < vertices[0].position[1].abs());
+    }
+    #[test]
+    fn ring_mesh_has_expected_vertex_count() {
+        let vertices = ring_vertices();
+        assert_eq!(vertices.len(), 128 * 6);
     }
 }
