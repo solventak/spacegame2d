@@ -57,9 +57,18 @@ docs/
 | Format (check) | `cargo fmt --check` |
 | Lint | `cargo clippy -- -D warnings` |
 | Test | `cargo test` |
+| Coverage (local) | `cargo tarpaulin --workspace --exclude-files "*/main.rs" --fail-under 85` |
 | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
 The implementer must run the **test gate** locally before opening a PR. If any step fails, do not push; instead comment on the Linear ticket with the failure and move it to "Blocked".
+
+## Coverage gate
+
+A **minimum coverage threshold of 85%** is enforced in CI via `cargo-tarpaulin` (see `.github/workflows/coverage.yml`). The gate runs on every PR and push to `dev`/`main` and will **fail the build** if coverage drops below 85%.
+
+Coverage is measured across the whole workspace but excludes `main.rs` files (GUI rendering and event-loop code that is not unit-testable). All simulation logic, flight control, autopilot, fleet, geometry, and input modules are measured and must stay above the threshold.
+
+When adding new logic, ensure it is accompanied by tests that keep coverage above 85%. Stub or placeholder crates (e.g. `protocol`, `server`) contribute negligibly today but will be measured as they gain code.
 
 ## Branch and PR conventions
 
