@@ -1,0 +1,8 @@
+[package]
+name = "spacegame2d-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+spacegame2d-simulation = { path = "../simulation" }
+spacegame2d-protocol = { path = "../protocol" }

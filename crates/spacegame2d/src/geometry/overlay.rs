@@ -1,6 +1,7 @@
 use glam::Vec2;
 
-use crate::{geometry::Vertex, simulation::WORLD_RADIUS_M};
+use crate::geometry::Vertex;
+use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
 pub fn ring_vertices() -> Vec<Vertex> {
     let color = [0.0, 0.0, 0.15, 1.0];
