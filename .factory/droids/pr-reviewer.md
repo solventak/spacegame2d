@@ -24,7 +24,7 @@ The parent passes:
    ```
    Capture the diff hunks, the file list, and any existing PR comments via `gh api /repos/solventak/spacegame2d/issues/<number>/comments`.
 
-2. Fetch the Linear ticket for context. Note the `## Acceptance Criteria`. Read the plan file referenced in the ticket's `## Plan` section (from `docs/plans/`) for the implementation plan, `## API Surface`, and `## Risk Level`. Internalize them.
+2. Fetch the Linear ticket for context. Note the `## Acceptance Criteria`. Do NOT read the implementation plan — you are a blind code reviewer. Evaluate the code on its own merits, not against a plan.
 
 3. Check the repo's `AGENTS.md` at the PR's HEAD commit. The PR must satisfy:
    - Title format: `<TICKET-ID>: <summary>`.
@@ -36,7 +36,7 @@ The parent passes:
 
 4. Read each changed file at the diff. Look for:
 
-   - Public API drift not called out in the plan file's `## API Surface`.
+   - Public API drift not mentioned in the PR description or surprising given the ticket's requirements.
    - Missing or weak tests for new logic, including boundary conditions.
    - Style drift vs. `rustfmt` (look for inconsistent indentation, line widths > 100).
    - Unhandled `Result` / `unwrap()` / `panic!()` in non-test code paths.

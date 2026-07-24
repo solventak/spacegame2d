@@ -24,8 +24,12 @@ pub struct FlightObservation<'a> {
     pub neighbors: &'static [NeighborObservation],
 }
 
-impl FlightObservation {
-    pub fn from_ship<'a>(ship: &ShipState, destination: Vec2, neighbors: &'a [NeighborObservation]) -> FlightObservation<'a> {
+impl FlightObservation<'_> {
+    pub fn from_ship<'a>(
+        ship: &ShipState,
+        destination: Vec2,
+        neighbors: &'a [NeighborObservation],
+    ) -> FlightObservation<'a> {
         Self {
             position: ship.position,
             velocity: ship.velocity,

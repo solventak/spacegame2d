@@ -57,7 +57,7 @@ The implementer must run the **test gate** locally before opening a PR. If any s
 
 ## Ticketing and plans
 
-- Active work is tracked in Linear (the configured workspace). Linear is for tracking only — state, assignment, priorities, requirements, acceptance criteria. Implementation plans live in the repo.
+- Active work is tracked in Linear (the configured workspace). Linear is for tracking only — state, assignment, priorities, requirements, acceptance criteria. Implementation plans live in Notion.
 
 - Tickets use this template:
 
@@ -66,7 +66,7 @@ The implementer must run the **test gate** locally before opening a PR. If any s
   - ...
 
   ## Plan
-  See docs/plans/<YYYY-MM-DD>-<TICKET-ID>-<slug>.md
+  See <Notion page URL>
 
   ## Acceptance Criteria
   - [ ] ...
@@ -78,15 +78,18 @@ The implementer must run the **test gate** locally before opening a PR. If any s
   - (optional)
   ```
 
-- The `## Plan` section in a Linear ticket is a one-line pointer to a plan file in `docs/plans/`. The plan file is the canonical store for the implementation plan, files touched, API surface, and risk level. The `linear-planner` droid writes plan files; the `linear-implementer` droid reads them.
+- The `## Plan` section in a Linear ticket is a one-line pointer to a Notion page in the **Implementation Plans** database. The Notion page is the canonical store for the implementation plan, files touched, API surface, and risk level.
 
-- Plan file naming: `docs/plans/<YYYY-MM-DD>-<TICKET-ID>-<slug>.md`. Example: `docs/plans/2026-07-24-swa-5-world-arena-death-boundary.md`.
+- The Notion page has a **Status** property that drives the workflow:
+  - `Needs Review` — the `linear-planner` droid just wrote the plan; awaiting human review.
+  - `Approved` — a human has reviewed and signed off; the `linear-implementer` droid may proceed.
+  - `Implemented` — the PR has been merged; plan is complete.
 
-- Existing plan docs:
-  - `docs/plans/2026-07-23-ship-movement.md`
-  - `docs/plans/2026-07-23-right-click-autopilot.md`
-  - `docs/plans/2026-07-23-local-predicted-neighbor-avoidance.md`
-  - `docs/plans/2026-07-24-swa-5-world-arena-death-boundary.md`
+- The `linear-planner` droid creates Notion pages with Status = `Needs Review`. The user flips Status to `Approved` when ready. The `linear-implementer` droid checks the Status before proceeding — it only runs if Status = `Approved`.
+
+- The `pr-reviewer` droid does NOT read the plan. It reviews code on its own merits against AGENTS.md conventions and the Linear ticket's acceptance criteria.
+
+- Plan docs in `docs/plans/` are an optional historical archive. The implementer may commit the final plan alongside the PR if a permanent git record is desired, but the canonical plan store is Notion.
 
 ## Stacked PRs
 
