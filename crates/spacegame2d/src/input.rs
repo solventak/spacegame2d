@@ -1,4 +1,4 @@
-use crate::simulation::{ShipInput, SimulationCommand};
+use spacegame2d_simulation::simulation::{ShipInput, SimulationCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlKey {

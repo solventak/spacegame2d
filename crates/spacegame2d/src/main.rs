@@ -1,22 +1,20 @@
-mod autopilot;
-mod fleet;
-mod flight_control;
 mod geometry;
 mod input;
-mod simulation;
 
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use autopilot::{Autopilot, AutopilotConfig};
 use bytemuck::{Pod, Zeroable};
-use fleet::Fleet;
-use flight_control::ArrivalController;
 use glam::Vec2;
 use input::{ControlKey, InputController};
-use simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation};
+use spacegame2d_simulation::{
+    autopilot::{Autopilot, AutopilotConfig},
+    fleet::Fleet,
+    flight_control::ArrivalController,
+    simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation},
+};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -72,7 +70,10 @@ struct Renderer {
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>, drones: &[fleet::Unit]) -> Result<Self, String> {
+    async fn new(
+        window: Arc<Window>,
+        drones: &[spacegame2d_simulation::fleet::Unit],
+    ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -264,7 +265,7 @@ impl Renderer {
     }
     fn render(
         &mut self,
-        drones: &[fleet::Unit],
+        drones: &[spacegame2d_simulation::fleet::Unit],
         ship: Option<&ShipState>,
         marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
@@ -446,7 +447,8 @@ impl ApplicationHandler for App {
             };
             self.simulation.step(controls);
             self.drones.step();
-            self.drones.cull(simulation::WORLD_RADIUS_M);
+            self.drones
+                .cull(spacegame2d_simulation::simulation::WORLD_RADIUS_M);
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
