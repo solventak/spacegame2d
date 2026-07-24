@@ -14,15 +14,35 @@
 ## Source layout
 
 ```
-src/
-  main.rs              entry, wgpu setup, frame loop
-  simulation.rs        sim tick, drone state, neighbor interactions
-  input.rs             keyboard / mouse
-  autopilot.rs         velocity targeting
-  flight_control/
-    mod.rs             facade re-exporting arrival public surface
-    arrival.rs         velocity arrival + predicted neighbor avoidance math
-  shader.wgsl          GPU shader
+crates/
+  simulation/
+    Cargo.toml
+    src/
+      lib.rs            re-exports simulation, flight_control, autopilot, fleet
+      simulation.rs      sim tick, drone state, neighbor interactions
+      autopilot.rs       velocity targeting
+      fleet.rs           drone collection (spawn, step, cull, reset)
+      flight_control/
+        mod.rs           facade re-exporting arrival public surface
+        arrival.rs       velocity arrival + predicted neighbor avoidance math
+  protocol/
+    Cargo.toml
+    src/
+      lib.rs             placeholder — wire-format and codec (future tickets)
+  server/
+    Cargo.toml
+    src/
+      main.rs            stub — banner + exit (no networking yet)
+  spacegame2d/
+    Cargo.toml
+    src/
+      main.rs            entry, wgpu setup, frame loop
+      input.rs           keyboard / mouse
+      geometry/
+        mod.rs            Vertex type + wgpu layout
+        overlay.rs        arena ring vertices
+        units.rs          ship sprite vertices
+      shader.wgsl         GPU shader
 docs/
   plans/               milestone planning documents (one file per plan, dated slug)
 ```
