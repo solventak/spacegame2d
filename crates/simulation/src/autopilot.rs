@@ -1,5 +1,5 @@
 use crate::flight_control::{FlightController, FlightObservation, NeighborObservation};
-use crate::simulation::{ShipInput, ShipState};
+use crate::simulation::{FlightInput, ShipState};
 use glam::Vec2;
 
 /// Default radius around the destination within which the autopilot considers
@@ -29,7 +29,7 @@ impl Default for AutopilotConfig {
 /// swappable [`FlightController`].
 ///
 /// The autopilot owns an optional destination and an active flag. Each tick it
-/// asks its controller for the [`ShipInput`] required to reach the destination,
+/// asks its controller for the [`FlightInput`] required to reach the destination,
 /// and deactivates itself once the ship has arrived (within
 /// [`AutopilotConfig::arrival_radius_meters`] and below
 /// [`AutopilotConfig::stopped_speed_meters_per_second`]) with no further input
@@ -67,12 +67,12 @@ impl Autopilot {
         &mut self,
         ship: &ShipState,
         neighbors: &[NeighborObservation],
-    ) -> ShipInput {
+    ) -> FlightInput {
         let Some(destination) = self.destination else {
-            return ShipInput::default();
+            return FlightInput::default();
         };
         if !self.active {
-            return ShipInput::default();
+            return FlightInput::default();
         }
         let desired = self.controller.desired_input(FlightObservation::from_ship(
             ship,
@@ -81,7 +81,7 @@ impl Autopilot {
         ));
         if ship.position.distance(destination) <= self.config.arrival_radius_meters
             && ship.velocity.length() <= self.config.stopped_speed_meters_per_second
-            && desired == ShipInput::default()
+            && desired == FlightInput::default()
         {
             self.active = false;
         }
@@ -93,41 +93,41 @@ mod tests {
     use super::*;
     use crate::flight_control::{FlightController, FlightObservation};
     #[derive(Debug)]
-    struct Script(ShipInput);
+    struct Script(FlightInput);
     impl FlightController for Script {
         fn name(&self) -> &'static str {
             "script"
         }
-        fn desired_input(&self, _: FlightObservation) -> ShipInput {
+        fn desired_input(&self, _: FlightObservation) -> FlightInput {
             self.0
         }
     }
-    fn ap(input: ShipInput) -> Autopilot {
+    fn ap(input: FlightInput) -> Autopilot {
         Autopilot::new(Box::new(Script(input)), AutopilotConfig::default())
     }
     #[test]
     fn destination_replacement_keeps_marker() {
-        let mut a = ap(ShipInput::default());
+        let mut a = ap(FlightInput::default());
         a.set_destination(Vec2::X);
         a.set_destination(Vec2::Y);
         assert_eq!(a.destination(), Some(Vec2::Y));
     }
     #[test]
     fn arrival_requires_position_and_speed() {
-        let mut a = ap(ShipInput::default());
+        let mut a = ap(FlightInput::default());
         a.set_destination(Vec2::ZERO);
         let s = ShipState {
             velocity: Vec2::X,
             ..Default::default()
         };
-        assert!(a.controls_for_tick(&s, &[]) == ShipInput::default() && a.is_active());
+        assert!(a.controls_for_tick(&s, &[]) == FlightInput::default() && a.is_active());
         let s = ShipState::default();
-        assert_eq!(a.controls_for_tick(&s, &[]), ShipInput::default());
+        assert_eq!(a.controls_for_tick(&s, &[]), FlightInput::default());
         assert!(!a.is_active());
     }
     #[test]
     fn cancel_clears_destination() {
-        let mut a = ap(ShipInput::default());
+        let mut a = ap(FlightInput::default());
         a.set_destination(Vec2::X);
         a.cancel_and_clear_destination();
         assert!(!a.is_active());

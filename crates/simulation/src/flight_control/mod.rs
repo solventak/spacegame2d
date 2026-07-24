@@ -9,7 +9,7 @@
 use glam::Vec2;
 
 use crate::simulation::{
-    FORWARD_THRUST_NEWTONS, MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, SHIP_MASS_KG, ShipInput,
+    FORWARD_THRUST_NEWTONS, FlightInput, MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, SHIP_MASS_KG,
     ShipState,
 };
 
@@ -63,7 +63,7 @@ impl<'a> FlightObservation<'a> {
     }
 }
 
-/// Steering policy: map a flight observation to the per-tick [`ShipInput`]
+/// Steering policy: map a flight observation to the per-tick [`FlightInput`]
 /// that best drives the ship toward its destination.
 ///
 /// Implementations are held behind a `Box<dyn FlightController>` by the
@@ -74,7 +74,7 @@ pub trait FlightController: std::fmt::Debug {
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
     /// Compute the ship input for this tick given `observation`.
-    fn desired_input(&self, observation: FlightObservation<'_>) -> ShipInput;
+    fn desired_input(&self, observation: FlightObservation<'_>) -> FlightInput;
 }
 
 pub(crate) fn forward(heading: f32) -> Vec2 {
@@ -96,8 +96,8 @@ mod tests {
         fn name(&self) -> &'static str {
             "always-thrust"
         }
-        fn desired_input(&self, _: FlightObservation) -> ShipInput {
-            ShipInput {
+        fn desired_input(&self, _: FlightObservation) -> FlightInput {
+            FlightInput {
                 thrust: true,
                 ..Default::default()
             }

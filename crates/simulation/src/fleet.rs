@@ -158,7 +158,7 @@ pub fn initial_drone_positions() -> Vec<ShipState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::{ShipInput, WORLD_RADIUS_M};
+    use crate::simulation::WORLD_RADIUS_M;
 
     #[test]
     fn initial_drones_are_deterministic_and_on_screen() {
@@ -235,10 +235,4 @@ mod tests {
                 .all(|u| u.autopilot.destination() == Some(Vec2::new(10.0, 10.0)))
         );
     }
-
-    // `ShipInput` is referenced indirectly via step_ship; keep the import live
-    // for future per-input step tests without a dead-code warning today.
-    const _: fn() = || {
-        let _ = ShipInput::default();
-    };
 }

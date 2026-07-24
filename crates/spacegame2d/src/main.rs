@@ -2,13 +2,11 @@
 //!
 //! Sets up a `wgpu` + `winit` window, runs the fixed-timestep frame loop
 //! driving the [`spacegame2d_simulation`] crate, and renders the arena ring,
-//! the player ship, and the drone fleet. Player input is handled by
-//! [`input::InputController`]; autopilot destinations are set by right-click.
+//! and renders the autopilot drone fleet. Destinations are set by right-click.
 //!
 //! See the [`spacegame2d_simulation`] crate for the simulation model itself.
 
 mod geometry;
-mod input;
 
 use std::{
     sync::Arc,
@@ -17,19 +15,15 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
-use input::{ControlKey, InputController};
 use spacegame2d_simulation::{
-    autopilot::{Autopilot, AutopilotConfig},
     fleet::Fleet,
-    flight_control::ArrivalController,
-    simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation},
+    simulation::{SIMULATION_HZ, ShipState, Simulation},
 };
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
+    event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -275,8 +269,8 @@ impl Renderer {
     fn render(
         &mut self,
         drones: &[spacegame2d_simulation::fleet::Unit],
-        ship: Option<&ShipState>,
-        marker: Option<Vec2>,
+        _ship: Option<&ShipState>,
+        _marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -324,20 +318,6 @@ impl Renderer {
                 pass.set_bind_group(0, &self.scene_bind_groups[index + 1], &[]);
                 pass.draw(0..24, 0..1);
             }
-            if let Some(ship) = ship {
-                self.queue.write_buffer(
-                    &self.scene_buffers[0],
-                    0,
-                    bytemuck::bytes_of(&scene_uniform(
-                        self.config.width,
-                        self.config.height,
-                        ship,
-                        marker,
-                    )),
-                );
-                pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
-                pass.draw(0..30, 0..1);
-            }
             self.queue.write_buffer(
                 &self.ring_scene_buffer,
                 0,
@@ -362,8 +342,6 @@ struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
     drones: Fleet,
-    input: InputController,
-    autopilot: Autopilot,
     pending_destination: Option<Vec2>,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
@@ -374,25 +352,10 @@ impl Default for App {
             renderer: None,
             simulation: Simulation::default(),
             drones: Fleet::new(),
-            input: InputController::default(),
-            autopilot: Autopilot::new(
-                Box::new(ArrivalController::default()),
-                AutopilotConfig::default(),
-            ),
             pending_destination: None,
             cursor_position: None,
             next_tick: Instant::now(),
         }
-    }
-}
-
-fn map_key(key: PhysicalKey) -> Option<ControlKey> {
-    match key {
-        PhysicalKey::Code(KeyCode::KeyW) => Some(ControlKey::Thrust),
-        PhysicalKey::Code(KeyCode::KeyA) => Some(ControlKey::TurnLeft),
-        PhysicalKey::Code(KeyCode::KeyD) => Some(ControlKey::TurnRight),
-        PhysicalKey::Code(KeyCode::KeyR) => Some(ControlKey::Reset),
-        _ => None,
     }
 }
 
@@ -435,26 +398,10 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         while now >= self.next_tick {
-            if let Some(command) = self.input.take_command() {
-                self.simulation.apply_command(command);
-                self.autopilot.cancel_and_clear_destination();
-                self.drones.reset();
-                self.pending_destination = None;
-            } else if let Some(destination) = self.pending_destination.take() {
-                self.input.suppress_held_movement_until_release();
-                self.autopilot.set_destination(destination);
+            if let Some(destination) = self.pending_destination.take() {
                 self.drones.set_destination(destination);
             }
-            let controls = if self.autopilot.is_active() {
-                if let Some(ship) = self.simulation.ship() {
-                    self.autopilot.controls_for_tick(ship, &[])
-                } else {
-                    ShipInput::default()
-                }
-            } else {
-                self.input.controls()
-            };
-            self.simulation.step(controls);
+            self.simulation.step();
             self.drones.step();
             self.drones
                 .cull(spacegame2d_simulation::simulation::WORLD_RADIUS_M);
@@ -473,7 +420,7 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Focused(false) => self.input.clear_for_focus_loss(),
+            WindowEvent::Focused(false) => {}
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
@@ -497,33 +444,9 @@ impl ApplicationHandler for App {
                     ));
                 }
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key,
-                        state,
-                        repeat,
-                        ..
-                    },
-                ..
-            } => {
-                if let Some(key) = map_key(physical_key) {
-                    match state {
-                        ElementState::Pressed if key != ControlKey::Reset || !repeat => {
-                            self.input.press(key)
-                        }
-                        ElementState::Released => self.input.release(key),
-                        _ => {}
-                    }
-                }
-            }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render(
-                        self.drones.units(),
-                        self.simulation.ship(),
-                        self.autopilot.destination(),
-                    ) {
+                    match renderer.render(self.drones.units(), None, None) {
                         Ok(()) => {}
                         Err(
                             wgpu::CurrentSurfaceTexture::Lost
