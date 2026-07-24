@@ -137,13 +137,13 @@ mod tests {
         let mut simulation = crate::simulation::Simulation::default();
         for _ in 0..3600 {
             let input = controller.desired_input(FlightObservation::from_ship(
-                simulation.ship(),
+                simulation.ship().unwrap(),
                 destination,
                 &[],
             ));
             simulation.step(input);
         }
-        let ship = simulation.ship();
+        let ship = simulation.ship().unwrap();
         assert!(
             ship.position.distance(destination) <= 0.5,
             "position={:?}",

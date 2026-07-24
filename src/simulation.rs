@@ -10,6 +10,7 @@ pub const MOMENT_OF_INERTIA_KG_M2: f32 = 0.25;
 pub const ANGULAR_THRUST_NEWTON_METERS: f32 = 2.0;
 pub const MAX_ANGULAR_SPEED_RADIANS_PER_SECOND: f32 = 3.0;
 pub const ANGULAR_DAMPING_PER_SECOND: f32 = 2.5;
+pub const WORLD_RADIUS_M: f32 = 100.0;
 const VELOCITY_EPSILON: f32 = 0.0001;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,7 +22,9 @@ pub struct ShipInput {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimulationCommand {
+    #[allow(dead_code)]
     ResetShip,
+    ResetSimulation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,10 +46,19 @@ impl Default for ShipState {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Simulation {
     tick: u64,
-    ship: ShipState,
+    ship: Option<ShipState>,
+}
+
+impl Default for Simulation {
+    fn default() -> Self {
+        Self {
+            tick: 0,
+            ship: Some(ShipState::default()),
+        }
+    }
 }
 
 impl Simulation {
@@ -54,19 +66,40 @@ impl Simulation {
     pub fn tick(&self) -> u64 {
         self.tick
     }
-    pub fn ship(&self) -> &ShipState {
-        &self.ship
+    pub fn ship(&self) -> Option<&ShipState> {
+        self.ship.as_ref()
     }
     pub fn apply_command(&mut self, command: SimulationCommand) {
-        if matches!(command, SimulationCommand::ResetShip) {
-            self.ship = ShipState::default();
+        match command {
+            SimulationCommand::ResetShip => {
+                self.ship = Some(ShipState::default());
+            }
+            SimulationCommand::ResetSimulation => {
+                self.ship = Some(ShipState::default());
+                self.tick = 0;
+            }
         }
     }
 
     pub fn step(&mut self, input: ShipInput) {
-        step_ship(&mut self.ship, input);
+        if let Some(ref mut ship) = self.ship {
+            step_ship(ship, input);
+            if is_out_of_bounds(ship.position) {
+                let pos = ship.position;
+                log::info!(
+                    "ship destroyed: out of bounds at ({:.1}, {:.1})",
+                    pos.x,
+                    pos.y
+                );
+                self.ship = None;
+            }
+        }
         self.tick = self.tick.saturating_add(1);
     }
+}
+
+pub fn is_out_of_bounds(position: Vec2) -> bool {
+    position.length() > WORLD_RADIUS_M
 }
 
 pub fn step_ship(ship: &mut ShipState, input: ShipInput) {
@@ -122,17 +155,17 @@ mod tests {
     fn starts_stationary() {
         let sim = Simulation::default();
         assert_eq!(sim.tick(), 0);
-        assert_eq!(*sim.ship(), ShipState::default());
+        assert_eq!(*sim.ship().unwrap(), ShipState::default());
     }
     #[test]
     fn empty_step_advances_tick_without_motion() {
         let mut sim = Simulation::default();
         sim.step(ShipInput::default());
         assert_eq!(sim.tick(), 1);
-        assert_eq!(*sim.ship(), ShipState::default());
+        assert_eq!(*sim.ship().unwrap(), ShipState::default());
     }
     #[test]
-    fn reset_restores_ship_without_rewinding_tick() {
+    fn reset_ship_restores_ship_without_rewinding_tick() {
         let mut sim = run(
             Simulation::default(),
             ShipInput {
@@ -144,7 +177,35 @@ mod tests {
         let tick = sim.tick();
         sim.apply_command(SimulationCommand::ResetShip);
         assert_eq!(sim.tick(), tick);
-        assert_eq!(*sim.ship(), ShipState::default());
+        assert_eq!(*sim.ship().unwrap(), ShipState::default());
+    }
+    #[test]
+    fn reset_simulation_rewinds_tick_and_respawns_ship() {
+        let mut sim = run(
+            Simulation::default(),
+            ShipInput {
+                thrust: true,
+                ..Default::default()
+            },
+            20,
+        );
+        sim.apply_command(SimulationCommand::ResetSimulation);
+        assert_eq!(sim.tick(), 0);
+        assert_eq!(*sim.ship().unwrap(), ShipState::default());
+    }
+    #[test]
+    fn reset_after_removal_respawns_ship_and_rewinds_tick() {
+        let mut sim = Simulation::default();
+        sim.ship = Some(ShipState {
+            position: Vec2::new(WORLD_RADIUS_M + 0.01, 0.0),
+            ..Default::default()
+        });
+        sim.step(ShipInput::default());
+        assert!(sim.ship().is_none());
+        assert_eq!(sim.tick(), 1);
+        sim.apply_command(SimulationCommand::ResetSimulation);
+        assert_eq!(sim.tick(), 0);
+        assert_eq!(*sim.ship().unwrap(), ShipState::default());
     }
     #[test]
     fn forward_thrust_accelerates_along_heading() {
@@ -156,8 +217,8 @@ mod tests {
             },
             1,
         );
-        assert!(sim.ship().velocity.y > 0.0);
-        assert!(sim.ship().position.y > 0.0);
+        assert!(sim.ship().unwrap().velocity.y > 0.0);
+        assert!(sim.ship().unwrap().position.y > 0.0);
     }
     #[test]
     fn release_thrust_damps_drift() {
@@ -169,10 +230,10 @@ mod tests {
             },
             30,
         );
-        let speed = sim.ship().velocity.length();
+        let speed = sim.ship().unwrap().velocity.length();
         let sim = run(sim, ShipInput::default(), 1);
-        assert!(sim.ship().velocity.length() < speed);
-        assert!(sim.ship().velocity.length() > 0.0);
+        assert!(sim.ship().unwrap().velocity.length() < speed);
+        assert!(sim.ship().unwrap().velocity.length() > 0.0);
     }
     #[test]
     fn total_velocity_is_capped() {
@@ -184,7 +245,7 @@ mod tests {
             },
             500,
         );
-        assert!(sim.ship().velocity.length() <= MAX_SPEED_METERS_PER_SECOND + 0.0001);
+        assert!(sim.ship().unwrap().velocity.length() <= MAX_SPEED_METERS_PER_SECOND + 0.0001);
     }
     #[test]
     fn left_applies_counterclockwise_angular_thrust() {
@@ -196,8 +257,8 @@ mod tests {
             },
             1,
         );
-        assert!(sim.ship().angular_velocity_radians_per_second > 0.0);
-        assert!(sim.ship().heading_radians > 0.0);
+        assert!(sim.ship().unwrap().angular_velocity_radians_per_second > 0.0);
+        assert!(sim.ship().unwrap().heading_radians > 0.0);
     }
     #[test]
     fn right_applies_clockwise_angular_thrust() {
@@ -209,7 +270,7 @@ mod tests {
             },
             1,
         );
-        assert!(sim.ship().heading_radians < 0.0);
+        assert!(sim.ship().unwrap().heading_radians < 0.0);
     }
     #[test]
     fn opposed_turn_inputs_cancel_torque() {
@@ -222,7 +283,7 @@ mod tests {
             },
             10,
         );
-        assert_eq!(sim.ship().angular_velocity_radians_per_second, 0.0);
+        assert_eq!(sim.ship().unwrap().angular_velocity_radians_per_second, 0.0);
     }
     #[test]
     fn angular_velocity_is_capped() {
@@ -235,7 +296,8 @@ mod tests {
             500,
         );
         assert!(
-            sim.ship().angular_velocity_radians_per_second <= MAX_ANGULAR_SPEED_RADIANS_PER_SECOND
+            sim.ship().unwrap().angular_velocity_radians_per_second
+                <= MAX_ANGULAR_SPEED_RADIANS_PER_SECOND
         );
     }
     #[test]
@@ -249,8 +311,8 @@ mod tests {
             },
             60,
         );
-        assert!(sim.ship().position.x.abs() > 0.01);
-        assert!(sim.ship().position.y > 0.0);
+        assert!(sim.ship().unwrap().position.x.abs() > 0.01);
+        assert!(sim.ship().unwrap().position.y > 0.0);
     }
     #[test]
     fn identical_tick_inputs_are_deterministic() {
@@ -265,5 +327,34 @@ mod tests {
             b.step(input);
         }
         assert_eq!(a, b);
+    }
+    #[test]
+    fn exact_boundary_is_in_bounds() {
+        assert!(!is_out_of_bounds(Vec2::new(WORLD_RADIUS_M, 0.0)));
+        assert!(!is_out_of_bounds(Vec2::new(0.0, WORLD_RADIUS_M)));
+    }
+    #[test]
+    fn epsilon_beyond_boundary_is_out_of_bounds() {
+        assert!(is_out_of_bounds(Vec2::new(WORLD_RADIUS_M + 0.01, 0.0)));
+    }
+    #[test]
+    fn ship_at_exact_boundary_survives_tick() {
+        let mut sim = Simulation::default();
+        sim.ship = Some(ShipState {
+            position: Vec2::new(WORLD_RADIUS_M, 0.0),
+            ..Default::default()
+        });
+        sim.step(ShipInput::default());
+        assert!(sim.ship().is_some());
+    }
+    #[test]
+    fn ship_epsilon_beyond_boundary_is_removed() {
+        let mut sim = Simulation::default();
+        sim.ship = Some(ShipState {
+            position: Vec2::new(WORLD_RADIUS_M + 0.01, 0.0),
+            ..Default::default()
+        });
+        sim.step(ShipInput::default());
+        assert!(sim.ship().is_none());
     }
 }
