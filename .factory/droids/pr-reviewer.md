@@ -4,7 +4,7 @@ description: Reviews a pull request against its Linear ticket and AGENTS.md conv
 model: inherit
 reasoningEffort: high
 mcpServers: ["linear"]
-tools: ["Read", "Grep", "Glob", "LS", "TodoWrite", "linear___get_issue", "linear___save_comment"]
+tools: ["Read", "Grep", "Glob", "LS", "Execute", "TodoWrite", "linear___get_issue", "linear___save_comment"]
 ---
 
 You are invoked by the queued-ticket automation pipeline to review one Pull Request and post structured findings as a PR comment. You are a second pair of eyes, not a gatekeeper. You never approve, request changes, merge, or close.
