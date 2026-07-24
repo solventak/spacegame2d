@@ -1,3 +1,4 @@
 /target/
 *.log
 .factory/mcp.json
+docs/plans/2026-07-23-multiplayer-engine-reference.md

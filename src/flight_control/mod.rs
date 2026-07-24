@@ -9,6 +9,7 @@ pub mod arrival;
 pub use arrival::ArrivalController;
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct NeighborObservation {
     pub position: Vec2,
     pub velocity: Vec2,
@@ -21,11 +22,12 @@ pub struct FlightObservation<'a> {
     pub heading_radians: f32,
     pub angular_velocity_radians_per_second: f32,
     pub destination: Vec2,
-    pub neighbors: &'static [NeighborObservation],
+    #[allow(dead_code)]
+    pub neighbors: &'a [NeighborObservation],
 }
 
-impl FlightObservation<'_> {
-    pub fn from_ship<'a>(
+impl<'a> FlightObservation<'a> {
+    pub fn from_ship(
         ship: &ShipState,
         destination: Vec2,
         neighbors: &'a [NeighborObservation],
@@ -79,7 +81,11 @@ mod tests {
         assert_eq!(controller.name(), "always-thrust");
         assert!(
             controller
-                .desired_input(FlightObservation::from_ship(&ShipState::default(), Vec2::X))
+                .desired_input(FlightObservation::from_ship(
+                    &ShipState::default(),
+                    Vec2::X,
+                    &[]
+                ))
                 .thrust
         );
     }

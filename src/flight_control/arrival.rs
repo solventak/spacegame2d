@@ -13,7 +13,9 @@ pub struct ArrivalControllerConfig {
     pub thrust_angle_radians: f32,
     pub angular_deadband: f32,
     pub arrival_radius_meters: f32,
+    #[allow(dead_code)]
     pub collision_radius_meters: f32,
+    #[allow(dead_code)]
     pub collision_strength: f32,
 }
 impl Default for ArrivalControllerConfig {
@@ -94,6 +96,7 @@ mod tests {
         let i = c.desired_input(FlightObservation::from_ship(
             &ShipState::default(),
             Vec2::Y * 10.0,
+            &[],
         ));
         assert_eq!(
             i,
@@ -111,7 +114,7 @@ mod tests {
             velocity: Vec2::Y * 4.0,
             ..Default::default()
         };
-        let i = c.desired_input(FlightObservation::from_ship(&s, Vec2::Y));
+        let i = c.desired_input(FlightObservation::from_ship(&s, Vec2::Y, &[]));
         assert!(!i.thrust);
         assert!(i.turn_left || i.turn_right);
     }
@@ -123,7 +126,7 @@ mod tests {
             velocity: Vec2::X * 3.0,
             ..Default::default()
         };
-        let i = c.desired_input(FlightObservation::from_ship(&s, Vec2::Y * 4.0));
+        let i = c.desired_input(FlightObservation::from_ship(&s, Vec2::Y * 4.0, &[]));
         assert!(i.turn_left || i.turn_right);
         assert!(!i.thrust);
     }
@@ -133,8 +136,11 @@ mod tests {
         let destination = Vec2::new(5.0, 4.0);
         let mut simulation = crate::simulation::Simulation::default();
         for _ in 0..3600 {
-            let input = controller
-                .desired_input(FlightObservation::from_ship(simulation.ship(), destination));
+            let input = controller.desired_input(FlightObservation::from_ship(
+                simulation.ship(),
+                destination,
+                &[],
+            ));
             simulation.step(input);
         }
         let ship = simulation.ship();
@@ -156,6 +162,7 @@ mod tests {
         let i = c.desired_input(FlightObservation::from_ship(
             &ShipState::default(),
             Vec2::ZERO,
+            &[],
         ));
         assert_eq!(i, ShipInput::default());
     }
