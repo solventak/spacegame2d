@@ -383,4 +383,67 @@ mod tests {
         sim.step(ShipInput::default());
         assert!(sim.ship().is_none());
     }
+
+    // --- logging emission ---------------------------------------------------
+
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex, Once, OnceLock};
+
+    struct CaptureSink(Arc<Mutex<Vec<u8>>>);
+    impl Write for CaptureSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_buffer() -> &'static Arc<Mutex<Vec<u8>>> {
+        static CAPTURE: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+        CAPTURE.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+    }
+
+    fn ensure_env_logger() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let sink = Box::new(CaptureSink(capture_buffer().clone()));
+            env_logger::Builder::new()
+                .filter_level(log::LevelFilter::Info)
+                .target(env_logger::Target::Pipe(sink))
+                .try_init()
+                .ok();
+        });
+    }
+
+    #[test]
+    fn ship_destroyed_info_log_actually_emits() {
+        ensure_env_logger();
+        // Use distinctive coordinates so concurrent out-of-bounds tests logging
+        // into the shared capture buffer cannot satisfy this assertion for us.
+        let marker_pos = Vec2::new(WORLD_RADIUS_M + 5.0, 3.0);
+        let expected = format!(
+            "out of bounds at ({:.1}, {:.1})",
+            marker_pos.x, marker_pos.y
+        );
+
+        {
+            let mut buf = capture_buffer().lock().unwrap();
+            buf.clear();
+        }
+        let mut sim = Simulation::default();
+        sim.ship = Some(ShipState {
+            position: marker_pos,
+            ..Default::default()
+        });
+        sim.step(ShipInput::default());
+        log::logger().flush();
+
+        let recorded = String::from_utf8(capture_buffer().lock().unwrap().clone()).unwrap();
+        assert!(
+            recorded.contains(&expected),
+            "expected info log to emit {expected:?}, got: {recorded}"
+        );
+    }
 }
