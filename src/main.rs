@@ -13,7 +13,9 @@ use bytemuck::{Pod, Zeroable};
 use flight_control::{ArrivalController, NeighborObservation};
 use glam::Vec2;
 use input::{ControlKey, InputController};
-use simulation::{SIMULATION_HZ, ShipState, Simulation, step_ship};
+use simulation::{
+    SIMULATION_HZ, ShipInput, ShipState, Simulation, WORLD_RADIUS_M, is_out_of_bounds, step_ship,
+};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -23,7 +25,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const VIEW_HEIGHT_METERS: f32 = 20.0;
+const VIEW_HEIGHT_METERS: f32 = 220.0;
 const DRONE_COUNT: usize = 30;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
@@ -120,6 +122,49 @@ fn notched_ship_vertices() -> Vec<Vertex> {
     vertices
 }
 
+fn ring_vertices() -> Vec<Vertex> {
+    let color = [0.0, 0.0, 0.15, 1.0];
+    let segments = 128;
+    let inner_radius = WORLD_RADIUS_M - 0.5;
+    let outer_radius = WORLD_RADIUS_M + 0.5;
+    let mut vertices = Vec::with_capacity(segments * 6);
+    for i in 0..segments {
+        let a0 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let a1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+        let c0 = Vec2::new(a0.cos(), a0.sin());
+        let c1 = Vec2::new(a1.cos(), a1.sin());
+        let inner0 = c0 * inner_radius;
+        let outer0 = c0 * outer_radius;
+        let outer1 = c1 * outer_radius;
+        let inner1 = c1 * inner_radius;
+        vertices.push(Vertex {
+            position: [inner0.x, inner0.y],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [outer0.x, outer0.y],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [outer1.x, outer1.y],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [inner0.x, inner0.y],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [outer1.x, outer1.y],
+            color,
+        });
+        vertices.push(Vertex {
+            position: [inner1.x, inner1.y],
+            color,
+        });
+    }
+    vertices
+}
+
 struct Renderer {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -128,6 +173,10 @@ struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    ring_vertex_buffer: wgpu::Buffer,
+    ring_vertex_count: u32,
+    ring_scene_buffer: wgpu::Buffer,
+    ring_bind_group: wgpu::BindGroup,
     scene_buffers: Vec<wgpu::Buffer>,
     scene_bind_groups: Vec<wgpu::BindGroup>,
 }
@@ -246,6 +295,31 @@ impl Renderer {
             contents: bytemuck::cast_slice(&notched_ship_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let ring_vertices = ring_vertices();
+        let ring_vertex_count = ring_vertices.len() as u32;
+        let ring_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ring vertices"),
+            contents: bytemuck::cast_slice(&ring_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ring_scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ring scene uniform"),
+            contents: bytemuck::bytes_of(&scene_uniform(
+                config.width,
+                config.height,
+                &ShipState::default(),
+                None,
+            )),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let ring_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ring bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ring_scene_buffer.as_entire_binding(),
+            }],
+        });
         let scene_uniforms = std::iter::once(ShipState::default())
             .chain(drones.iter().copied())
             .map(|ship| {
@@ -282,6 +356,10 @@ impl Renderer {
             config,
             pipeline,
             vertex_buffer,
+            ring_vertex_buffer,
+            ring_vertex_count,
+            ring_scene_buffer,
+            ring_bind_group,
             scene_buffers: scene_uniforms,
             scene_bind_groups,
         })
@@ -297,7 +375,7 @@ impl Renderer {
     fn render(
         &mut self,
         drones: &[ShipState],
-        ship: &ShipState,
+        ship: Option<&ShipState>,
         marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
         let frame = match self.surface.get_current_texture() {
@@ -346,18 +424,33 @@ impl Renderer {
                 pass.set_bind_group(0, &self.scene_bind_groups[index + 1], &[]);
                 pass.draw(0..24, 0..1);
             }
+            if let Some(ship) = ship {
+                self.queue.write_buffer(
+                    &self.scene_buffers[0],
+                    0,
+                    bytemuck::bytes_of(&scene_uniform(
+                        self.config.width,
+                        self.config.height,
+                        ship,
+                        marker,
+                    )),
+                );
+                pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
+                pass.draw(0..30, 0..1);
+            }
             self.queue.write_buffer(
-                &self.scene_buffers[0],
+                &self.ring_scene_buffer,
                 0,
                 bytemuck::bytes_of(&scene_uniform(
                     self.config.width,
                     self.config.height,
-                    ship,
-                    marker,
+                    &ShipState::default(),
+                    None,
                 )),
             );
-            pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
-            pass.draw(0..30, 0..1);
+            pass.set_vertex_buffer(0, self.ring_vertex_buffer.slice(..));
+            pass.set_bind_group(0, &self.ring_bind_group, &[]);
+            pass.draw(0..self.ring_vertex_count, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -454,9 +547,7 @@ impl ApplicationHandler for App {
             if let Some(command) = self.input.take_command() {
                 self.simulation.apply_command(command);
                 self.autopilot.cancel_and_clear_destination();
-                for drone in &mut self.drones {
-                    *drone = ShipState::default();
-                }
+                self.drones = initial_drone_positions();
                 for autopilot in &mut self.drone_autopilots {
                     autopilot.cancel_and_clear_destination();
                 }
@@ -469,8 +560,11 @@ impl ApplicationHandler for App {
                 }
             }
             let controls = if self.autopilot.is_active() {
-                self.autopilot
-                    .controls_for_tick(self.simulation.ship(), &[])
+                if let Some(ship) = self.simulation.ship() {
+                    self.autopilot.controls_for_tick(ship, &[])
+                } else {
+                    ShipInput::default()
+                }
             } else {
                 self.input.controls()
             };
@@ -496,6 +590,32 @@ impl ApplicationHandler for App {
             for (drone, controls) in self.drones.iter_mut().zip(drone_controls) {
                 step_ship(drone, controls);
             }
+            let alive: Vec<bool> = self
+                .drones
+                .iter()
+                .map(|d| !is_out_of_bounds(d.position))
+                .collect();
+            for (index, drone) in self.drones.iter().enumerate() {
+                if !alive[index] {
+                    log::info!(
+                        "drone destroyed: out of bounds at ({:.1}, {:.1})",
+                        drone.position.x,
+                        drone.position.y
+                    );
+                }
+            }
+            let mut i = 0;
+            self.drones.retain(|_| {
+                let keep = alive[i];
+                i += 1;
+                keep
+            });
+            let mut i = 0;
+            self.drone_autopilots.retain(|_| {
+                let keep = alive[i];
+                i += 1;
+                keep
+            });
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -607,13 +727,19 @@ mod tests {
     #[test]
     fn scene_uniform_uses_fixed_world_scale() {
         let u = scene_uniform(1000, 1000, &ShipState::default(), None);
-        assert!((u.viewport[0] - 0.1).abs() < 0.0001);
-        assert!((u.viewport[1] - 0.1).abs() < 0.0001);
+        let expected = 1.0 / 110.0;
+        assert!((u.viewport[0] - expected).abs() < 0.0001);
+        assert!((u.viewport[1] - expected).abs() < 0.0001);
     }
     #[test]
     fn ship_mesh_preserves_rear_notch() {
         let vertices = notched_ship_vertices();
         assert_eq!(vertices.len(), 30);
         assert!(vertices[12].position[1].abs() < vertices[0].position[1].abs());
+    }
+    #[test]
+    fn ring_mesh_has_expected_vertex_count() {
+        let vertices = ring_vertices();
+        assert_eq!(vertices.len(), 128 * 6);
     }
 }

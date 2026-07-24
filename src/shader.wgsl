@@ -28,9 +28,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         local.x * sine + local.y * cosine,
     );
     let is_marker = input.color.r > 0.9 && input.color.g < 0.1;
-    let world = select(rotated + scene.ship.xy, input.position + scene.marker.xy, is_marker);
+    let is_ring = input.color.b > 0.1 && input.color.r < 0.01 && input.color.g < 0.01;
+    let ship_world = rotated + scene.ship.xy;
+    let marker_world = input.position + scene.marker.xy;
+    let world = select(select(ship_world, marker_world, is_marker), input.position, is_ring);
     output.clip_position = vec4<f32>(world * scene.viewport.xy, 0.0, 1.0);
-    output.color = vec4<f32>(input.color.rgb, select(1.0, scene.marker.z, is_marker));
+    output.color = vec4<f32>(
+        input.color.rgb,
+        select(select(1.0, scene.marker.z, is_marker), 1.0, is_ring),
+    );
     return output;
 }
 
