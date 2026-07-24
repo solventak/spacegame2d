@@ -386,7 +386,7 @@ mod tests {
 
     // --- logging emission ---------------------------------------------------
 
-    use std::io::Write as _;
+    use std::io::Write;
     use std::sync::{Arc, Mutex, Once, OnceLock};
 
     struct CaptureSink(Arc<Mutex<Vec<u8>>>);
