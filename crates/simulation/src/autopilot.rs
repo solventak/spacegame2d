@@ -2,12 +2,19 @@ use crate::flight_control::{FlightController, FlightObservation, NeighborObserva
 use crate::simulation::{ShipInput, ShipState};
 use glam::Vec2;
 
+/// Default radius around the destination within which the autopilot considers
+/// itself "arrived".
 pub const DEFAULT_ARRIVAL_RADIUS_METERS: f32 = 0.30;
+/// Default speed threshold below which a ship inside the arrival radius is
+/// considered stopped.
 pub const DEFAULT_STOPPED_SPEED_METERS_PER_SECOND: f32 = 0.08;
 
+/// Tunable parameters for an [`Autopilot`]'s arrival behavior.
 #[derive(Clone, Copy, Debug)]
 pub struct AutopilotConfig {
+    /// Distance from the destination at which arrival is declared.
     pub arrival_radius_meters: f32,
+    /// Speed at or below which a ship inside the arrival radius is stopped.
     pub stopped_speed_meters_per_second: f32,
 }
 impl Default for AutopilotConfig {
@@ -18,6 +25,15 @@ impl Default for AutopilotConfig {
         }
     }
 }
+/// High-level destination targeting that delegates control output to a
+/// swappable [`FlightController`].
+///
+/// The autopilot owns an optional destination and an active flag. Each tick it
+/// asks its controller for the [`ShipInput`] required to reach the destination,
+/// and deactivates itself once the ship has arrived (within
+/// [`AutopilotConfig::arrival_radius_meters`] and below
+/// [`AutopilotConfig::stopped_speed_meters_per_second`]) with no further input
+/// demanded by the controller.
 pub struct Autopilot {
     controller: Box<dyn FlightController>,
     config: AutopilotConfig,

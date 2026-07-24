@@ -4,6 +4,7 @@ use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::flight_control::{ArrivalController, NeighborObservation};
 use crate::simulation::{ShipState, is_out_of_bounds, step_ship};
 
+/// Number of drones spawned by [`Fleet::new`] and [`Fleet::reset`].
 pub const DRONE_COUNT: usize = 30;
 
 /// One drone: its physical state paired with the autopilot driving it.
