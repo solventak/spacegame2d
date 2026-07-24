@@ -17,7 +17,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use spacegame2d_simulation::{
-    fleet::Fleet,
+    command::Unit,
     simulation::{SIMULATION_HZ, ShipState, Simulation},
 };
 use wgpu::util::DeviceExt;
@@ -75,10 +75,7 @@ struct Renderer {
 }
 
 impl Renderer {
-    async fn new(
-        window: Arc<Window>,
-        drones: &[spacegame2d_simulation::fleet::Unit],
-    ) -> Result<Self, String> {
+    async fn new(window: Arc<Window>, units: &[Unit]) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -216,8 +213,9 @@ impl Renderer {
                 resource: ring_scene_buffer.as_entire_binding(),
             }],
         });
-        let scene_uniforms = std::iter::once(ShipState::default())
-            .chain(drones.iter().map(|u| u.state))
+        let scene_uniforms = units
+            .iter()
+            .map(|unit| unit.state)
             .map(|ship| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scene uniform"),
@@ -270,7 +268,7 @@ impl Renderer {
     }
     fn render(
         &mut self,
-        drones: &[spacegame2d_simulation::fleet::Unit],
+        units: &[Unit],
         _ship: Option<&ShipState>,
         _marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
@@ -306,9 +304,9 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            for (index, unit) in drones.iter().enumerate() {
+            for (index, unit) in units.iter().enumerate() {
                 self.queue.write_buffer(
-                    &self.scene_buffers[index + 1],
+                    &self.scene_buffers[index],
                     0,
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
@@ -317,7 +315,7 @@ impl Renderer {
                         None,
                     )),
                 );
-                pass.set_bind_group(0, &self.scene_bind_groups[index + 1], &[]);
+                pass.set_bind_group(0, &self.scene_bind_groups[index], &[]);
                 pass.draw(0..24, 0..1);
             }
             self.queue.write_buffer(
@@ -343,7 +341,6 @@ impl Renderer {
 struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
-    drones: Fleet,
     pending_destination: Option<Vec2>,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
@@ -356,7 +353,6 @@ impl Default for App {
         Self {
             renderer: None,
             simulation: Simulation::default(),
-            drones: Fleet::new(),
             pending_destination: None,
             cursor_position: None,
             next_tick: Instant::now(),
@@ -416,7 +412,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match pollster::block_on(Renderer::new(window.clone(), self.drones.units())) {
+        match pollster::block_on(Renderer::new(window.clone(), &self.simulation.world.units)) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
@@ -449,13 +445,7 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         while now >= self.next_tick {
             network::apply_due_commands(&mut self.simulation, &mut self.scheduled);
-            if let Some(destination) = self.pending_destination.take() {
-                self.drones.set_destination(destination);
-            }
             self.simulation.step();
-            self.drones.step();
-            self.drones
-                .cull(spacegame2d_simulation::simulation::WORLD_RADIUS_M);
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -536,7 +526,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render(self.drones.units(), None, None) {
+                    match renderer.render(&self.simulation.world.units, None, None) {
                         Ok(()) => {}
                         Err(
                             wgpu::CurrentSurfaceTexture::Lost
