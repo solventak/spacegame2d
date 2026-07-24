@@ -469,7 +469,9 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let _logging =
+        spacegame2d_logging::init("spacegame2d", "info").expect("failed to initialize logging");
+    tracing::info!(event = "client_starting", "spacegame2d starting");
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut App::default())

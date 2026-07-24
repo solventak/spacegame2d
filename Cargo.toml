@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/spacegame2d", "crates/simulation", "crates/protocol", "crates/server"]
+members = [
+    "crates/spacegame2d",
+    "crates/simulation",
+    "crates/protocol",
+    "crates/server",
+    "crates/logging",
+]
 resolver = "2"
 
 [profile.dev.package."*"]
