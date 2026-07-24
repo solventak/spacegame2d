@@ -1,4 +1,7 @@
+use crate::command::{CommandScheduler, UnitId, World, command_from_data, valid_authoritative};
+use crate::flight_control::NeighborObservation;
 use glam::Vec2;
+use spacegame2d_protocol::AuthoritativeCommand;
 
 /// Simulation tick rate in hertz. The integrator advances in fixed
 /// [`FIXED_DT_SECONDS`] steps regardless of wall-clock frame timing.
@@ -76,10 +79,11 @@ impl Default for ShipState {
 }
 
 /// Fixed-timestep driver for the autopilot drone world.
-#[derive(Clone, Debug, PartialEq)]
 pub struct Simulation {
     tick: u64,
     world_radius: f32,
+    pub world: World,
+    pub commands: CommandScheduler,
 }
 
 impl Default for Simulation {
@@ -87,6 +91,8 @@ impl Default for Simulation {
         Self {
             tick: 0,
             world_radius: WORLD_RADIUS_M,
+            world: World::demo(),
+            commands: CommandScheduler::default(),
         }
     }
 }
@@ -106,12 +112,68 @@ impl Simulation {
     pub fn world_radius(&self) -> f32 {
         self.world_radius
     }
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+    pub fn schedule_authoritative(&mut self, cmd: &AuthoritativeCommand) -> bool {
+        if !valid_authoritative(&self.world, cmd) {
+            return false;
+        }
+        let Some(command) = command_from_data(&cmd.command) else {
+            return false;
+        };
+        self.commands.schedule(command);
+        true
+    }
 
     /// Advance one deterministic tick. The client demo's drones are stepped by
     /// [`crate::fleet::Fleet`]; this simulation contains no player entity.
-    pub fn step(&mut self) {
+    pub fn step(&mut self) -> Vec<SimulationEvent> {
+        self.commands.execute_pending(&mut self.world);
+        let observations: Vec<NeighborObservation> = self
+            .world
+            .units
+            .iter()
+            .map(|u| NeighborObservation {
+                position: u.state.position,
+                velocity: u.state.velocity,
+            })
+            .collect();
+        for (i, unit) in self.world.units.iter_mut().enumerate() {
+            let neighbors = observations
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, n)| *n)
+                .collect::<Vec<_>>();
+            let input = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
+            step_ship(&mut unit.state, input);
+        }
+        let mut events = Vec::new();
+        self.world.units.retain(|u| {
+            if is_out_of_bounds(u.state.position, self.world_radius) {
+                events.push(SimulationEvent::BoundaryCrossed {
+                    tick: self.tick,
+                    unit_id: u.id,
+                    position: u.state.position,
+                });
+                false
+            } else {
+                true
+            }
+        });
         self.tick = self.tick.saturating_add(1);
+        events
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SimulationEvent {
+    BoundaryCrossed {
+        tick: u64,
+        unit_id: UnitId,
+        position: Vec2,
+    },
 }
 
 /// Returns `true` when `position` lies strictly outside a circle of

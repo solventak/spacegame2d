@@ -20,6 +20,10 @@
 //! per-tick via [`FIXED_DT_SECONDS`][simulation::FIXED_DT_SECONDS].
 
 pub mod autopilot;
+pub mod command;
 pub mod fleet;
 pub mod flight_control;
 pub mod simulation;
+
+pub use command::{Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, World};
+pub use simulation::SimulationEvent;
