@@ -1,2 +1,3 @@
 /target/
 *.log
+.factory/mcp.json

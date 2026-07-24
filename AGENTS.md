@@ -57,14 +57,16 @@ The implementer must run the **test gate** locally before opening a PR. If any s
 
 ## Ticketing and plans
 
-- Active work is tracked in Linear (the configured workspace). Tickets use this template:
+- Active work is tracked in Linear (the configured workspace). Linear is for tracking only — state, assignment, priorities, requirements, acceptance criteria. Implementation plans live in the repo.
+
+- Tickets use this template:
 
   ```
   ## Requirements
   - ...
 
   ## Plan
-  - ...
+  See docs/plans/<YYYY-MM-DD>-<TICKET-ID>-<slug>.md
 
   ## Acceptance Criteria
   - [ ] ...
@@ -76,10 +78,15 @@ The implementer must run the **test gate** locally before opening a PR. If any s
   - (optional)
   ```
 
-- If a ticket is too large for a single PR or spans multi-day work, mirror it into a dated plan doc at `docs/plans/<YYYY-MM-DD>-<slug>.md` and reference the path in the ticket's "Plan" section. Existing examples:
+- The `## Plan` section in a Linear ticket is a one-line pointer to a plan file in `docs/plans/`. The plan file is the canonical store for the implementation plan, files touched, API surface, and risk level. The `linear-planner` droid writes plan files; the `linear-implementer` droid reads them.
+
+- Plan file naming: `docs/plans/<YYYY-MM-DD>-<TICKET-ID>-<slug>.md`. Example: `docs/plans/2026-07-24-swa-5-world-arena-death-boundary.md`.
+
+- Existing plan docs:
   - `docs/plans/2026-07-23-ship-movement.md`
   - `docs/plans/2026-07-23-right-click-autopilot.md`
   - `docs/plans/2026-07-23-local-predicted-neighbor-avoidance.md`
+  - `docs/plans/2026-07-24-swa-5-world-arena-death-boundary.md`
 
 ## Stacked PRs
 
