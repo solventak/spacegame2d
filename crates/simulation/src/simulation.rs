@@ -652,7 +652,7 @@ mod tests {
     fn world_accessors_and_custom_radius() {
         let sim = Simulation::with_world_radius(2.0);
         assert_eq!(sim.world_radius(), 2.0);
-        assert_eq!(sim.world().units.len(), crate::fleet::DRONE_COUNT);
+        assert_eq!(sim.world().units.len(), crate::command::MAX_UNITS);
     }
 
     #[test]

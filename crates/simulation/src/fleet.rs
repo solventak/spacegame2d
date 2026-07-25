@@ -140,11 +140,20 @@ fn initial_units() -> Vec<Unit> {
 /// Deterministic starting positions for the drone swarm, derived from a fixed
 /// PRNG seed so resets reproduce the same layout.
 pub fn initial_drone_positions() -> Vec<ShipState> {
-    let mut seed = 0x5EED_1234_u32;
+    initial_fleet_positions(0x5EED_1234, -4.0)
+}
+
+pub fn initial_world_positions() -> Vec<ShipState> {
+    let mut positions = initial_fleet_positions(0x5EED_1234, -4.0);
+    positions.extend(initial_fleet_positions(0xC0FF_EE42, 4.0));
+    positions
+}
+
+fn initial_fleet_positions(mut seed: u32, x_offset: f32) -> Vec<ShipState> {
     (0..DRONE_COUNT)
         .map(|_| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x = (seed as f32 / u32::MAX as f32) * 8.0 - 4.0;
+            let x = (seed as f32 / u32::MAX as f32) * 3.0 - 1.5 + x_offset;
             seed = seed.rotate_left(13);
             let y = (seed as f32 / u32::MAX as f32) * 6.0 - 3.0;
             ShipState {

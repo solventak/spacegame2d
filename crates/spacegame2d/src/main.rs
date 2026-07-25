@@ -20,7 +20,7 @@ use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
     command::PlayerId,
     command::Unit,
-    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
+    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent, WORLD_RADIUS_M},
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -52,6 +52,25 @@ fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
         Some(PlayerId(2)) => PLAYER_TWO_COLOR,
         _ => PLAYER_ONE_COLOR,
     }
+}
+
+fn window_title(player_slot: u32) -> String {
+    format!("Spacegame 2D - Player {player_slot}")
+}
+
+fn render_unit_data(units: &[Unit]) -> Vec<(ShipState, [f32; 4])> {
+    units
+        .iter()
+        .map(|unit| (unit.state, fleet_color(unit.owner)))
+        .collect()
+}
+
+fn owned_unit_ids(units: &[Unit], player: Option<PlayerId>) -> Vec<u32> {
+    units
+        .iter()
+        .filter(|unit| unit.owner == player)
+        .map(|unit| unit.id.0)
+        .collect()
 }
 
 fn scene_uniform(
@@ -233,10 +252,9 @@ impl Renderer {
                 resource: ring_scene_buffer.as_entire_binding(),
             }],
         });
-        let scene_uniforms = units
-            .iter()
-            .map(|unit| unit.state)
-            .map(|ship| {
+        let scene_uniforms = render_unit_data(units)
+            .into_iter()
+            .map(|(ship, color)| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scene uniform"),
                     contents: bytemuck::bytes_of(&scene_uniform(
@@ -244,7 +262,7 @@ impl Renderer {
                         config.height,
                         &ship,
                         None,
-                        PLAYER_ONE_COLOR,
+                        color,
                     )),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
@@ -416,7 +434,7 @@ fn screen_to_world(cursor: winit::dpi::PhysicalPosition<f64>, width: u32, height
     let half_width = half_height * aspect;
     let x = (cursor.x as f32 / width.max(1) as f32 * 2.0 - 1.0) * half_width;
     let y = (1.0 - cursor.y as f32 / height.max(1) as f32 * 2.0) * half_height;
-    Vec2::new(x, y)
+    Vec2::new(x, y).clamp_length_max(WORLD_RADIUS_M)
 }
 
 impl ApplicationHandler for App {
@@ -444,8 +462,11 @@ impl ApplicationHandler for App {
                 return;
             }
         }
-        let window = match event_loop
-            .create_window(Window::default_attributes().with_title("Spacegame 2D"))
+        let title = self.network.as_ref().map_or_else(
+            || "Spacegame 2D".to_owned(),
+            |session| window_title(session.player_slot),
+        );
+        let window = match event_loop.create_window(Window::default_attributes().with_title(title))
         {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -532,22 +553,18 @@ impl ApplicationHandler for App {
                         let player_id = u8::try_from(session.player_slot)
                             .ok()
                             .and_then(spacegame2d_simulation::command::PlayerId::new);
-                        let unit_id = self
-                            .simulation
-                            .world
-                            .units
-                            .iter()
-                            .find(|u| u.owner == player_id)
-                            .map_or(1, |u| u.id.0);
-                        if let Err(error) = session.send_set_destination(
-                            self.next_sequence,
-                            unit_id,
-                            [destination.x.to_bits(), destination.y.to_bits()],
-                        ) {
-                            eprintln!("failed to send destination: {error}");
-                            event_loop.exit();
+                        for unit_id in owned_unit_ids(&self.simulation.world.units, player_id) {
+                            if let Err(error) = session.send_set_destination(
+                                self.next_sequence,
+                                unit_id,
+                                [destination.x.to_bits(), destination.y.to_bits()],
+                            ) {
+                                eprintln!("failed to send destination: {error}");
+                                event_loop.exit();
+                                break;
+                            }
+                            self.next_sequence = self.next_sequence.saturating_add(1);
                         }
-                        self.next_sequence = self.next_sequence.saturating_add(1);
                     }
                 }
             }
@@ -610,6 +627,57 @@ mod tests {
         assert_eq!(fleet_color(Some(PlayerId(1))), PLAYER_ONE_COLOR);
         assert_eq!(fleet_color(Some(PlayerId(2))), PLAYER_TWO_COLOR);
         assert_eq!(fleet_color(None), PLAYER_ONE_COLOR);
+    }
+
+    #[test]
+    fn window_title_includes_player_slot() {
+        assert_eq!(window_title(1), "Spacegame 2D - Player 1");
+        assert_eq!(window_title(2), "Spacegame 2D - Player 2");
+    }
+
+    #[test]
+    fn render_unit_data_covers_every_unit_with_owner_color() {
+        let mut world = spacegame2d_simulation::World::demo();
+        world.assign_mirror_owners();
+        let data = render_unit_data(&world.units);
+        assert_eq!(data.len(), 60);
+        assert!(
+            data[..30]
+                .iter()
+                .all(|(_, color)| *color == PLAYER_ONE_COLOR)
+        );
+        assert!(
+            data[30..]
+                .iter()
+                .all(|(_, color)| *color == PLAYER_TWO_COLOR)
+        );
+    }
+
+    #[test]
+    fn owned_unit_ids_contains_one_command_target_per_fleet_unit() {
+        let mut world = spacegame2d_simulation::World::demo();
+        world.assign_mirror_owners();
+        let first = owned_unit_ids(&world.units, Some(PlayerId(1)));
+        let second = owned_unit_ids(&world.units, Some(PlayerId(2)));
+        assert_eq!(first.len(), 30);
+        assert_eq!(second.len(), 30);
+        assert!(first.iter().all(|id| !second.contains(id)));
+    }
+
+    #[test]
+    fn screen_to_world_clamps_outside_arena() {
+        let point = screen_to_world(winit::dpi::PhysicalPosition::new(-1000.0, 5000.0), 800, 600);
+        assert!((point.length() - WORLD_RADIUS_M).abs() < 0.0001);
+        assert!(point.x < 0.0 && point.y < 0.0);
+    }
+
+    #[test]
+    fn screen_to_world_keeps_inside_click_inside_circular_arena() {
+        let point = screen_to_world(winit::dpi::PhysicalPosition::new(400.0, 300.0), 800, 600);
+        assert_eq!(point, Vec2::ZERO);
+
+        let point = screen_to_world(winit::dpi::PhysicalPosition::new(600.0, 300.0), 800, 600);
+        assert!(point.length() < WORLD_RADIUS_M);
     }
 
     #[test]
