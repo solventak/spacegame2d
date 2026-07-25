@@ -66,12 +66,12 @@ fn caps(values: &[i32]) -> Vec<Capability> {
         })
         .collect()
 }
-impl TryFrom<Option<wire::command::Payload>> for CommandData {
+impl TryFrom<wire::command::Payload> for CommandData {
     type Error = io::Error;
 
-    fn try_from(value: Option<wire::command::Payload>) -> Result<Self, Self::Error> {
+    fn try_from(value: wire::command::Payload) -> Result<Self, Self::Error> {
         match value {
-            Some(wire::command::Payload::SetDestination(v)) => {
+            wire::command::Payload::SetDestination(v) => {
                 let d = v
                     .destination
                     .ok_or_else(|| invalid("missing destination"))?;
@@ -80,8 +80,7 @@ impl TryFrom<Option<wire::command::Payload>> for CommandData {
                     destination: [d.x, d.y],
                 })
             }
-            Some(wire::command::Payload::ResetSimulation(_)) => Ok(Self::ResetSimulation),
-            None => Err(invalid("missing command payload")),
+            wire::command::Payload::ResetSimulation(_) => Ok(Self::ResetSimulation),
         }
     }
 }
@@ -175,7 +174,11 @@ impl TryFrom<wire::Envelope> for Message {
             wire::envelope::Payload::CommandRequest(v) => {
                 Ok(Message::CommandRequest(CommandRequest {
                     sequence: v.sequence,
-                    command: CommandData::try_from(v.command.and_then(|c| c.payload))?,
+                    command: CommandData::try_from(
+                        v.command
+                            .and_then(|c| c.payload)
+                            .ok_or_else(|| invalid("missing command payload"))?,
+                    )?,
                 }))
             }
             wire::envelope::Payload::AuthoritativeCommand(v) => {
@@ -183,7 +186,11 @@ impl TryFrom<wire::Envelope> for Message {
                     execute_tick: v.execute_tick,
                     player_slot: v.player_slot,
                     sequence: v.sequence,
-                    command: CommandData::try_from(v.command.and_then(|c| c.payload))?,
+                    command: CommandData::try_from(
+                        v.command
+                            .and_then(|c| c.payload)
+                            .ok_or_else(|| invalid("missing command payload"))?,
+                    )?,
                 }))
             }
         }
@@ -333,7 +340,7 @@ mod tests {
     #[test]
     fn missing_command_payload_reaches_empty_command_branch() {
         // Frame: 4-byte length, Envelope field 3 (CommandRequest), sequence 1,
-        // then Command field 2 with an empty oneof. This reaches the TryFrom(None) branch.
+        // then Command field 2 with an empty oneof. This reaches the missing payload check.
         let bytes = [0, 0, 0, 6, 0x1a, 0x04, 0x08, 0x01, 0x12, 0x00];
 
         let error = read_message(&mut bytes.as_slice()).unwrap_err();
