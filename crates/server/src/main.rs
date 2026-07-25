@@ -256,6 +256,7 @@ async fn main() {
 mod tests {
     use super::*;
     use spacegame2d_protocol::{ClientHello, FrameDecoder};
+    use spacegame2d_simulation::command::{FLEET_SIZE, MAX_UNITS, UnitId};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::watch,
@@ -297,6 +298,13 @@ mod tests {
         let (shutdown, receiver) = watch::channel(false);
         let task = tokio::task::spawn_local(run(listener, receiver));
         (address, shutdown, task)
+    }
+
+    fn build_mirror(tick: Tick) -> Simulation {
+        let mut sim = Simulation::default();
+        sim.world.assign_mirror_owners();
+        sim.set_tick(tick);
+        sim
     }
     #[test]
     fn handshake_validation() {
@@ -362,6 +370,39 @@ mod tests {
                 second_hello.validate(SIMULATION_HZ).unwrap();
                 assert!(second_hello.server_tick > first_hello.server_tick);
 
+                // Late-joiner receives the same deterministic 60-unit layout and
+                // ownership as the first client.
+                let first_client_mirror = build_mirror(first_hello.server_tick);
+                let late_joiner_mirror = build_mirror(second_hello.server_tick);
+                assert_eq!(late_joiner_mirror.world.units.len(), MAX_UNITS);
+                assert_eq!(
+                    late_joiner_mirror.world.units.len(),
+                    first_client_mirror.world.units.len()
+                );
+                assert!(
+                    late_joiner_mirror.world.units[..FLEET_SIZE]
+                        .iter()
+                        .all(|unit| unit.owner == Some(PlayerId(1)))
+                );
+                assert!(
+                    late_joiner_mirror.world.units[FLEET_SIZE..]
+                        .iter()
+                        .all(|unit| unit.owner == Some(PlayerId(2)))
+                );
+                let first_layout: Vec<_> = first_client_mirror
+                    .world
+                    .units
+                    .iter()
+                    .map(|unit| (unit.id, unit.owner, unit.state))
+                    .collect();
+                let late_layout: Vec<_> = late_joiner_mirror
+                    .world
+                    .units
+                    .iter()
+                    .map(|unit| (unit.id, unit.owner, unit.state))
+                    .collect();
+                assert_eq!(first_layout, late_layout);
+
                 let owned_request = Message::CommandRequest(CommandRequest {
                     sequence: 6,
                     command: spacegame2d_protocol::CommandData::SetDestination {
@@ -395,6 +436,54 @@ mod tests {
                 else {
                     panic!()
                 };
+
+                // Player 2 issues a command for one of its own units; Player 1
+                // must receive the broadcast and be able to apply it to its mirror.
+                let p2_request = Message::CommandRequest(CommandRequest {
+                    sequence: 10,
+                    command: spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 31,
+                        destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
+                    },
+                });
+                second
+                    .write_all(&p2_request.encode().unwrap())
+                    .await
+                    .unwrap();
+                let Message::AuthoritativeCommand(p2_command) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(p2_command.player_slot, 2);
+                assert_eq!(
+                    p2_command.command,
+                    spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 31,
+                        destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
+                    }
+                );
+                let Message::AuthoritativeCommand(_) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut second))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+
+                let mut player_one_mirror = build_mirror(p2_command.execute_tick);
+                assert!(player_one_mirror.schedule_authoritative_trusted(&p2_command));
+                player_one_mirror.step().unwrap();
+                let mirrored_unit = player_one_mirror
+                    .world
+                    .unit(UnitId(31))
+                    .expect("unit 31 in Player 1 mirror");
+                assert_eq!(mirrored_unit.owner, Some(PlayerId(2)));
+                let destination = mirrored_unit.autopilot.destination().unwrap();
+                assert!((destination.x - 5.0).abs() < f32::EPSILON);
+                assert!((destination.y - 6.0).abs() < f32::EPSILON);
 
                 let rejected_request = Message::CommandRequest(CommandRequest {
                     sequence: 9,
