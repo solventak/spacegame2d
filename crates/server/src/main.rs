@@ -9,7 +9,8 @@ use spacegame2d_protocol::{
     AuthoritativeCommand, CommandRequest, Message, SIMULATION_VERSION, Tick,
 };
 use spacegame2d_simulation::{
-    command::{Command, MAX_PLAYERS, PlayerId},
+    MAX_PLAYERS, SimulationConfig,
+    command::{Command, PlayerId},
     simulation::SIMULATION_HZ,
     simulation::Simulation,
 };
@@ -90,11 +91,19 @@ impl Client {
     }
 }
 
-pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> io::Result<()> {
+pub async fn run(listener: TcpListener, shutdown: watch::Receiver<bool>) -> io::Result<()> {
+    run_with_config(listener, shutdown, SimulationConfig::default()).await
+}
+
+pub async fn run_with_config(
+    listener: TcpListener,
+    mut shutdown: watch::Receiver<bool>,
+    config: SimulationConfig,
+) -> io::Result<()> {
     let bound = listener.local_addr()?;
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
-    let mut simulation = Simulation::default();
+    let mut simulation = Simulation::new(config);
     let mut scheduled = BTreeMap::<Tick, Vec<AuthoritativeCommand>>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
     loop {
@@ -141,6 +150,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
         }
         let mut remove = Vec::new();
         let mut broadcasts = Vec::new();
+        let mut reset_cutover = false;
         for (index, client) in clients.iter_mut().enumerate() {
             match client.read_messages() {
                 Ok(messages) => {
@@ -161,11 +171,16 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                     simulation_hz: SIMULATION_HZ,
                                     player_slot: client.slot,
                                     server_tick: simulation.tick(),
+                                    fleet_size: config.fleet_size(),
                                     capabilities: Vec::new(),
                                 },
                             ))?;
                             client.connected = true;
                         } else if let Message::CommandRequest(request) = message {
+                            if reset_cutover {
+                                tracing::info!(event = "command_rejected", tick = ?simulation.tick(), slot = client.slot, "command ignored after reset cutover");
+                                continue;
+                            }
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
                             tracing::info!(event = "command_received", cmd = %cmd, tick = ?receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
@@ -173,12 +188,26 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                 tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, "invalid command");
                                 continue;
                             }
+                            let is_reset = matches!(
+                                request.command,
+                                spacegame2d_protocol::CommandData::ResetSimulation
+                            );
                             let authoritative = AuthoritativeCommand {
-                                execute_tick: receive_tick.increment(COMMAND_INPUT_DELAY),
+                                execute_tick: if is_reset {
+                                    receive_tick
+                                } else {
+                                    receive_tick.increment(COMMAND_INPUT_DELAY)
+                                },
                                 player_slot: client.slot,
                                 sequence: request.sequence,
                                 command: request.command,
                             };
+                            if is_reset {
+                                scheduled.clear();
+                                broadcasts.clear();
+                                simulation.commands.clear_pending();
+                                reset_cutover = true;
+                            }
                             tracing::info!(event = "command_scheduled", cmd = %cmd, receive_tick = ?receive_tick, execute_tick = ?authoritative.execute_tick, tick = ?receive_tick, kind = ?authoritative.command, address = %client.address, slot = client.slot);
                             let encoded =
                                 Message::AuthoritativeCommand(authoritative.clone()).encode()?;
@@ -233,6 +262,19 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
     }
 }
 
+fn simulation_config_from_env() -> Result<SimulationConfig, String> {
+    let Some(value) = env::var_os("SPACEGAME_FLEET_SIZE") else {
+        return Ok(SimulationConfig::default());
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| "SPACEGAME_FLEET_SIZE is not valid UTF-8".to_owned())?;
+    let fleet_size = value
+        .parse::<u32>()
+        .map_err(|_| "SPACEGAME_FLEET_SIZE must be a positive integer".to_owned())?;
+    SimulationConfig::try_from(fleet_size).map_err(|error| error.to_string())
+}
+
 #[tokio::main]
 async fn main() {
     let _logging = spacegame2d_logging::init("spacegame2d-server", "info")
@@ -242,6 +284,13 @@ async fn main() {
         .unwrap_or_else(|| "127.0.0.1:4000".to_string())
         .parse()
         .expect("invalid bind address");
+    let config = match simulation_config_from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("invalid simulation configuration: {error}");
+            return;
+        }
+    };
     let listener = match TcpListener::bind(address).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -250,7 +299,7 @@ async fn main() {
         }
     };
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    if let Err(error) = run(listener, shutdown_rx).await {
+    if let Err(error) = run_with_config(listener, shutdown_rx, config).await {
         tracing::error!(event = "server_stopped", error = %error);
     }
 }
@@ -313,14 +362,14 @@ mod tests {
     fn handshake_validation() {
         assert!(
             ClientHello {
-                simulation_version: 1,
+                simulation_version: SIMULATION_VERSION,
                 capabilities: vec![]
             }
             .is_compatible()
         );
         assert!(
             !(ClientHello {
-                simulation_version: 2,
+                simulation_version: SIMULATION_VERSION + 1,
                 capabilities: vec![]
             }
             .is_compatible())

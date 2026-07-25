@@ -8,7 +8,11 @@ A 2D space simulation in Rust using wgpu. Drones move under autopilot; collision
 cargo run
 ```
 
-A window opens showing the 16 m arena ring and 30 drone ships. The player ship starts at the origin.
+A window opens showing the 16 m arena ring and 30 drone ships by default. The player ship starts at the origin.
+
+### Server configuration
+
+The server uses 30 drones per fleet by default. Set `SPACEGAME_FLEET_SIZE` before starting it to run a smaller or larger validated configuration; clients receive the authoritative value during the version-2 handshake.
 
 ### Controls
 
@@ -17,7 +21,7 @@ A window opens showing the 16 m arena ring and 30 drone ships. The player ship s
 | `W` | Forward thrust |
 | `A` | Turn left (counterclockwise) |
 | `D` | Turn right (clockwise) |
-| `R` | Reset simulation |
+| `R` | Reset the shared simulation |
 | Right-click | Set autopilot destination |
 | Close window | Exit |
 
@@ -56,8 +60,8 @@ See [`AGENTS.md`](./AGENTS.md) for branch, PR, and ticketing conventions. Both h
 crates/
   spacegame2d/           GUI app — wgpu setup, frame loop, input, shaders
   simulation/            game logic — sim tick, drone state, autopilot, fleet
-  protocol/              wire-format stub (future tickets)
-  server/                server stub (banner + exit)
+  protocol/              versioned wire protocol
+  server/                authoritative simulation server
 docs/
   QA.md                  interactive QA guide (headless + GUI paths)
   plans/                 milestone planning documents

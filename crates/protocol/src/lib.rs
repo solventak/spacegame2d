@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 1;
+pub const SIMULATION_VERSION: u32 = 2;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +68,7 @@ pub struct ServerHello {
     pub simulation_hz: u32,
     pub player_slot: u32,
     pub server_tick: Tick,
+    pub fleet_size: u32,
     pub capabilities: Vec<Capability>,
 }
 impl ServerHello {
@@ -80,6 +81,9 @@ impl ServerHello {
         }
         if self.player_slot == 0 || u8::try_from(self.player_slot).is_err() {
             return Err(invalid("server assigned invalid player slot"));
+        }
+        if self.fleet_size == 0 {
+            return Err(invalid("server assigned invalid fleet size"));
         }
         Ok(())
     }
@@ -182,6 +186,7 @@ impl From<&Message> for wire::Envelope {
                 simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
                 server_tick: v.server_tick.0,
+                fleet_size: v.fleet_size,
                 enabled_capabilities: v
                     .capabilities
                     .iter()
@@ -227,6 +232,7 @@ impl TryFrom<wire::Envelope> for Message {
                 simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
                 server_tick: Tick::from(v.server_tick),
+                fleet_size: v.fleet_size,
                 capabilities: caps(&v.enabled_capabilities),
             })),
             wire::envelope::Payload::CommandRequest(v) => {
@@ -336,14 +342,15 @@ mod tests {
     fn all_messages_round_trip() {
         let messages = [
             Message::ClientHello(ClientHello {
-                simulation_version: 1,
+                simulation_version: SIMULATION_VERSION,
                 capabilities: vec![Capability::StateChecksums],
             }),
             Message::ServerHello(ServerHello {
-                simulation_version: 1,
+                simulation_version: SIMULATION_VERSION,
                 simulation_hz: 60,
                 player_slot: 2,
                 server_tick: Tick::from(9),
+                fleet_size: 30,
                 capabilities: vec![],
             }),
             Message::CommandRequest(CommandRequest {
@@ -422,7 +429,7 @@ mod tests {
         assert_eq!(decoded, message);
         let envelope = wire::Envelope {
             payload: Some(wire::envelope::Payload::ClientHello(wire::ClientHello {
-                simulation_version: 1,
+                simulation_version: SIMULATION_VERSION,
                 supported_capabilities: vec![1, 999],
             })),
         };
@@ -433,7 +440,7 @@ mod tests {
         assert_eq!(
             Message::read(&mut bytes.as_slice()).unwrap(),
             Message::ClientHello(ClientHello {
-                simulation_version: 1,
+                simulation_version: SIMULATION_VERSION,
                 capabilities: vec![Capability::StateChecksums]
             })
         );

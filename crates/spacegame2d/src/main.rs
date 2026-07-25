@@ -447,7 +447,7 @@ impl ApplicationHandler for App {
             .unwrap_or_else(|| "127.0.0.1:4000".into());
         match network::NetworkSession::connect(&address) {
             Ok(session) => {
-                self.simulation = Simulation::default();
+                self.simulation = Simulation::new(session.simulation_config());
                 self.simulation.set_tick(session.server_tick);
                 if let Err(error) = session.register_player(&mut self.simulation) {
                     eprintln!("failed to register connected player: {error}");
@@ -508,7 +508,11 @@ impl ApplicationHandler for App {
         }
         let now = Instant::now();
         while now >= self.next_tick {
-            self.simulation.apply_due_commands(&mut self.scheduled);
+            let applied = self.simulation.apply_due_commands(&mut self.scheduled);
+            if applied.reset_applied {
+                self.pending_destination = None;
+                self.presentation_events.clear();
+            }
             let events = self.simulation.step().unwrap_or_default();
             self.presentation_events.append(events);
             self.next_tick += TICK_DURATION;
@@ -582,7 +586,6 @@ impl ApplicationHandler for App {
                         eprintln!("failed to send reset: {error}");
                         event_loop.exit();
                     }
-                    self.presentation_events.clear();
                     self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }

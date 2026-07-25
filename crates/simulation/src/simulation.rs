@@ -1,4 +1,5 @@
 use crate::command::{CommandScheduler, UnitId, World};
+use crate::config::SimulationConfig;
 use crate::flight_control::{NeighborObservation, NeighborRelationship};
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
@@ -70,6 +71,11 @@ impl Default for ShipState {
 }
 
 /// Fixed-timestep driver for the autopilot drone world.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AppliedAuthoritativeCommands {
+    pub reset_applied: bool,
+}
+
 pub struct Simulation {
     tick: Tick,
     world_radius: f32,
@@ -79,10 +85,16 @@ pub struct Simulation {
 
 impl Default for Simulation {
     fn default() -> Self {
+        Self::new(SimulationConfig::default())
+    }
+}
+
+impl Simulation {
+    pub fn new(config: SimulationConfig) -> Self {
         Self {
             tick: Tick::default(),
             world_radius: WORLD_RADIUS_M,
-            world: World::demo(),
+            world: World::new(config),
             commands: CommandScheduler::default(),
         }
     }
@@ -101,12 +113,16 @@ impl Simulation {
     pub fn with_world_radius(world_radius: f32) -> Self {
         Self {
             world_radius,
-            ..Self::default()
+            ..Self::new(SimulationConfig::default())
         }
     }
 
     pub fn world_radius(&self) -> f32 {
         self.world_radius
+    }
+
+    pub fn config(&self) -> SimulationConfig {
+        self.world.config()
     }
     pub fn world(&self) -> &World {
         &self.world
@@ -121,22 +137,36 @@ impl Simulation {
     pub fn apply_due_commands(
         &mut self,
         scheduled: &mut BTreeMap<Tick, Vec<AuthoritativeCommand>>,
-    ) {
+    ) -> AppliedAuthoritativeCommands {
         let current_tick = self.tick;
         let due_ticks: Vec<Tick> = scheduled
             .range(..=current_tick)
             .map(|(tick, _)| *tick)
             .collect();
+        let mut result = AppliedAuthoritativeCommands::default();
         for tick in due_ticks {
-            if let Some(commands) = scheduled.remove(&tick) {
-                for mut command in commands {
-                    if command.execute_tick < current_tick {
-                        command.execute_tick = current_tick;
-                    }
-                    self.schedule_authoritative_trusted(&command);
+            let Some(commands) = scheduled.remove(&tick) else {
+                continue;
+            };
+            for mut command in commands {
+                if result.reset_applied {
+                    break;
                 }
+                if command.execute_tick < current_tick {
+                    command.execute_tick = current_tick;
+                }
+                if matches!(
+                    command.command,
+                    spacegame2d_protocol::CommandData::ResetSimulation
+                ) {
+                    scheduled.clear();
+                    self.commands.clear_pending();
+                    result.reset_applied = true;
+                }
+                self.schedule_authoritative_trusted(&command);
             }
         }
+        result
     }
 
     /// Schedule a command already validated by the authoritative server.
@@ -262,6 +292,7 @@ mod tests {
     use super::*;
 
     use spacegame2d_protocol::CommandData;
+    use std::collections::BTreeMap;
 
     use crate::autopilot::{Autopilot, AutopilotConfig};
     use crate::command::PlayerId;
@@ -483,10 +514,7 @@ mod tests {
         assert!(sim.schedule_authoritative(&cmd));
         sim.step().unwrap();
         assert!(
-            sim.world.units[0]
-                .state
-                .position
-                .distance(pos_before)
+            sim.world.units[0].state.position.distance(pos_before)
                 <= MAX_SPEED_METERS_PER_SECOND * FIXED_DT_SECONDS + 1.0e-6
         );
     }
@@ -763,6 +791,9 @@ mod tests {
         let sim = Simulation::with_world_radius(2.0);
         assert_eq!(sim.world_radius(), 2.0);
         assert_eq!(sim.world().units.len(), crate::command::MAX_UNITS);
+        assert_eq!(sim.config().fleet_size(), 30);
+        let custom = Simulation::new(crate::SimulationConfig::new(3).unwrap());
+        assert_eq!(custom.world().units.len(), 6);
     }
 
     #[test]
@@ -775,6 +806,44 @@ mod tests {
         step_ship(&mut ship, FlightInput::default());
         assert!(ship.velocity.length() < speed);
         assert!(ship.velocity.length() > 0.0);
+    }
+
+    #[test]
+    fn reset_cutover_discards_future_commands_and_preserves_tick() {
+        let mut sim = Simulation::new(crate::SimulationConfig::new(3).unwrap());
+        sim.world.connect_player(PlayerId(1));
+        sim.set_tick(Tick::new(4));
+        let reset = AuthoritativeCommand {
+            execute_tick: Tick::new(4),
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::ResetSimulation,
+        };
+        let destination = AuthoritativeCommand {
+            execute_tick: Tick::new(5),
+            player_slot: 1,
+            sequence: 2,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+            },
+        };
+        let mut scheduled = BTreeMap::from([
+            (Tick::new(4), vec![reset]),
+            (Tick::new(5), vec![destination]),
+        ]);
+        let applied = sim.apply_due_commands(&mut scheduled);
+        assert!(applied.reset_applied);
+        assert!(scheduled.is_empty());
+        assert_eq!(sim.tick(), Tick::new(4));
+        sim.step().unwrap();
+        assert_eq!(sim.tick(), Tick::new(5));
+        assert!(
+            sim.world
+                .units
+                .iter()
+                .all(|unit| unit.autopilot.destination().is_none())
+        );
     }
 
     #[test]
