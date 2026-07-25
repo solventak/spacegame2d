@@ -14,6 +14,7 @@ use spacegame2d_simulation::{
     simulation::Simulation,
 };
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 
 pub const COMMAND_INPUT_DELAY: u64 = 2;
 
@@ -99,8 +100,7 @@ fn flush(client: &mut Client) -> io::Result<()> {
     Ok(())
 }
 
-async fn run(address: SocketAddr) -> io::Result<()> {
-    let listener = TcpListener::bind(address).await?;
+pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> io::Result<()> {
     let bound = listener.local_addr()?;
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
@@ -109,7 +109,14 @@ async fn run(address: SocketAddr) -> io::Result<()> {
     let mut scheduled = BTreeMap::<u64, Vec<AuthoritativeCommand>>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = interval.tick() => {}
+            result = shutdown.changed() => {
+                if result.is_err() || *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+        }
         loop {
             let accepted = match tokio::time::timeout(Duration::ZERO, listener.accept()).await {
                 Ok(result) => result?,
@@ -233,12 +240,20 @@ async fn run(address: SocketAddr) -> io::Result<()> {
 async fn main() {
     let _logging = spacegame2d_logging::init("spacegame2d-server", "info")
         .expect("failed to initialize logging");
-    let address = env::args()
+    let address: SocketAddr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:4000".to_string())
         .parse()
         .expect("invalid bind address");
-    if let Err(error) = run(address).await {
+    let listener = match TcpListener::bind(address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            tracing::error!(event = "server_stopped", error = %error);
+            return;
+        }
+    };
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    if let Err(error) = run(listener, shutdown_rx).await {
         tracing::error!(event = "server_stopped", error = %error);
     }
 }
@@ -246,6 +261,34 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spacegame2d_protocol::{FrameDecoder, encode_message};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::watch,
+    };
+
+    async fn read_message(stream: &mut tokio::net::TcpStream) -> Message {
+        let mut header = [0; 4];
+        stream.read_exact(&mut header).await.unwrap();
+        let size = u32::from_be_bytes(header) as usize;
+        let mut body = vec![0; size];
+        stream.read_exact(&mut body).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&header).unwrap();
+        decoder.push(&body).unwrap().pop().unwrap()
+    }
+
+    async fn start_server() -> (
+        SocketAddr,
+        watch::Sender<bool>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, receiver) = watch::channel(false);
+        let task = tokio::task::spawn_local(run(listener, receiver));
+        (address, shutdown, task)
+    }
     #[test]
     fn handshake_validation() {
         assert!(valid_hello(&ClientHello {
@@ -272,5 +315,91 @@ mod tests {
             },
         };
         assert!(!valid_request(&sim, 1, &request));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn real_tcp_handshake_tick_advancement_broadcast_and_disconnect() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (address, shutdown, task) = start_server().await;
+                let mut first = tokio::net::TcpStream::connect(address).await.unwrap();
+                let hello = Message::ClientHello(ClientHello {
+                    simulation_version: SIMULATION_VERSION,
+                    capabilities: vec![],
+                });
+                first
+                    .write_all(&encode_message(&hello).unwrap())
+                    .await
+                    .unwrap();
+                let Message::ServerHello(first_hello) = read_message(&mut first).await else {
+                    panic!()
+                };
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let mut second = tokio::net::TcpStream::connect(address).await.unwrap();
+                second
+                    .write_all(&encode_message(&hello).unwrap())
+                    .await
+                    .unwrap();
+                let Message::ServerHello(second_hello) = read_message(&mut second).await else {
+                    panic!()
+                };
+                assert_eq!(first_hello.player_slot, 1);
+                assert_eq!(second_hello.player_slot, 2);
+                assert!(second_hello.server_tick > first_hello.server_tick);
+
+                let request = Message::CommandRequest(CommandRequest {
+                    sequence: 7,
+                    command: spacegame2d_protocol::CommandData::ResetSimulation,
+                });
+                second
+                    .write_all(&encode_message(&request).unwrap())
+                    .await
+                    .unwrap();
+                let Message::AuthoritativeCommand(first_command) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                let Message::AuthoritativeCommand(second_command) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut second))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(first_command, second_command);
+                assert_eq!(first_command.sequence, 7);
+                assert!(
+                    first_command.execute_tick >= second_hello.server_tick + COMMAND_INPUT_DELAY
+                );
+
+                first.shutdown().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                second
+                    .write_all(
+                        &encode_message(&Message::CommandRequest(CommandRequest {
+                            sequence: 8,
+                            command: spacegame2d_protocol::CommandData::ResetSimulation,
+                        }))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let Message::AuthoritativeCommand(command_after_disconnect) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut second))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(command_after_disconnect.sequence, 8);
+
+                shutdown.send(true).unwrap();
+                task.await.unwrap().unwrap();
+            })
+            .await;
     }
 }
