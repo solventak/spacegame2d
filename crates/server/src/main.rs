@@ -136,6 +136,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
             {
                 unit.owner = Some(player_id);
             }
+            simulation.world.connect_player(player_id);
             clients.push(Client {
                 stream,
                 address,
@@ -206,7 +207,10 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
             }
         }
         for index in remove.into_iter().rev() {
-            clients.remove(index);
+            let client = clients.remove(index);
+            if let Some(player_id) = PlayerId::new(u8::try_from(client.slot).unwrap_or(0)) {
+                simulation.world.disconnect_player(player_id);
+            }
         }
         for (encoded, cmd, address, slot) in broadcasts {
             let recipients = clients.iter().filter(|peer| peer.connected).count();

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, CommandData, Tick};
@@ -44,6 +44,7 @@ impl Unit {
 pub struct World {
     pub next_unit_id: u32,
     pub units: Vec<Unit>,
+    connected_players: BTreeSet<PlayerId>,
 }
 
 impl World {
@@ -56,6 +57,31 @@ impl World {
         Self {
             next_unit_id: crate::fleet::DRONE_COUNT as u32 + 1,
             units,
+            connected_players: BTreeSet::new(),
+        }
+    }
+
+    pub fn connect_player(&mut self, player: PlayerId) -> bool {
+        self.connected_players.insert(player)
+    }
+
+    pub fn disconnect_player(&mut self, player: PlayerId) -> bool {
+        self.connected_players.remove(&player)
+    }
+
+    pub fn is_player_connected(&self, player: PlayerId) -> bool {
+        self.connected_players.contains(&player)
+    }
+
+    pub fn allocate_unit_id(&mut self) -> UnitId {
+        let id = UnitId(self.next_unit_id);
+        self.next_unit_id = self.next_unit_id.saturating_add(1);
+        id
+    }
+
+    fn advance_allocator_past_units(&mut self) {
+        if let Some(max_id) = self.units.iter().map(|unit| unit.id.0).max() {
+            self.next_unit_id = self.next_unit_id.max(max_id.saturating_add(1));
         }
     }
 
@@ -133,23 +159,19 @@ pub struct ResetSimulation;
 
 impl Command for ResetSimulation {
     fn execute(&self, world: &mut World) {
-        // Capture ownership by current UnitId so surviving units keep their
-        // owners after the reset.
-        let owners: HashMap<UnitId, PlayerId> = world
-            .units
-            .iter()
-            .filter_map(|u| u.owner.map(|owner| (u.id, owner)))
-            .collect();
+        // Capture ownership by deterministic unit order so reset preserves
+        // player assignments even though every recreated unit gets a new ID.
+        let owners: Vec<Option<PlayerId>> = world.units.iter().map(|u| u.owner).collect();
+        world.advance_allocator_past_units();
 
-        // Rebuild the demo swarm using the deterministic demo layout and the
-        // original UnitId range. Ownership is preserved for units that still
-        // exist; the next_unit_id counter is intentionally left unchanged.
+        // Rebuild the demo swarm using the deterministic demo layout and fresh
+        // IDs from the session allocator.
         world.units = crate::fleet::initial_drone_positions()
             .into_iter()
             .enumerate()
             .map(|(i, state)| {
-                let id = UnitId(i as u32 + 1);
-                Unit::new(id, owners.get(&id).copied(), state)
+                let id = world.allocate_unit_id();
+                Unit::new(id, owners.get(i).copied().flatten(), state)
             })
             .collect();
     }
@@ -262,8 +284,7 @@ fn command_from_record(recorded: &RecordedCommand) -> Option<Box<dyn Command>> {
 /// Ownership rules:
 /// - `SetDestination` is accepted only when the targeted unit is owned by the
 ///   requesting player.
-/// - `ResetSimulation` is accepted from any connected player (slot >= 1) and
-///   rejected for the reserved slot 0.
+/// - `ResetSimulation` is accepted only from a connected player.
 pub fn valid_authoritative(world: &World, cmd: &AuthoritativeCommand) -> bool {
     let Ok(slot) = u8::try_from(cmd.player_slot) else {
         return false;
@@ -275,7 +296,7 @@ pub fn valid_authoritative(world: &World, cmd: &AuthoritativeCommand) -> bool {
         CommandData::SetDestination { unit_id, .. } => world
             .unit(UnitId(*unit_id))
             .is_some_and(|u| u.owner == Some(player)),
-        CommandData::ResetSimulation => true,
+        CommandData::ResetSimulation => world.is_player_connected(player),
     }
 }
 
@@ -313,9 +334,11 @@ mod tests {
 
     #[test]
     fn reset_requires_valid_player_slot() {
-        let world = World::demo();
+        let mut world = World::demo();
+        world.connect_player(PlayerId(1));
         assert!(!valid_authoritative(&world, &reset(0, 0)));
         assert!(valid_authoritative(&world, &reset(1, 0)));
+        assert!(!valid_authoritative(&world, &reset(2, 0)));
     }
 
     #[test]
@@ -365,12 +388,37 @@ mod tests {
         assert_eq!(world.units[0].owner, Some(PlayerId(1)));
         assert_eq!(world.units[1].owner, Some(PlayerId(2)));
         assert_eq!(world.units[2].owner, None);
-        assert_eq!(world.units[0].id, UnitId(1));
-        assert_eq!(world.units[1].id, UnitId(2));
-        assert_eq!(
-            world.next_unit_id, next_before,
-            "next_unit_id must not be reset"
+        assert_ne!(world.units[0].id, UnitId(1));
+        assert_ne!(world.units[1].id, UnitId(2));
+        assert!(
+            world.next_unit_id > next_before,
+            "next_unit_id must advance past recreated units"
         );
+    }
+
+    #[test]
+    fn connected_player_registry_controls_membership() {
+        let mut world = World::demo();
+        assert!(!world.is_player_connected(PlayerId(1)));
+        assert!(world.connect_player(PlayerId(1)));
+        assert!(!world.connect_player(PlayerId(1)));
+        assert!(world.is_player_connected(PlayerId(1)));
+        assert!(world.disconnect_player(PlayerId(1)));
+        assert!(!world.disconnect_player(PlayerId(1)));
+        assert!(!world.is_player_connected(PlayerId(1)));
+    }
+
+    #[test]
+    fn reset_after_culling_allocates_ids_above_all_previous_ids() {
+        let mut world = World::demo();
+        let highest_before = world.units.iter().map(|unit| unit.id.0).max().unwrap();
+        world.units.truncate(1);
+        ResetSimulation.execute(&mut world);
+
+        assert!(world.units.iter().all(|unit| unit.id.0 > highest_before));
+        let ids: BTreeSet<_> = world.units.iter().map(|unit| unit.id).collect();
+        assert_eq!(ids.len(), world.units.len());
+        assert!(world.next_unit_id > world.units.iter().map(|unit| unit.id.0).max().unwrap());
     }
 
     #[test]

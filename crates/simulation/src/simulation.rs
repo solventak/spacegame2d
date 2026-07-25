@@ -571,6 +571,7 @@ mod tests {
         // Covers ResetSimulation::record and command_from_record for reset.
         let mut sim = Simulation::default();
         sim.world.units[0].owner = Some(PlayerId(1));
+        sim.world.connect_player(PlayerId(1));
         let reset = AuthoritativeCommand {
             execute_tick: 2,
             player_slot: 1,
