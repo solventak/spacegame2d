@@ -52,7 +52,7 @@ fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -
         && command_from_data(&request.command).is_some()
 }
 
-async fn handle_read(client: &mut Client, simulation: &mut Simulation) -> io::Result<Vec<Message>> {
+fn handle_read(client: &mut Client) -> io::Result<Vec<Message>> {
     let mut bytes = [0u8; 4096];
     let mut messages = Vec::new();
     loop {
@@ -68,7 +68,6 @@ async fn handle_read(client: &mut Client, simulation: &mut Simulation) -> io::Re
             Err(error) => return Err(error),
         }
     }
-    let _ = simulation;
     Ok(messages)
 }
 
@@ -112,14 +111,11 @@ async fn run(address: SocketAddr) -> io::Result<()> {
     loop {
         interval.tick().await;
         loop {
-            let accepted = tokio::select! {
-                biased;
-                result = listener.accept() => Some(result?),
-                _ = tokio::task::yield_now() => None,
+            let accepted = match tokio::time::timeout(Duration::ZERO, listener.accept()).await {
+                Ok(result) => result?,
+                Err(_) => break,
             };
-            let Some((stream, address)) = accepted else {
-                break;
-            };
+            let (stream, address) = accepted;
             let Some(player_id) = u8::try_from(next_slot).ok().and_then(PlayerId::new) else {
                 tracing::warn!(event = "client_rejected", address = %address, slot = next_slot, "player slot exhausted");
                 continue;
@@ -146,7 +142,7 @@ async fn run(address: SocketAddr) -> io::Result<()> {
         let mut remove = Vec::new();
         let mut broadcasts = Vec::new();
         for (index, client) in clients.iter_mut().enumerate() {
-            match handle_read(client, &mut simulation).await {
+            match handle_read(client) {
                 Ok(messages) => {
                     for message in messages {
                         if !client.connected {

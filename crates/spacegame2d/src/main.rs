@@ -415,8 +415,9 @@ impl ApplicationHandler for App {
                     .iter_mut()
                     .find(|u| u.owner.is_none())
                 {
-                    u.owner =
-                        spacegame2d_simulation::command::PlayerId::new(session.player_slot as u8);
+                    u.owner = u8::try_from(session.player_slot)
+                        .ok()
+                        .and_then(spacegame2d_simulation::command::PlayerId::new);
                 }
                 self.network = Some(session);
             }
@@ -510,15 +511,15 @@ impl ApplicationHandler for App {
                     ));
                     if let Some(session) = self.network.as_mut() {
                         let destination = self.pending_destination.expect("destination was set");
+                        let player_id = u8::try_from(session.player_slot)
+                            .ok()
+                            .and_then(spacegame2d_simulation::command::PlayerId::new);
                         let unit_id = self
                             .simulation
                             .world
                             .units
                             .iter()
-                            .find(|u| {
-                                u.owner
-                                    .is_some_and(|owner| owner.0 == session.player_slot as u8)
-                            })
+                            .find(|u| u.owner == player_id)
                             .map_or(1, |u| u.id.0);
                         if let Err(error) = session.send_set_destination(
                             self.next_sequence,

@@ -265,7 +265,10 @@ fn command_from_record(recorded: &RecordedCommand) -> Option<Box<dyn Command>> {
 /// - `ResetSimulation` is accepted from any connected player (slot >= 1) and
 ///   rejected for the reserved slot 0.
 pub fn valid_authoritative(world: &World, cmd: &AuthoritativeCommand) -> bool {
-    let Some(player) = PlayerId::new(cmd.player_slot as u8) else {
+    let Ok(slot) = u8::try_from(cmd.player_slot) else {
+        return false;
+    };
+    let Some(player) = PlayerId::new(slot) else {
         return false;
     };
     match &cmd.command {
@@ -313,6 +316,15 @@ mod tests {
         let world = World::demo();
         assert!(!valid_authoritative(&world, &reset(0, 0)));
         assert!(valid_authoritative(&world, &reset(1, 0)));
+    }
+
+    #[test]
+    fn rejects_player_slots_that_do_not_fit_player_id() {
+        let world = World::demo();
+        assert!(!valid_authoritative(
+            &world,
+            &reset(u32::from(u8::MAX) + 1, 0)
+        ));
     }
 
     #[test]
