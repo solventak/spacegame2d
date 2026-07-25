@@ -3,7 +3,7 @@
 use crate::{autopilot::AutopilotConfig, command::Unit, simulation::Simulation};
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 2;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 3;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -33,7 +33,7 @@ pub struct UnitSnapshot {
     pub stopped_speed_bits: u32,
     pub hull_current: u32,
     pub hull_maximum: u32,
-    pub turret_heading_bits: u32,
+    pub turret_local_heading_bits: u32,
     pub turret_target: Option<u32>,
     pub turret_cooldown_ticks_remaining: u32,
 }
@@ -106,7 +106,7 @@ impl From<&Unit> for UnitSnapshot {
             stopped_speed_bits: config.stopped_speed_meters_per_second.to_bits(),
             hull_current: unit.combat.hull.current,
             hull_maximum: unit.combat.hull.maximum,
-            turret_heading_bits: unit.combat.turret.heading_radians.to_bits(),
+            turret_local_heading_bits: unit.combat.turret.local_heading_radians.to_bits(),
             turret_target: unit.combat.turret.target.map(|target| target.0),
             turret_cooldown_ticks_remaining: unit.combat.turret.cooldown_ticks_remaining,
         }
@@ -134,7 +134,7 @@ impl UnitSnapshot {
         bytes.push(self.active as u8);
         put_u32(bytes, self.hull_current);
         put_u32(bytes, self.hull_maximum);
-        put_u32(bytes, self.turret_heading_bits);
+        put_u32(bytes, self.turret_local_heading_bits);
         match self.turret_target {
             Some(target) => {
                 bytes.push(1);
@@ -198,7 +198,7 @@ mod tests {
         hull.world.units[0].combat.hull.current -= 1;
         assert_ne!(hull.state_hash(), baseline);
         let mut heading = Simulation::default();
-        heading.world.units[0].combat.turret.heading_radians = 1.0;
+        heading.world.units[0].combat.turret.local_heading_radians = 1.0;
         assert_ne!(heading.state_hash(), baseline);
         let mut target = Simulation::default();
         let id = target.world.units[1].id;

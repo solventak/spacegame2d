@@ -1,9 +1,13 @@
+use crate::combat::{
+    FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, MUZZLE_OFFSET_METERS, TARGET_HIT_RADIUS_METERS,
+    TURRET_TRACKING_RADIANS_PER_SECOND, WEAPON_DAMAGE, WEAPON_RANGE_METERS,
+};
 use crate::command::{CommandScheduler, UnitId, World};
 use crate::config::SimulationConfig;
 use crate::flight_control::{NeighborObservation, NeighborRelationship};
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Simulation tick rate in hertz. The integrator advances in fixed
 /// [`FIXED_DT_SECONDS`] steps regardless of wall-clock frame timing.
@@ -217,29 +221,252 @@ impl Simulation {
             let input = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
             step_ship(&mut unit.state, input);
         }
+        let observations = combat_observations(&self.world);
         let mut events = Vec::new();
-        self.world.units.retain(|u| {
-            if is_out_of_bounds(u.state.position, self.world_radius) {
+        let mut damage = BTreeMap::new();
+        let mut shooters = observations
+            .iter()
+            .map(|observation| observation.id)
+            .collect::<Vec<_>>();
+        shooters.sort_unstable();
+        for shooter_id in shooters {
+            let shooter_index = self
+                .world
+                .units
+                .iter()
+                .position(|unit| unit.id == shooter_id)
+                .expect("combat observation must reference a live unit");
+            let shooter = &mut self.world.units[shooter_index];
+            let previous_target = shooter.combat.turret.target;
+            let target = valid_target(
+                previous_target,
+                shooter.owner,
+                shooter.state.position,
+                &observations,
+            )
+            .or_else(|| nearest_hostile(shooter.owner, shooter.state.position, &observations));
+            if target != previous_target {
+                shooter.combat.turret.cooldown_ticks_remaining = 0;
+            }
+            shooter.combat.turret.target = target;
+            if shooter.combat.turret.cooldown_ticks_remaining > 0 {
+                shooter.combat.turret.cooldown_ticks_remaining -= 1;
+            }
+            let Some(target_id) = target else {
+                continue;
+            };
+            let target_position = observations
+                .iter()
+                .find(|observation| observation.id == target_id)
+                .expect("valid target must be observed")
+                .position;
+            let desired_world_heading = heading_toward(target_position - shooter.state.position);
+            let desired_local_heading =
+                wrap_angle(desired_world_heading - shooter.state.heading_radians);
+            let delta =
+                wrap_angle(desired_local_heading - shooter.combat.turret.local_heading_radians);
+            let max_turn = TURRET_TRACKING_RADIANS_PER_SECOND * FIXED_DT_SECONDS;
+            shooter.combat.turret.local_heading_radians = wrap_angle(
+                shooter.combat.turret.local_heading_radians + delta.clamp(-max_turn, max_turn),
+            );
+            let world_heading = wrap_angle(
+                shooter.state.heading_radians + shooter.combat.turret.local_heading_radians,
+            );
+            let aligned =
+                wrap_angle(desired_world_heading - world_heading).abs() <= FIRING_TOLERANCE_RADIANS;
+            if !aligned || shooter.combat.turret.cooldown_ticks_remaining != 0 {
+                continue;
+            }
+            let direction = forward_from_heading(world_heading);
+            let muzzle_origin = shooter.state.position + direction * MUZZLE_OFFSET_METERS;
+            let ray_endpoint = muzzle_origin + direction * WEAPON_RANGE_METERS;
+            let hit_unit_id = first_hostile_hit(
+                shooter.id,
+                shooter.owner,
+                muzzle_origin,
+                direction,
+                &observations,
+            );
+            if let Some(hit_unit_id) = hit_unit_id {
+                *damage.entry(hit_unit_id).or_insert(0) += WEAPON_DAMAGE;
+            }
+            shooter.combat.turret.cooldown_ticks_remaining = FIRE_INTERVAL_TICKS;
+            events.push(SimulationEvent::ShotFired {
+                tick: self.tick,
+                shooter_id,
+                muzzle_origin,
+                ray_endpoint,
+                hit_unit_id,
+            });
+        }
+        for (unit_id, amount) in damage {
+            if let Some(unit) = self.world.unit_mut(unit_id) {
+                unit.combat.hull.current = unit.combat.hull.current.saturating_sub(amount);
+            }
+        }
+        self.world.units.retain(|unit| {
+            if unit.combat.hull.current == 0 {
+                events.push(SimulationEvent::HullDepleted {
+                    tick: self.tick,
+                    unit_id: unit.id,
+                    position: unit.state.position,
+                });
+                false
+            } else if is_out_of_bounds(unit.state.position, self.world_radius) {
                 events.push(SimulationEvent::BoundaryCrossed {
                     tick: self.tick,
-                    unit_id: u.id,
-                    position: u.state.position,
+                    unit_id: unit.id,
+                    position: unit.state.position,
                 });
                 false
             } else {
                 true
             }
         });
-        events.sort_by_key(|event| match event {
-            SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
-        });
+        let live_ids = self
+            .world
+            .units
+            .iter()
+            .map(|unit| unit.id)
+            .collect::<BTreeSet<_>>();
+        for unit in &mut self.world.units {
+            if unit
+                .combat
+                .turret
+                .target
+                .is_some_and(|target| !live_ids.contains(&target))
+            {
+                unit.combat.turret.target = None;
+            }
+        }
+        events.sort_by_key(simulation_event_sort_key);
         self.tick = self.tick.increment(Tick::new(1));
         Ok(events)
     }
 }
 
+#[derive(Clone, Copy)]
+struct CombatObservation {
+    id: UnitId,
+    owner: Option<crate::command::PlayerId>,
+    position: Vec2,
+}
+
+fn combat_observations(world: &World) -> Vec<CombatObservation> {
+    let mut observations = world
+        .units
+        .iter()
+        .map(|unit| CombatObservation {
+            id: unit.id,
+            owner: unit.owner,
+            position: unit.state.position,
+        })
+        .collect::<Vec<_>>();
+    observations.sort_unstable_by_key(|observation| observation.id);
+    observations
+}
+
+fn is_hostile(
+    owner: Option<crate::command::PlayerId>,
+    other_owner: Option<crate::command::PlayerId>,
+) -> bool {
+    matches!((owner, other_owner), (Some(owner), Some(other_owner)) if owner != other_owner)
+}
+
+fn valid_target(
+    target: Option<UnitId>,
+    owner: Option<crate::command::PlayerId>,
+    position: Vec2,
+    observations: &[CombatObservation],
+) -> Option<UnitId> {
+    let target = target?;
+    observations
+        .iter()
+        .find(|observation| {
+            observation.id == target
+                && is_hostile(owner, observation.owner)
+                && (observation.position - position).length_squared()
+                    <= WEAPON_RANGE_METERS * WEAPON_RANGE_METERS
+        })
+        .map(|observation| observation.id)
+}
+
+fn nearest_hostile(
+    owner: Option<crate::command::PlayerId>,
+    position: Vec2,
+    observations: &[CombatObservation],
+) -> Option<UnitId> {
+    observations
+        .iter()
+        .filter(|observation| is_hostile(owner, observation.owner))
+        .filter_map(|observation| {
+            let distance_squared = (observation.position - position).length_squared();
+            (distance_squared <= WEAPON_RANGE_METERS * WEAPON_RANGE_METERS)
+                .then_some((distance_squared, observation.id))
+        })
+        .min_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)))
+        .map(|(_, id)| id)
+}
+
+fn heading_toward(vector: Vec2) -> f32 {
+    (-vector.x).atan2(vector.y)
+}
+
+fn forward_from_heading(heading: f32) -> Vec2 {
+    Vec2::new(-heading.sin(), heading.cos())
+}
+
+fn first_hostile_hit(
+    shooter_id: UnitId,
+    owner: Option<crate::command::PlayerId>,
+    origin: Vec2,
+    direction: Vec2,
+    observations: &[CombatObservation],
+) -> Option<UnitId> {
+    observations
+        .iter()
+        .filter(|observation| observation.id != shooter_id && is_hostile(owner, observation.owner))
+        .filter_map(|observation| {
+            let offset = observation.position - origin;
+            let projection = offset.dot(direction);
+            if !(0.0..=WEAPON_RANGE_METERS).contains(&projection) {
+                return None;
+            }
+            let perpendicular_squared = offset.length_squared() - projection * projection;
+            let radius_squared = TARGET_HIT_RADIUS_METERS * TARGET_HIT_RADIUS_METERS;
+            if perpendicular_squared > radius_squared {
+                return None;
+            }
+            let entry_distance =
+                (projection - (radius_squared - perpendicular_squared).sqrt()).max(0.0);
+            Some((entry_distance, observation.id))
+        })
+        .min_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)))
+        .map(|(_, id)| id)
+}
+
+fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, UnitId) {
+    match event {
+        SimulationEvent::ShotFired { shooter_id, .. } => (0, *shooter_id),
+        SimulationEvent::HullDepleted { unit_id, .. } => (1, *unit_id),
+        SimulationEvent::BoundaryCrossed { unit_id, .. } => (2, *unit_id),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SimulationEvent {
+    ShotFired {
+        tick: Tick,
+        shooter_id: UnitId,
+        muzzle_origin: Vec2,
+        ray_endpoint: Vec2,
+        hit_unit_id: Option<UnitId>,
+    },
+    HullDepleted {
+        tick: Tick,
+        unit_id: UnitId,
+        position: Vec2,
+    },
     BoundaryCrossed {
         tick: Tick,
         unit_id: UnitId,
@@ -357,7 +584,9 @@ mod tests {
         let actual = events
             .iter()
             .map(|event| match event {
-                SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
+                SimulationEvent::ShotFired { shooter_id, .. } => *shooter_id,
+                SimulationEvent::HullDepleted { unit_id, .. }
+                | SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
             })
             .collect::<Vec<_>>();
 
@@ -883,5 +1112,62 @@ mod tests {
         CommandScheduler::replay(&history, &mut replay, sim.tick() - Tick::new(1)).unwrap();
         assert_eq!(replay.tick(), sim.tick());
         assert_eq!(replay.world.units[0].owner, Some(PlayerId(1)));
+    }
+    fn combat_simulation(unit_count: u32) -> Simulation {
+        let mut simulation = Simulation::new(crate::SimulationConfig::new(unit_count).unwrap());
+        for unit in &mut simulation.world.units {
+            unit.state.position = Vec2::new(100.0, 100.0);
+        }
+        simulation
+    }
+
+    #[test]
+    fn aligned_target_is_acquired_and_hit_immediately() {
+        let mut simulation = combat_simulation(1);
+        let shooter_id = simulation.world.units[0].id;
+        let target_id = simulation.world.units[1].id;
+        simulation.world.units[0].owner = Some(PlayerId(1));
+        simulation.world.units[1].owner = Some(PlayerId(2));
+        simulation.world.units[0].state.position = Vec2::ZERO;
+        simulation.world.units[1].state.position = Vec2::new(0.0, 5.0);
+
+        let events = simulation.step().unwrap();
+
+        assert_eq!(
+            simulation.world.units[0].combat.turret.target,
+            Some(target_id)
+        );
+        assert_eq!(simulation.world.units[1].combat.hull.current, 75);
+        assert!(
+            matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, hit_unit_id: Some(hit), .. }] if *id == shooter_id && *hit == target_id)
+        );
+    }
+
+    #[test]
+    fn intervening_hostile_is_hit_without_retargeting() {
+        let mut simulation = combat_simulation(2);
+        simulation.world.units.truncate(3);
+        let shooter_id = simulation.world.units[0].id;
+        let target_id = simulation.world.units[1].id;
+        let interceptor_id = simulation.world.units[2].id;
+        simulation.world.units[0].owner = Some(PlayerId(1));
+        simulation.world.units[1].owner = Some(PlayerId(2));
+        simulation.world.units[2].owner = Some(PlayerId(2));
+        simulation.world.units[0].state.position = Vec2::ZERO;
+        simulation.world.units[1].state.position = Vec2::new(0.0, 8.0);
+        simulation.world.units[2].state.position = Vec2::new(0.0, 4.0);
+        simulation.world.units[0].combat.turret.target = Some(target_id);
+        simulation.world.units[2].combat.hull.current = WEAPON_DAMAGE;
+
+        let events = simulation.step().unwrap();
+
+        assert_eq!(
+            simulation.world.units[0].combat.turret.target,
+            Some(target_id)
+        );
+        assert!(simulation.world.unit(interceptor_id).is_none());
+        assert!(
+            matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, hit_unit_id: Some(hit), .. }, SimulationEvent::HullDepleted { unit_id, .. }] if *id == shooter_id && *hit == interceptor_id && *unit_id == interceptor_id)
+        );
     }
 }
