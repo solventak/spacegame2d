@@ -46,6 +46,18 @@ impl NetworkSession {
         true
     }
 
+    pub fn register_player(
+        &self,
+        simulation: &mut spacegame2d_simulation::simulation::Simulation,
+    ) -> io::Result<()> {
+        let player = u8::try_from(self.player_slot)
+            .ok()
+            .and_then(spacegame2d_simulation::command::PlayerId::new)
+            .ok_or_else(|| invalid("server assigned invalid player slot"))?;
+        simulation.world.connect_player(player);
+        Ok(())
+    }
+
     pub fn send_set_destination(
         &mut self,
         sequence: u32,
@@ -246,6 +258,7 @@ mod tests {
     fn server_disconnect_is_unexpected_eof() {
         let address = synthetic_server(Message::ServerHello(server_hello()), true);
         let mut session = NetworkSession::connect(&address).unwrap();
+        thread::sleep(std::time::Duration::from_millis(20));
         let error = session.poll_commands().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
@@ -300,5 +313,25 @@ mod tests {
         apply_due_commands(&mut simulation, &mut scheduled);
         simulation.step();
         assert_eq!(simulation.commands.history().len(), 1);
+    }
+
+    #[test]
+    fn handshake_registers_player_before_broadcast_reset_is_applied() {
+        let address = synthetic_server(Message::ServerHello(server_hello()), false);
+        let session = NetworkSession::connect(&address).unwrap();
+        let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
+        session.register_player(&mut simulation).unwrap();
+        let reset = AuthoritativeCommand {
+            execute_tick: 0,
+            player_slot: session.player_slot,
+            sequence: 1,
+            command: CommandData::ResetSimulation,
+        };
+        assert!(simulation.schedule_authoritative(&reset));
+        simulation.step();
+        assert!(matches!(
+            simulation.commands.history().first(),
+            Some(spacegame2d_simulation::command::RecordedCommand::ResetSimulation { .. })
+        ));
     }
 }

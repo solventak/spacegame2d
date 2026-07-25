@@ -408,6 +408,11 @@ impl ApplicationHandler for App {
             Ok(session) => {
                 self.simulation = Simulation::default();
                 self.simulation.set_tick(session.server_tick);
+                if let Err(error) = session.register_player(&mut self.simulation) {
+                    eprintln!("failed to register connected player: {error}");
+                    event_loop.exit();
+                    return;
+                }
                 if let Some(u) = self
                     .simulation
                     .world
