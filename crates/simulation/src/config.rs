@@ -3,17 +3,47 @@ use thiserror::Error;
 pub const DEFAULT_FLEET_SIZE: u32 = 30;
 pub const MAX_PLAYERS: usize = 2;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AvoidanceConfig {
+    pub friendly_comfort_radius_meters: f32,
+    pub opposing_comfort_radius_meters: f32,
+    pub friendly_strength: f32,
+    pub opposing_strength: f32,
+    pub prediction_horizon_seconds: f32,
+    pub max_avoidance_acceleration: f32,
+    pub opposing_speed_squared_scale: f32,
+}
+
+impl Default for AvoidanceConfig {
+    fn default() -> Self {
+        Self {
+            friendly_comfort_radius_meters: 2.0,
+            opposing_comfort_radius_meters: 4.0,
+            friendly_strength: 8.0,
+            opposing_strength: 24.0,
+            prediction_horizon_seconds: 0.75,
+            max_avoidance_acceleration: 12.0,
+            opposing_speed_squared_scale: 1.5,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum SimulationConfigError {
     #[error("fleet size must be greater than zero")]
     ZeroFleetSize,
     #[error("fleet size is too large for the simulation")]
     FleetSizeTooLarge,
+    #[error("avoidance configuration contains an invalid value")]
+    InvalidAvoidanceConfig,
+    #[error("opposing comfort radius must not be smaller than friendly comfort radius")]
+    OpposingRadiusTooSmall,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SimulationConfig {
     fleet_size: u32,
+    avoidance: AvoidanceConfig,
 }
 
 impl SimulationConfig {
@@ -27,11 +57,40 @@ impl SimulationConfig {
         if total.is_none() || total.unwrap() > u32::MAX as usize {
             return Err(SimulationConfigError::FleetSizeTooLarge);
         }
-        Ok(Self { fleet_size })
+        Ok(Self {
+            fleet_size,
+            avoidance: AvoidanceConfig::default(),
+        })
     }
 
     pub const fn fleet_size(self) -> u32 {
         self.fleet_size
+    }
+
+    pub const fn avoidance(self) -> AvoidanceConfig {
+        self.avoidance
+    }
+
+    pub fn with_avoidance(self, avoidance: AvoidanceConfig) -> Result<Self, SimulationConfigError> {
+        let values = [
+            avoidance.friendly_comfort_radius_meters,
+            avoidance.opposing_comfort_radius_meters,
+            avoidance.friendly_strength,
+            avoidance.opposing_strength,
+            avoidance.prediction_horizon_seconds,
+            avoidance.max_avoidance_acceleration,
+            avoidance.opposing_speed_squared_scale,
+        ];
+        if values
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(SimulationConfigError::InvalidAvoidanceConfig);
+        }
+        if avoidance.opposing_comfort_radius_meters < avoidance.friendly_comfort_radius_meters {
+            return Err(SimulationConfigError::OpposingRadiusTooSmall);
+        }
+        Ok(Self { avoidance, ..self })
     }
 
     pub fn total_units(self) -> usize {

@@ -155,6 +155,7 @@ mod tests {
         assert!(!autopilot.is_active());
 
         let neighbor = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,

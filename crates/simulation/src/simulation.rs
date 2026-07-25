@@ -184,20 +184,26 @@ impl Simulation {
     /// authoritative World units, and deriving transient boundary events.
     pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
         self.commands.execute_pending(self.tick, &mut self.world)?;
-        let observations: Vec<(Option<crate::command::PlayerId>, Vec2, Vec2)> = self
+        let mut observations: Vec<(
+            crate::command::UnitId,
+            Option<crate::command::PlayerId>,
+            Vec2,
+            Vec2,
+        )> = self
             .world
             .units
             .iter()
-            .map(|u| (u.owner, u.state.position, u.state.velocity))
+            .map(|u| (u.id, u.owner, u.state.position, u.state.velocity))
             .collect();
-        for (i, unit) in self.world.units.iter_mut().enumerate() {
+        observations.sort_unstable_by_key(|(unit_id, ..)| *unit_id);
+        for unit in self.world.units.iter_mut() {
             let owner = unit.owner;
             let neighbors = observations
                 .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
+                .filter(|(neighbor_id, ..)| *neighbor_id != unit.id)
                 .map(
-                    |(_, (neighbor_owner, position, velocity))| NeighborObservation {
+                    |(neighbor_id, neighbor_owner, position, velocity)| NeighborObservation {
+                        unit_id: *neighbor_id,
                         position: *position,
                         velocity: *velocity,
                         relationship: if owner.is_some() && owner == *neighbor_owner {

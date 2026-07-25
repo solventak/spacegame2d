@@ -1,5 +1,7 @@
 use glam::Vec2;
 
+use crate::command::UnitId;
+
 use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::config::{DEFAULT_FLEET_SIZE, SimulationConfig};
 use crate::flight_control::{ArrivalController, NeighborObservation, NeighborRelationship};
@@ -93,7 +95,9 @@ impl Fleet {
         let observations: Vec<NeighborObservation> = self
             .units
             .iter()
-            .map(|u| NeighborObservation {
+            .enumerate()
+            .map(|(index, u)| NeighborObservation {
+                unit_id: UnitId((index + 1) as u32),
                 position: u.state.position,
                 velocity: u.state.velocity,
                 relationship: NeighborRelationship::Friendly,
