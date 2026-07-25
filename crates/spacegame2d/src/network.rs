@@ -48,10 +48,8 @@ impl NetworkSession {
         &self,
         simulation: &mut spacegame2d_simulation::simulation::Simulation,
     ) -> io::Result<()> {
-        let player = u8::try_from(self.player_slot)
-            .ok()
-            .and_then(spacegame2d_simulation::command::PlayerId::new)
-            .ok_or_else(|| invalid("server assigned invalid player slot"))?;
+        let player = spacegame2d_simulation::command::PlayerId::try_from(self.player_slot)
+            .map_err(|_| invalid("server assigned invalid player slot"))?;
         simulation.world.assign_mirror_owners();
         simulation.world.connect_player(player);
         Ok(())

@@ -12,6 +12,20 @@ use crate::simulation::{ShipState, Simulation, SimulationEvent};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(pub u8);
 
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum PlayerIdError {
+    #[error("player slot must be nonzero and fit in u8")]
+    InvalidSlot,
+}
+
+impl TryFrom<u32> for PlayerId {
+    type Error = PlayerIdError;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        let slot = u8::try_from(value).map_err(|_| PlayerIdError::InvalidSlot)?;
+        Self::new(slot).ok_or(PlayerIdError::InvalidSlot)
+    }
+}
+
 impl PlayerId {
     /// Valid player slots start at 1; slot 0 is reserved and never accepted.
     pub fn new(slot: u8) -> Option<Self> {
@@ -21,6 +35,18 @@ impl PlayerId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UnitId(pub u32);
+
+impl From<u32> for UnitId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<UnitId> for u32 {
+    fn from(value: UnitId) -> Self {
+        value.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum UnitIdAllocationError {
@@ -146,13 +172,12 @@ impl World {
         &self,
         cmd: &AuthoritativeCommand,
     ) -> Result<(), AuthoritativeCommandError> {
-        let slot = u8::try_from(cmd.player_slot)
+        let player = PlayerId::try_from(cmd.player_slot)
             .map_err(|_| AuthoritativeCommandError::InvalidPlayerSlot)?;
-        let player = PlayerId::new(slot).ok_or(AuthoritativeCommandError::InvalidPlayerSlot)?;
         match &cmd.command {
             CommandData::SetDestination { unit_id, .. } => {
                 let unit = self
-                    .unit(UnitId(*unit_id))
+                    .unit(UnitId::from(*unit_id))
                     .ok_or(AuthoritativeCommandError::UnknownUnit)?;
                 if unit.owner != Some(player) {
                     return Err(AuthoritativeCommandError::NotOwner);
