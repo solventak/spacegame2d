@@ -143,7 +143,7 @@ impl Simulation {
     /// Client mirrors use this path because they do not maintain the server's
     /// complete ownership registry.
     pub fn schedule_authoritative_trusted(&mut self, cmd: &AuthoritativeCommand) -> bool {
-        let Ok(command) = Box::<dyn crate::command::Command>::try_from(&cmd.command) else {
+        let Ok(command) = Box::<dyn crate::command::Command>::try_from(cmd) else {
             return false;
         };
         self.commands.schedule(cmd.execute_tick, command);
@@ -369,17 +369,14 @@ mod tests {
         execute_tick: u64,
         player_slot: u32,
         sequence: u32,
-        unit_id: u32,
+        _unit_id: u32,
         destination: [u32; 2],
     ) -> AuthoritativeCommand {
         AuthoritativeCommand {
             execute_tick: Tick::from(execute_tick),
             player_slot,
             sequence,
-            command: CommandData::SetDestination {
-                unit_id,
-                destination,
-            },
+            command: CommandData::SetDestination { destination },
         }
     }
 
@@ -423,14 +420,13 @@ mod tests {
             player_slot: 0,
             sequence: 1,
             command: CommandData::SetDestination {
-                unit_id: 1,
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
             },
         };
         assert!(!sim.schedule_authoritative(&bad_slot));
 
         let unknown_unit =
-            authoritative_set_destination(0, 1, 2, 999, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+            authoritative_set_destination(0, 2, 2, 999, [1.0f32.to_bits(), 2.0f32.to_bits()]);
         assert!(!sim.schedule_authoritative(&unknown_unit));
 
         let nan_destination = AuthoritativeCommand {
@@ -438,7 +434,6 @@ mod tests {
             player_slot: 1,
             sequence: 3,
             command: CommandData::SetDestination {
-                unit_id: 1,
                 destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
             },
         };
@@ -483,10 +478,7 @@ mod tests {
         assert!(sim.schedule_authoritative(&cmd));
         sim.step().unwrap();
         assert!(
-            sim.world.units[0]
-                .state
-                .position
-                .distance(pos_before)
+            sim.world.units[0].state.position.distance(pos_before)
                 <= MAX_SPEED_METERS_PER_SECOND * FIXED_DT_SECONDS + 1.0e-6
         );
     }
