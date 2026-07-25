@@ -377,7 +377,14 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    type UnitSnapshot = (UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool);
+    type UnitSnapshot = (
+        UnitId,
+        Option<PlayerId>,
+        ShipState,
+        crate::combat::CombatState,
+        Option<Vec2>,
+        bool,
+    );
 
     fn unit_snapshot(world: &World) -> Vec<UnitSnapshot> {
         world
@@ -388,6 +395,7 @@ mod tests {
                     u.id,
                     u.owner,
                     u.state,
+                    u.combat,
                     u.autopilot.destination(),
                     u.autopilot.is_active(),
                 )
