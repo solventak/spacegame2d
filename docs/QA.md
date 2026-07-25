@@ -6,7 +6,7 @@ This document describes how to bring the application to an interactive state and
 
 | Requirement | Headless path | GUI path |
 |---|---|---|
-| Rust toolchain (MSRV 1.89) | Yes | Yes |
+| Rust toolchain (MSRV 1.91) | Yes | Yes |
 | GPU adapter (wgpu-compatible) | No | Yes |
 | Display (X11/Wayland/Win32/macOS) | No | Yes |
 
@@ -59,7 +59,7 @@ This script runs the complete test gate and a server smoke test, then reports a 
    - **Autopilot navigation**: right-click-style destination setting drives the ship to a target via the `ArrivalController`, converges from rest without orbiting, brakes near destination, settles with near-zero velocity.
    - **Reset**: `R`-equivalent `ResetSimulation` command rewinds tick counter and respawns the ship at the origin.
    - **World boundary**: ship at the exact 16 m radius survives; ship beyond the boundary is destroyed and removed; destruction emits an info log.
-   - **Drone fleet**: 30 drones spawn at deterministic positions, idle drones stay stationary, out-of-bounds drones are culled, reset restores the full swarm.
+   - **Networked fleets**: each connected player receives an owned fleet, sees the other player's fleet, and right-click movement commands are broadcast and applied at the scheduled tick. Reset restores the deterministic swarm while preserving ownership.
 
 3. **Server smoke test:**
 
@@ -70,7 +70,7 @@ This script runs the complete test gate and a server smoke test, then reports a 
    Expected output:
 
    ```
-   spacegame2d-server: placeholder startup banner
+   server listening on the configured address
    ```
 
    The process exits with code 0 immediately.
@@ -89,7 +89,7 @@ This path launches the actual desktop application and exercises it through keybo
 cargo run
 ```
 
-A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the 16 m death boundary) and 30 drone ships spawned at deterministic positions.
+A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the 16 m death boundary) and the deterministic fleet spawned for the connected player and mirrored fleets received from the server.
 
 ### Controls
 
@@ -112,7 +112,7 @@ A window titled "Spacegame 2D" opens showing a black background with a subtle ri
 
 4. **World boundary**: Fly the ship beyond the visible ring (16 m radius). The ship is destroyed (disappears). Press `R` to respawn.
 
-5. **Drone swarm**: The 30 drones move under their own autopilots. Drones that fly beyond the boundary are culled and disappear.
+5. **Drone swarm**: Each player's fleet moves under the deterministic simulation and receives authoritative commands from the server. Drones that fly beyond the boundary are culled and disappear.
 
 ### Agent-driven GUI QA
 

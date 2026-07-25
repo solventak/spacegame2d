@@ -2,13 +2,12 @@
 //!
 //! Sets up a `wgpu` + `winit` window, runs the fixed-timestep frame loop
 //! driving the [`spacegame2d_simulation`] crate, and renders the arena ring,
-//! the player ship, and the drone fleet. Player input is handled by
-//! [`input::InputController`]; autopilot destinations are set by right-click.
+//! and renders the autopilot drone fleet. Destinations are set by right-click.
 //!
 //! See the [`spacegame2d_simulation`] crate for the simulation model itself.
 
 mod geometry;
-mod input;
+pub mod network;
 
 use std::{
     sync::Arc,
@@ -17,12 +16,11 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
-use input::{ControlKey, InputController};
+use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
-    autopilot::{Autopilot, AutopilotConfig},
-    fleet::Fleet,
-    flight_control::ArrivalController,
-    simulation::{SIMULATION_HZ, ShipInput, ShipState, Simulation},
+    command::PlayerId,
+    command::Unit,
+    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -36,6 +34,8 @@ use winit::{
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 
 const VIEW_HEIGHT_METERS: f32 = 40.0;
+const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
+const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
 #[repr(C)]
@@ -44,9 +44,23 @@ struct SceneUniform {
     viewport: [f32; 4],
     ship: [f32; 4],
     marker: [f32; 4],
+    ship_color: [f32; 4],
 }
 
-fn scene_uniform(width: u32, height: u32, ship: &ShipState, marker: Option<Vec2>) -> SceneUniform {
+fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
+    match owner {
+        Some(PlayerId(2)) => PLAYER_TWO_COLOR,
+        _ => PLAYER_ONE_COLOR,
+    }
+}
+
+fn scene_uniform(
+    width: u32,
+    height: u32,
+    ship: &ShipState,
+    marker: Option<Vec2>,
+    ship_color: [f32; 4],
+) -> SceneUniform {
     let aspect = width.max(1) as f32 / height.max(1) as f32;
     let half_height = VIEW_HEIGHT_METERS * 0.5;
     let half_width = half_height * aspect;
@@ -59,6 +73,7 @@ fn scene_uniform(width: u32, height: u32, ship: &ShipState, marker: Option<Vec2>
             ship.heading_radians.cos(),
         ],
         marker: marker.map_or([0.0, 0.0, 0.0, 0.0], |p| [p.x, p.y, 1.0, 0.0]),
+        ship_color,
     }
 }
 
@@ -79,10 +94,7 @@ struct Renderer {
 }
 
 impl Renderer {
-    async fn new(
-        window: Arc<Window>,
-        drones: &[spacegame2d_simulation::fleet::Unit],
-    ) -> Result<Self, String> {
+    async fn new(window: Arc<Window>, units: &[Unit]) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -209,6 +221,7 @@ impl Renderer {
                 config.height,
                 &ShipState::default(),
                 None,
+                PLAYER_ONE_COLOR,
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -220,8 +233,9 @@ impl Renderer {
                 resource: ring_scene_buffer.as_entire_binding(),
             }],
         });
-        let scene_uniforms = std::iter::once(ShipState::default())
-            .chain(drones.iter().map(|u| u.state))
+        let scene_uniforms = units
+            .iter()
+            .map(|unit| unit.state)
             .map(|ship| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("scene uniform"),
@@ -230,6 +244,7 @@ impl Renderer {
                         config.height,
                         &ship,
                         None,
+                        PLAYER_ONE_COLOR,
                     )),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
@@ -274,9 +289,9 @@ impl Renderer {
     }
     fn render(
         &mut self,
-        drones: &[spacegame2d_simulation::fleet::Unit],
-        ship: Option<&ShipState>,
-        marker: Option<Vec2>,
+        units: &[Unit],
+        _ship: Option<&ShipState>,
+        _marker: Option<Vec2>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -310,33 +325,20 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            for (index, unit) in drones.iter().enumerate() {
+            for (index, unit) in units.iter().enumerate() {
                 self.queue.write_buffer(
-                    &self.scene_buffers[index + 1],
+                    &self.scene_buffers[index],
                     0,
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
                         self.config.height,
                         &unit.state,
                         None,
+                        fleet_color(unit.owner),
                     )),
                 );
-                pass.set_bind_group(0, &self.scene_bind_groups[index + 1], &[]);
+                pass.set_bind_group(0, &self.scene_bind_groups[index], &[]);
                 pass.draw(0..24, 0..1);
-            }
-            if let Some(ship) = ship {
-                self.queue.write_buffer(
-                    &self.scene_buffers[0],
-                    0,
-                    bytemuck::bytes_of(&scene_uniform(
-                        self.config.width,
-                        self.config.height,
-                        ship,
-                        marker,
-                    )),
-                );
-                pass.set_bind_group(0, &self.scene_bind_groups[0], &[]);
-                pass.draw(0..30, 0..1);
             }
             self.queue.write_buffer(
                 &self.ring_scene_buffer,
@@ -346,6 +348,7 @@ impl Renderer {
                     self.config.height,
                     &ShipState::default(),
                     None,
+                    PLAYER_ONE_COLOR,
                 )),
             );
             pass.set_vertex_buffer(0, self.ring_vertex_buffer.slice(..));
@@ -361,38 +364,49 @@ impl Renderer {
 struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
-    drones: Fleet,
-    input: InputController,
-    autopilot: Autopilot,
     pending_destination: Option<Vec2>,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
+    network: Option<network::NetworkSession>,
+    scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
+    next_sequence: u32,
+    presentation_events: PresentationEventLog,
 }
+
+/// Client-only event state used by presentation code.
+///
+/// Simulation events remain transient consequences of stepping the
+/// authoritative world. Keeping this log here means presentation effects can
+/// outlive a frame without adding event state to `World`, replay history, or
+/// the network protocol.
+#[derive(Debug, Default, PartialEq)]
+struct PresentationEventLog {
+    events: Vec<SimulationEvent>,
+}
+
+impl PresentationEventLog {
+    pub(crate) fn append(&mut self, events: impl IntoIterator<Item = SimulationEvent>) {
+        self.events.extend(events);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+    }
+}
+
 impl Default for App {
     fn default() -> Self {
         Self {
             renderer: None,
             simulation: Simulation::default(),
-            drones: Fleet::new(),
-            input: InputController::default(),
-            autopilot: Autopilot::new(
-                Box::new(ArrivalController::default()),
-                AutopilotConfig::default(),
-            ),
             pending_destination: None,
             cursor_position: None,
             next_tick: Instant::now(),
+            network: None,
+            scheduled: std::collections::BTreeMap::new(),
+            next_sequence: 1,
+            presentation_events: PresentationEventLog::default(),
         }
-    }
-}
-
-fn map_key(key: PhysicalKey) -> Option<ControlKey> {
-    match key {
-        PhysicalKey::Code(KeyCode::KeyW) => Some(ControlKey::Thrust),
-        PhysicalKey::Code(KeyCode::KeyA) => Some(ControlKey::TurnLeft),
-        PhysicalKey::Code(KeyCode::KeyD) => Some(ControlKey::TurnRight),
-        PhysicalKey::Code(KeyCode::KeyR) => Some(ControlKey::Reset),
-        _ => None,
     }
 }
 
@@ -410,6 +424,26 @@ impl ApplicationHandler for App {
         if self.renderer.is_some() {
             return;
         }
+        let address = std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "127.0.0.1:4000".into());
+        match network::NetworkSession::connect(&address) {
+            Ok(session) => {
+                self.simulation = Simulation::default();
+                self.simulation.set_tick(session.server_tick);
+                if let Err(error) = session.register_player(&mut self.simulation) {
+                    eprintln!("failed to register connected player: {error}");
+                    event_loop.exit();
+                    return;
+                }
+                self.network = Some(session);
+            }
+            Err(error) => {
+                eprintln!("failed to connect to server {address}: {error}");
+                event_loop.exit();
+                return;
+            }
+        }
         let window = match event_loop
             .create_window(Window::default_attributes().with_title("Spacegame 2D"))
         {
@@ -420,7 +454,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match pollster::block_on(Renderer::new(window.clone(), self.drones.units())) {
+        match pollster::block_on(Renderer::new(window.clone(), &self.simulation.world.units)) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
@@ -433,31 +467,29 @@ impl ApplicationHandler for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(session) = self.network.as_mut() {
+            session.set_local_tick(self.simulation.tick());
+            match session.poll_commands() {
+                Ok(commands) => {
+                    for command in commands {
+                        self.scheduled
+                            .entry(command.execute_tick)
+                            .or_default()
+                            .push(command);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("server connection lost: {error}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
         let now = Instant::now();
         while now >= self.next_tick {
-            if let Some(command) = self.input.take_command() {
-                self.simulation.apply_command(command);
-                self.autopilot.cancel_and_clear_destination();
-                self.drones.reset();
-                self.pending_destination = None;
-            } else if let Some(destination) = self.pending_destination.take() {
-                self.input.suppress_held_movement_until_release();
-                self.autopilot.set_destination(destination);
-                self.drones.set_destination(destination);
-            }
-            let controls = if self.autopilot.is_active() {
-                if let Some(ship) = self.simulation.ship() {
-                    self.autopilot.controls_for_tick(ship, &[])
-                } else {
-                    ShipInput::default()
-                }
-            } else {
-                self.input.controls()
-            };
-            self.simulation.step(controls);
-            self.drones.step();
-            self.drones
-                .cull(spacegame2d_simulation::simulation::WORLD_RADIUS_M);
+            self.simulation.apply_due_commands(&mut self.scheduled);
+            let events = self.simulation.step().unwrap_or_default();
+            self.presentation_events.append(events);
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -473,7 +505,7 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Focused(false) => self.input.clear_for_focus_loss(),
+            WindowEvent::Focused(false) => {}
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
@@ -495,35 +527,51 @@ impl ApplicationHandler for App {
                         renderer.config.width,
                         renderer.config.height,
                     ));
+                    if let Some(session) = self.network.as_mut() {
+                        let destination = self.pending_destination.expect("destination was set");
+                        let player_id = u8::try_from(session.player_slot)
+                            .ok()
+                            .and_then(spacegame2d_simulation::command::PlayerId::new);
+                        let unit_id = self
+                            .simulation
+                            .world
+                            .units
+                            .iter()
+                            .find(|u| u.owner == player_id)
+                            .map_or(1, |u| u.id.0);
+                        if let Err(error) = session.send_set_destination(
+                            self.next_sequence,
+                            unit_id,
+                            [destination.x.to_bits(), destination.y.to_bits()],
+                        ) {
+                            eprintln!("failed to send destination: {error}");
+                            event_loop.exit();
+                        }
+                        self.next_sequence = self.next_sequence.saturating_add(1);
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
-                        physical_key,
-                        state,
-                        repeat,
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyR),
                         ..
                     },
                 ..
             } => {
-                if let Some(key) = map_key(physical_key) {
-                    match state {
-                        ElementState::Pressed if key != ControlKey::Reset || !repeat => {
-                            self.input.press(key)
-                        }
-                        ElementState::Released => self.input.release(key),
-                        _ => {}
+                if let Some(session) = self.network.as_mut() {
+                    if let Err(error) = session.send_reset_simulation(self.next_sequence) {
+                        eprintln!("failed to send reset: {error}");
+                        event_loop.exit();
                     }
+                    self.presentation_events.clear();
+                    self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render(
-                        self.drones.units(),
-                        self.simulation.ship(),
-                        self.autopilot.destination(),
-                    ) {
+                    match renderer.render(&self.simulation.world.units, None, None) {
                         Ok(()) => {}
                         Err(
                             wgpu::CurrentSurfaceTexture::Lost
@@ -546,7 +594,9 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let _logging =
+        spacegame2d_logging::init("spacegame2d", "info").expect("failed to initialize logging");
+    tracing::info!(event = "client_starting", "spacegame2d starting");
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut App::default())
@@ -556,8 +606,15 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 mod tests {
     use super::*;
     #[test]
+    fn fleet_color_maps_player_two_to_coral() {
+        assert_eq!(fleet_color(Some(PlayerId(1))), PLAYER_ONE_COLOR);
+        assert_eq!(fleet_color(Some(PlayerId(2))), PLAYER_TWO_COLOR);
+        assert_eq!(fleet_color(None), PLAYER_ONE_COLOR);
+    }
+
+    #[test]
     fn scene_uniform_uses_fixed_world_scale() {
-        let u = scene_uniform(1000, 1000, &ShipState::default(), None);
+        let u = scene_uniform(1000, 1000, &ShipState::default(), None, PLAYER_ONE_COLOR);
         // Square viewport: half_width == half_height == VIEW_HEIGHT_METERS * 0.5.
         let expected = 1.0 / (VIEW_HEIGHT_METERS * 0.5);
         assert!((u.viewport[0] - expected).abs() < 0.0001);
@@ -573,5 +630,27 @@ mod tests {
     fn ring_mesh_has_expected_vertex_count() {
         let vertices = ring_vertices();
         assert_eq!(vertices.len(), 128 * 6);
+    }
+
+    #[test]
+    fn presentation_event_log_aggregates_and_clears_locally() {
+        let mut log = PresentationEventLog::default();
+        let first = SimulationEvent::BoundaryCrossed {
+            tick: Tick::from(4),
+            unit_id: spacegame2d_simulation::UnitId(2),
+            position: Vec2::new(17.0, 0.0),
+        };
+        let second = SimulationEvent::BoundaryCrossed {
+            tick: Tick::from(5),
+            unit_id: spacegame2d_simulation::UnitId(3),
+            position: Vec2::new(-17.0, 0.0),
+        };
+
+        log.append([first]);
+        log.append([second]);
+
+        assert_eq!(log.events, vec![first, second]);
+        log.clear();
+        assert!(log.events.is_empty());
     }
 }

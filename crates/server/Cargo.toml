@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 spacegame2d-simulation = { path = "../simulation" }
 spacegame2d-protocol = { path = "../protocol" }
+spacegame2d-logging = { path = "../logging" }
+tracing = "=0.1.40"
+tokio = { version = "=1.38.0", features = ["full"] }

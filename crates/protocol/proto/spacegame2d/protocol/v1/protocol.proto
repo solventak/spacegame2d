@@ -1,0 +1,52 @@
+syntax = "proto3";
+package spacegame2d.protocol.v1;
+
+message Envelope {
+  oneof payload {
+    ClientHello client_hello = 1;
+    ServerHello server_hello = 2;
+    CommandRequest command_request = 3;
+    AuthoritativeCommand authoritative_command = 4;
+  }
+}
+
+message ClientHello {
+  uint32 simulation_version = 1;
+  repeated Capability supported_capabilities = 2;
+}
+message ServerHello {
+  uint32 simulation_version = 1;
+  uint32 simulation_hz = 2;
+  uint32 player_slot = 3;
+  uint64 server_tick = 4;
+  repeated Capability enabled_capabilities = 5;
+}
+message CommandRequest {
+  uint32 sequence = 1;
+  Command command = 2;
+}
+message AuthoritativeCommand {
+  uint64 execute_tick = 1;
+  uint32 player_slot = 2;
+  uint32 sequence = 3;
+  Command command = 4;
+}
+message Command {
+  oneof payload {
+    SetDestinationCommand set_destination = 1;
+    ResetSimulationCommand reset_simulation = 2;
+  }
+}
+message SetDestinationCommand {
+  uint32 unit_id = 1;
+  Vector2Bits destination = 2;
+}
+message ResetSimulationCommand {}
+message Vector2Bits {
+  fixed32 x = 1;
+  fixed32 y = 2;
+}
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_STATE_CHECKSUMS = 1;
+}

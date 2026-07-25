@@ -1,4 +1,8 @@
+use crate::command::{CommandScheduler, UnitId, World};
+use crate::flight_control::NeighborObservation;
 use glam::Vec2;
+use spacegame2d_protocol::{AuthoritativeCommand, Tick};
+use std::collections::BTreeMap;
 
 /// Simulation tick rate in hertz. The integrator advances in fixed
 /// [`FIXED_DT_SECONDS`] steps regardless of wall-clock frame timing.
@@ -31,23 +35,13 @@ const VELOCITY_EPSILON: f32 = 0.0001;
 
 /// Per-tick discrete input applied to a ship by the player or an autopilot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ShipInput {
+pub struct FlightInput {
     /// Apply forward thrust along the current heading.
     pub thrust: bool,
     /// Apply counterclockwise (left) angular thrust.
     pub turn_left: bool,
     /// Apply clockwise (right) angular thrust.
     pub turn_right: bool,
-}
-
-/// Command issued to a [`Simulation`], distinct from per-tick [`ShipInput`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SimulationCommand {
-    #[allow(dead_code)]
-    /// Respawn the ship at the origin without rewinding the tick counter.
-    ResetShip,
-    /// Respawn the ship and rewind the tick counter to zero.
-    ResetSimulation,
 }
 
 /// Integrated kinematic state of a single ship.
@@ -75,77 +69,138 @@ impl Default for ShipState {
     }
 }
 
-/// Fixed-timestep driver for a single player-controlled ship inside a circular
-/// arena.
-///
-/// Each call to [`Simulation::step`] advances the ship by one
-/// [`FIXED_DT_SECONDS`] tick and destroys it if it leaves the arena. Use
-/// [`Simulation::apply_command`] to reset.
-#[derive(Clone, Debug, PartialEq)]
+/// Fixed-timestep driver for the autopilot drone world.
 pub struct Simulation {
-    tick: u64,
-    ship: Option<ShipState>,
+    tick: Tick,
     world_radius: f32,
+    pub world: World,
+    pub commands: CommandScheduler,
 }
 
 impl Default for Simulation {
     fn default() -> Self {
         Self {
-            tick: 0,
-            ship: Some(ShipState::default()),
+            tick: Tick::default(),
             world_radius: WORLD_RADIUS_M,
+            world: World::demo(),
+            commands: CommandScheduler::default(),
         }
     }
 }
 
 impl Simulation {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn tick(&self) -> u64 {
+    pub fn tick(&self) -> Tick {
         self.tick
     }
-    /// Construct a simulation with a custom world boundary radius.
-    #[cfg_attr(not(test), allow(dead_code))]
+
+    /// Align a mirror simulation with the authoritative server clock.
+    pub fn set_tick(&mut self, tick: Tick) {
+        self.tick = tick;
+    }
+
     pub fn with_world_radius(world_radius: f32) -> Self {
         Self {
             world_radius,
             ..Self::default()
         }
     }
-    /// World boundary radius for this simulation's ship.
-    #[cfg_attr(not(test), allow(dead_code))]
+
     pub fn world_radius(&self) -> f32 {
         self.world_radius
     }
-    pub fn ship(&self) -> Option<&ShipState> {
-        self.ship.as_ref()
+    pub fn world(&self) -> &World {
+        &self.world
     }
-    pub fn apply_command(&mut self, command: SimulationCommand) {
-        match command {
-            SimulationCommand::ResetShip => {
-                self.ship = Some(ShipState::default());
-            }
-            SimulationCommand::ResetSimulation => {
-                self.ship = Some(ShipState::default());
-                self.tick = 0;
+    pub fn schedule_authoritative(&mut self, cmd: &AuthoritativeCommand) -> bool {
+        if self.world.validate_authoritative(cmd).is_err() {
+            return false;
+        }
+        self.schedule_authoritative_trusted(cmd)
+    }
+
+    pub fn apply_due_commands(
+        &mut self,
+        scheduled: &mut BTreeMap<Tick, Vec<AuthoritativeCommand>>,
+    ) {
+        let current_tick = self.tick;
+        let due_ticks: Vec<Tick> = scheduled
+            .range(..=current_tick)
+            .map(|(tick, _)| *tick)
+            .collect();
+        for tick in due_ticks {
+            if let Some(commands) = scheduled.remove(&tick) {
+                for mut command in commands {
+                    if command.execute_tick < current_tick {
+                        command.execute_tick = current_tick;
+                    }
+                    self.schedule_authoritative_trusted(&command);
+                }
             }
         }
     }
 
-    pub fn step(&mut self, input: ShipInput) {
-        if let Some(ref mut ship) = self.ship {
-            step_ship(ship, input);
-            if is_out_of_bounds(ship.position, self.world_radius) {
-                let pos = ship.position;
-                log::info!(
-                    "ship destroyed: out of bounds at ({:.1}, {:.1})",
-                    pos.x,
-                    pos.y
-                );
-                self.ship = None;
-            }
-        }
-        self.tick = self.tick.saturating_add(1);
+    /// Schedule a command already validated by the authoritative server.
+    /// Client mirrors use this path because they do not maintain the server's
+    /// complete ownership registry.
+    pub fn schedule_authoritative_trusted(&mut self, cmd: &AuthoritativeCommand) -> bool {
+        let Ok(command) = Box::<dyn crate::command::Command>::try_from(&cmd.command) else {
+            return false;
+        };
+        self.commands.schedule(cmd.execute_tick, command);
+        true
     }
+
+    /// Advance one deterministic tick by applying queued commands, stepping the
+    /// authoritative World units, and deriving transient boundary events.
+    pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
+        self.commands.execute_pending(self.tick, &mut self.world)?;
+        let observations: Vec<NeighborObservation> = self
+            .world
+            .units
+            .iter()
+            .map(|u| NeighborObservation {
+                position: u.state.position,
+                velocity: u.state.velocity,
+            })
+            .collect();
+        for (i, unit) in self.world.units.iter_mut().enumerate() {
+            let neighbors = observations
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, n)| *n)
+                .collect::<Vec<_>>();
+            let input = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
+            step_ship(&mut unit.state, input);
+        }
+        let mut events = Vec::new();
+        self.world.units.retain(|u| {
+            if is_out_of_bounds(u.state.position, self.world_radius) {
+                events.push(SimulationEvent::BoundaryCrossed {
+                    tick: self.tick,
+                    unit_id: u.id,
+                    position: u.state.position,
+                });
+                false
+            } else {
+                true
+            }
+        });
+        events.sort_by_key(|event| match event {
+            SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
+        });
+        self.tick = self.tick.increment(Tick::new(1));
+        Ok(events)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SimulationEvent {
+    BoundaryCrossed {
+        tick: Tick,
+        unit_id: UnitId,
+        position: Vec2,
+    },
 }
 
 /// Returns `true` when `position` lies strictly outside a circle of
@@ -154,13 +209,8 @@ pub fn is_out_of_bounds(position: Vec2, world_radius: f32) -> bool {
     position.length() > world_radius
 }
 
-/// Integrate one tick of ship physics from `input` into `ship`.
-///
-/// Applies angular thrust and damping, integrates heading, applies linear
-/// thrust and damping, clamps to the speed caps, and finally advances the
-/// position. This is the shared integrator used by both the player ship and
-/// each drone in the [`Fleet`](crate::fleet::Fleet).
-pub fn step_ship(ship: &mut ShipState, input: ShipInput) {
+/// Integrate one tick of ship physics from autopilot flight input into `ship`.
+pub fn step_ship(ship: &mut ShipState, input: FlightInput) {
     let turn_axis = input.turn_left as i32 - input.turn_right as i32;
     if turn_axis != 0 {
         ship.angular_velocity_radians_per_second += turn_axis as f32
@@ -177,7 +227,6 @@ pub fn step_ship(ship: &mut ShipState, input: ShipInput) {
     ship.heading_radians = wrap_angle(
         ship.heading_radians + ship.angular_velocity_radians_per_second * FIXED_DT_SECONDS,
     );
-
     if input.thrust {
         let forward = Vec2::new(-ship.heading_radians.sin(), ship.heading_radians.cos());
         ship.velocity += forward * (FORWARD_THRUST_NEWTONS / SHIP_MASS_KG) * FIXED_DT_SECONDS;
@@ -195,298 +244,457 @@ pub fn step_ship(ship: &mut ShipState, input: ShipInput) {
     }
     ship.position += ship.velocity * FIXED_DT_SECONDS;
 }
+
 fn wrap_angle(angle: f32) -> f32 {
-    let two_pi = std::f32::consts::TAU;
-    (angle + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn run(mut sim: Simulation, input: ShipInput, ticks: usize) -> Simulation {
-        for _ in 0..ticks {
-            sim.step(input);
-        }
-        sim
-    }
+
+    use spacegame2d_protocol::CommandData;
+
+    use crate::command::PlayerId;
+
     #[test]
-    fn starts_stationary() {
+    fn starts_without_player_ship() {
         let sim = Simulation::default();
-        assert_eq!(sim.tick(), 0);
-        assert_eq!(*sim.ship().unwrap(), ShipState::default());
+        assert_eq!(sim.tick(), Tick::new(0));
     }
     #[test]
-    fn empty_step_advances_tick_without_motion() {
+    fn step_advances_tick_without_player_input() {
         let mut sim = Simulation::default();
-        sim.step(ShipInput::default());
-        assert_eq!(sim.tick(), 1);
-        assert_eq!(*sim.ship().unwrap(), ShipState::default());
+        assert!(sim.step().unwrap().is_empty());
+        assert_eq!(sim.tick(), Tick::new(1));
     }
+
     #[test]
-    fn reset_ship_restores_ship_without_rewinding_tick() {
-        let mut sim = run(
-            Simulation::default(),
-            ShipInput {
-                thrust: true,
-                ..Default::default()
-            },
-            20,
+    fn step_emits_boundary_crossed_and_removes_unit() {
+        let mut sim = Simulation::with_world_radius(1.0);
+        sim.world.units.truncate(1);
+        sim.world.units[0].state.position = Vec2::new(1.1, 0.0);
+        let unit_id = sim.world.units[0].id;
+
+        let events = sim.step().unwrap();
+
+        assert_eq!(
+            events,
+            vec![SimulationEvent::BoundaryCrossed {
+                tick: Tick::default(),
+                unit_id,
+                position: Vec2::new(1.1, 0.0),
+            }]
         );
-        let tick = sim.tick();
-        sim.apply_command(SimulationCommand::ResetShip);
-        assert_eq!(sim.tick(), tick);
-        assert_eq!(*sim.ship().unwrap(), ShipState::default());
+        assert!(sim.world.units.is_empty());
+        assert_eq!(sim.tick(), Tick::new(1));
     }
+
     #[test]
-    fn reset_simulation_rewinds_tick_and_respawns_ship() {
-        let mut sim = run(
-            Simulation::default(),
-            ShipInput {
-                thrust: true,
-                ..Default::default()
-            },
-            20,
-        );
-        sim.apply_command(SimulationCommand::ResetSimulation);
-        assert_eq!(sim.tick(), 0);
-        assert_eq!(*sim.ship().unwrap(), ShipState::default());
-    }
-    #[test]
-    fn reset_after_removal_respawns_ship_and_rewinds_tick() {
-        let mut sim = Simulation::default();
-        sim.ship = Some(ShipState {
-            position: Vec2::new(WORLD_RADIUS_M + 0.01, 0.0),
-            ..Default::default()
-        });
-        sim.step(ShipInput::default());
-        assert!(sim.ship().is_none());
-        assert_eq!(sim.tick(), 1);
-        sim.apply_command(SimulationCommand::ResetSimulation);
-        assert_eq!(sim.tick(), 0);
-        assert_eq!(*sim.ship().unwrap(), ShipState::default());
-    }
-    #[test]
-    fn forward_thrust_accelerates_along_heading() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                thrust: true,
-                ..Default::default()
-            },
-            1,
-        );
-        assert!(sim.ship().unwrap().velocity.y > 0.0);
-        assert!(sim.ship().unwrap().position.y > 0.0);
-    }
-    #[test]
-    fn release_thrust_damps_drift() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                thrust: true,
-                ..Default::default()
-            },
-            30,
-        );
-        let speed = sim.ship().unwrap().velocity.length();
-        let sim = run(sim, ShipInput::default(), 1);
-        assert!(sim.ship().unwrap().velocity.length() < speed);
-        assert!(sim.ship().unwrap().velocity.length() > 0.0);
-    }
-    #[test]
-    fn total_velocity_is_capped() {
-        // Use a very large world boundary so the ship never escapes while ramping
-        // up to terminal velocity across the full 500-tick run.
-        let sim = run(
-            Simulation::with_world_radius(10_000.0),
-            ShipInput {
-                thrust: true,
-                ..Default::default()
-            },
-            500,
-        );
-        assert!(sim.ship().unwrap().velocity.length() <= MAX_SPEED_METERS_PER_SECOND + 0.0001);
-    }
-    #[test]
-    fn left_applies_counterclockwise_angular_thrust() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                turn_left: true,
-                ..Default::default()
-            },
-            1,
-        );
-        assert!(sim.ship().unwrap().angular_velocity_radians_per_second > 0.0);
-        assert!(sim.ship().unwrap().heading_radians > 0.0);
-    }
-    #[test]
-    fn right_applies_clockwise_angular_thrust() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                turn_right: true,
-                ..Default::default()
-            },
-            1,
-        );
-        assert!(sim.ship().unwrap().heading_radians < 0.0);
-    }
-    #[test]
-    fn opposed_turn_inputs_cancel_torque() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                turn_left: true,
-                turn_right: true,
-                ..Default::default()
-            },
-            10,
-        );
-        assert_eq!(sim.ship().unwrap().angular_velocity_radians_per_second, 0.0);
-    }
-    #[test]
-    fn angular_velocity_is_capped() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                turn_left: true,
-                ..Default::default()
-            },
-            500,
-        );
-        assert!(
-            sim.ship().unwrap().angular_velocity_radians_per_second
-                <= MAX_ANGULAR_SPEED_RADIANS_PER_SECOND
-        );
-    }
-    #[test]
-    fn combined_input_curves_trajectory() {
-        let sim = run(
-            Simulation::default(),
-            ShipInput {
-                thrust: true,
-                turn_left: true,
-                ..Default::default()
-            },
-            60,
-        );
-        assert!(sim.ship().unwrap().position.x.abs() > 0.01);
-        assert!(sim.ship().unwrap().position.y > 0.0);
-    }
-    #[test]
-    fn identical_tick_inputs_are_deterministic() {
-        let inputs = [ShipInput {
-            thrust: true,
-            ..Default::default()
-        }; 30];
-        let mut a = Simulation::default();
-        let mut b = Simulation::default();
-        for input in inputs {
-            a.step(input);
-            b.step(input);
+    fn boundary_events_are_sorted_by_unit_id() {
+        let mut sim = Simulation::with_world_radius(1.0);
+        sim.world.units.truncate(2);
+        sim.world.units.swap(0, 1);
+        for unit in &mut sim.world.units {
+            unit.state.position = Vec2::new(1.1, 0.0);
         }
+        let mut expected = sim
+            .world
+            .units
+            .iter()
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+
+        let events = sim.step().unwrap();
+        let actual = events
+            .iter()
+            .map(|event| match event {
+                SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    fn physics_input_remains_deterministic_for_autopilot() {
+        let mut a = ShipState::default();
+        let mut b = ShipState::default();
+        let input = FlightInput {
+            thrust: true,
+            turn_left: true,
+            turn_right: false,
+        };
+        step_ship(&mut a, input);
+        step_ship(&mut b, input);
         assert_eq!(a, b);
     }
-    #[test]
-    fn exact_boundary_is_in_bounds() {
-        assert!(!is_out_of_bounds(
-            Vec2::new(WORLD_RADIUS_M, 0.0),
-            WORLD_RADIUS_M
-        ));
-        assert!(!is_out_of_bounds(
-            Vec2::new(0.0, WORLD_RADIUS_M),
-            WORLD_RADIUS_M
-        ));
-    }
-    #[test]
-    fn epsilon_beyond_boundary_is_out_of_bounds() {
-        assert!(is_out_of_bounds(
-            Vec2::new(WORLD_RADIUS_M + 0.01, 0.0),
-            WORLD_RADIUS_M
-        ));
-    }
-    #[test]
-    fn ship_at_exact_boundary_survives_tick() {
-        let mut sim = Simulation::default();
-        sim.ship = Some(ShipState {
-            position: Vec2::new(WORLD_RADIUS_M, 0.0),
-            ..Default::default()
-        });
-        sim.step(ShipInput::default());
-        assert!(sim.ship().is_some());
-    }
-    #[test]
-    fn ship_epsilon_beyond_boundary_is_removed() {
-        let mut sim = Simulation::default();
-        sim.ship = Some(ShipState {
-            position: Vec2::new(WORLD_RADIUS_M + 0.01, 0.0),
-            ..Default::default()
-        });
-        sim.step(ShipInput::default());
-        assert!(sim.ship().is_none());
+
+    fn unit_snapshot(
+        world: &World,
+    ) -> Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)> {
+        world
+            .units
+            .iter()
+            .map(|u| {
+                (
+                    u.id,
+                    u.owner,
+                    u.state,
+                    u.autopilot.destination(),
+                    u.autopilot.is_active(),
+                )
+            })
+            .collect()
     }
 
-    // --- logging emission ---------------------------------------------------
+    #[derive(Debug, PartialEq)]
+    struct AuthoritativeSnapshot {
+        tick: Tick,
+        units: Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)>,
+        events: Vec<SimulationEvent>,
+    }
 
-    use std::io::Write;
-    use std::sync::{Arc, Mutex, Once, OnceLock};
-
-    struct CaptureSink(Arc<Mutex<Vec<u8>>>);
-    impl Write for CaptureSink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+    fn authoritative_set_destination(
+        execute_tick: u64,
+        player_slot: u32,
+        sequence: u32,
+        unit_id: u32,
+        destination: [u32; 2],
+    ) -> AuthoritativeCommand {
+        AuthoritativeCommand {
+            execute_tick: Tick::from(execute_tick),
+            player_slot,
+            sequence,
+            command: CommandData::SetDestination {
+                unit_id,
+                destination,
+            },
         }
     }
 
-    fn capture_buffer() -> &'static Arc<Mutex<Vec<u8>>> {
-        static CAPTURE: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
-        CAPTURE.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-    }
-
-    fn ensure_env_logger() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            let sink = Box::new(CaptureSink(capture_buffer().clone()));
-            env_logger::Builder::new()
-                .filter_level(log::LevelFilter::Info)
-                .target(env_logger::Target::Pipe(sink))
-                .try_init()
-                .ok();
-        });
+    #[test]
+    fn unit_id_and_owner_are_stable_across_commands() {
+        // CMD-002: stable identity and ownership.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let id_before = sim.world.units[0].id;
+        let owner_before = sim.world.units[0].owner;
+        let cmd = authoritative_set_destination(0, 1, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&cmd));
+        sim.step().unwrap();
+        assert_eq!(sim.world.units[0].id, id_before);
+        assert_eq!(sim.world.units[0].owner, owner_before);
     }
 
     #[test]
-    fn ship_destroyed_info_log_actually_emits() {
-        ensure_env_logger();
-        // Use distinctive coordinates so concurrent out-of-bounds tests logging
-        // into the shared capture buffer cannot satisfy this assertion for us.
-        let marker_pos = Vec2::new(WORLD_RADIUS_M + 5.0, 3.0);
-        let expected = format!(
-            "out of bounds at ({:.1}, {:.1})",
-            marker_pos.x, marker_pos.y
-        );
-
-        {
-            let mut buf = capture_buffer().lock().unwrap();
-            buf.clear();
-        }
+    fn cross_player_command_is_rejected() {
+        // CMD-004: ownership validation.
         let mut sim = Simulation::default();
-        sim.ship = Some(ShipState {
-            position: marker_pos,
-            ..Default::default()
-        });
-        sim.step(ShipInput::default());
-        log::logger().flush();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let pos_before = sim.world.units[0].state.position;
+        let cmd = authoritative_set_destination(0, 2, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        assert!(!sim.schedule_authoritative(&cmd));
+        let events = sim.step().unwrap();
+        assert_eq!(sim.world.units[0].state.position, pos_before);
+        assert!(events.is_empty());
+        assert!(sim.commands.history().is_empty());
+    }
 
-        let recorded = String::from_utf8(capture_buffer().lock().unwrap().clone()).unwrap();
-        assert!(
-            recorded.contains(&expected),
-            "expected info log to emit {expected:?}, got: {recorded}"
-        );
+    #[test]
+    fn invalid_commands_leave_world_unchanged() {
+        // CMD-006: invalid commands cause no state mutation or panic.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let snapshot_before = unit_snapshot(&sim.world);
+
+        let bad_slot = AuthoritativeCommand {
+            execute_tick: Tick::default(),
+            player_slot: 0,
+            sequence: 1,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+            },
+        };
+        assert!(!sim.schedule_authoritative(&bad_slot));
+
+        let unknown_unit =
+            authoritative_set_destination(0, 1, 2, 999, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        assert!(!sim.schedule_authoritative(&unknown_unit));
+
+        let nan_destination = AuthoritativeCommand {
+            execute_tick: Tick::default(),
+            player_slot: 1,
+            sequence: 3,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
+            },
+        };
+        assert!(!sim.schedule_authoritative(&nan_destination));
+
+        let events = sim.step().unwrap();
+        assert_eq!(unit_snapshot(&sim.world), snapshot_before);
+        assert!(events.is_empty());
+        assert!(sim.commands.history().is_empty());
+    }
+
+    #[test]
+    fn commands_execute_before_physics_and_tick_advances_by_one() {
+        // CMD-007: fixed tick order. The command must be applied before physics
+        // so the same tick produces a steering result based on the new destination.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        // Position the unit far from the requested destination and face it so
+        // the autopilot produces thrust on the very first tick.
+        sim.world.units[0].state.position = Vec2::new(10.0, 0.0);
+        // Forward vector is (-sin(h), cos(h)); heading = PI/2 points along -X.
+        sim.world.units[0].state.heading_radians = std::f32::consts::FRAC_PI_2;
+        let cmd = authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&cmd));
+        let tick_before = sim.tick();
+        sim.step().unwrap();
+        assert_eq!(sim.tick(), tick_before + Tick::new(1));
+        // The command applied before physics: the destination is set and the
+        // unit has moved toward it in the same tick.
+        assert_eq!(sim.world.units[0].autopilot.destination(), Some(Vec2::ZERO));
+        assert_ne!(sim.world.units[0].state.position, Vec2::new(10.0, 0.0));
+    }
+
+    #[test]
+    fn set_destination_does_not_teleport_units() {
+        // CMD-010: no teleport.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let pos_before = sim.world.units[0].state.position;
+        let cmd =
+            authoritative_set_destination(0, 1, 1, 1, [100.0f32.to_bits(), 100.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&cmd));
+        sim.step().unwrap();
+        assert_eq!(sim.world.units[0].state.position, pos_before);
+    }
+
+    #[test]
+    fn history_records_only_accepted_commands() {
+        // CMD-014: accepted-only history.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let accepted =
+            authoritative_set_destination(0, 1, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        let rejected =
+            authoritative_set_destination(0, 2, 2, 1, [3.0f32.to_bits(), 4.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&accepted));
+        assert!(!sim.schedule_authoritative(&rejected));
+        sim.step().unwrap();
+        assert_eq!(sim.commands.history().len(), 1);
+        assert_eq!(sim.commands.history()[0].execute_tick(), Tick::new(0));
+    }
+
+    #[test]
+    fn cross_peer_replay_is_deterministic_tick_by_tick() {
+        // DEP-005: compare the authoritative per-tick snapshot, rather than
+        // rather than only comparing a legacy aggregate at the end.
+        let commands = vec![
+            authoritative_set_destination(1, 1, 1, 1, [6.0f32.to_bits(), 5.0f32.to_bits()]),
+            authoritative_set_destination(3, 1, 2, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]),
+        ];
+        let ticks = 10;
+
+        let mut a = Simulation::default();
+        a.world.units[0].owner = Some(PlayerId(1));
+        let mut a_snapshots = Vec::new();
+        for _ in 0..ticks {
+            for cmd in &commands {
+                if cmd.execute_tick == a.tick() {
+                    a.schedule_authoritative(cmd);
+                }
+            }
+            let events = a.step().unwrap();
+            a_snapshots.push(AuthoritativeSnapshot {
+                tick: a.tick(),
+                units: unit_snapshot(&a.world),
+                events,
+            });
+        }
+
+        let mut b = Simulation::default();
+        b.world.units[0].owner = Some(PlayerId(1));
+        let mut b_snapshots = Vec::new();
+        for _ in 0..ticks {
+            for cmd in &commands {
+                if cmd.execute_tick == b.tick() {
+                    b.schedule_authoritative(cmd);
+                }
+            }
+            let events = b.step().unwrap();
+            b_snapshots.push(AuthoritativeSnapshot {
+                tick: b.tick(),
+                units: unit_snapshot(&b.world),
+                events,
+            });
+        }
+
+        assert_eq!(a_snapshots, b_snapshots);
+    }
+
+    #[test]
+    fn cross_peer_boundary_event_vectors_are_non_empty_at_same_ticks() {
+        let command =
+            authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 100.0f32.to_bits()]);
+        let mut peers = [
+            Simulation::with_world_radius(1.0),
+            Simulation::with_world_radius(1.0),
+        ];
+        for peer in &mut peers {
+            peer.world.units.truncate(1);
+            peer.world.units[0].owner = Some(PlayerId(1));
+            peer.world.units[0].state.position = Vec2::new(0.0, 0.9);
+            peer.world.units[0].state.heading_radians = 0.0;
+            assert!(peer.schedule_authoritative(&command));
+        }
+
+        let mut event_vectors: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
+        for _ in 0..20 {
+            for (events, peer) in event_vectors.iter_mut().zip(&mut peers) {
+                events.push(peer.step().unwrap());
+            }
+        }
+
+        assert_eq!(event_vectors[0], event_vectors[1]);
+        let non_empty: Vec<_> = event_vectors[0]
+            .iter()
+            .enumerate()
+            .filter(|(_, events)| !events.is_empty())
+            .collect();
+        assert_eq!(non_empty.len(), 1);
+        assert_eq!(non_empty[0].0, 9);
+        assert!(matches!(
+            non_empty[0].1.as_slice(),
+            [SimulationEvent::BoundaryCrossed { tick, .. }] if *tick == Tick::from(9)
+        ));
+    }
+
+    #[test]
+    fn authoritative_command_drives_unit_across_boundary_on_two_peers() {
+        let command =
+            authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 100.0f32.to_bits()]);
+        let mut peers = [
+            Simulation::with_world_radius(1.0),
+            Simulation::with_world_radius(1.0),
+        ];
+        for peer in &mut peers {
+            peer.world.units.truncate(1);
+            peer.world.units[0].owner = Some(PlayerId(1));
+            peer.world.units[0].state.position = Vec2::new(0.0, 0.9);
+            peer.world.units[0].state.heading_radians = 0.0;
+            assert!(peer.schedule_authoritative(&command));
+        }
+
+        let mut control = Simulation::with_world_radius(1.0);
+        control.world.units.truncate(1);
+        control.world.units[0].owner = Some(PlayerId(1));
+        control.world.units[0].state.position = Vec2::new(0.0, 0.9);
+        control.world.units[0].state.heading_radians = 0.0;
+
+        let mut peer_events: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
+        for _ in 0..30 {
+            for (events, peer) in peer_events.iter_mut().zip(&mut peers) {
+                events.push(peer.step().unwrap());
+            }
+            assert!(control.step().unwrap().is_empty());
+        }
+
+        assert!(peer_events[0].iter().any(|events| !events.is_empty()));
+        assert_eq!(peer_events[0], peer_events[1]);
+        assert!(peers.iter().all(|peer| peer.world.units.is_empty()));
+    }
+
+    #[test]
+    fn recorded_history_replays_to_identical_state_and_events() {
+        // CMD-008: replay determinism.
+        let commands = vec![
+            authoritative_set_destination(1, 1, 1, 1, [6.0f32.to_bits(), 5.0f32.to_bits()]),
+            authoritative_set_destination(3, 1, 2, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]),
+        ];
+        let ticks = 10;
+
+        let mut original = Simulation::default();
+        original.world.units[0].owner = Some(PlayerId(1));
+        let mut original_events = Vec::new();
+        for _ in 0..ticks {
+            for cmd in &commands {
+                if cmd.execute_tick == original.tick() {
+                    original.schedule_authoritative(cmd);
+                }
+            }
+            original_events.extend(original.step().unwrap());
+        }
+        let history = original.commands.history().to_vec();
+
+        let mut replay = Simulation::default();
+        replay.world.units[0].owner = Some(PlayerId(1));
+        let replay_events = CommandScheduler::replay(&history, &mut replay, Tick::from(ticks - 1));
+
+        assert_eq!(replay.tick(), original.tick());
+        assert_eq!(unit_snapshot(&replay.world), unit_snapshot(&original.world));
+        assert_eq!(replay_events.unwrap(), original_events);
+    }
+
+    #[test]
+    fn set_tick_advances_clock() {
+        let mut sim = Simulation::default();
+        sim.set_tick(Tick::from(42));
+        assert_eq!(sim.tick(), Tick::new(42));
+    }
+
+    #[test]
+    fn world_accessors_and_custom_radius() {
+        let sim = Simulation::with_world_radius(2.0);
+        assert_eq!(sim.world_radius(), 2.0);
+        assert_eq!(sim.world().units.len(), crate::fleet::DRONE_COUNT);
+    }
+
+    #[test]
+    fn step_ship_damps_velocity_without_thrust() {
+        let mut ship = ShipState {
+            velocity: Vec2::new(4.0, 0.0),
+            ..Default::default()
+        };
+        let speed = ship.velocity.length();
+        step_ship(&mut ship, FlightInput::default());
+        assert!(ship.velocity.length() < speed);
+        assert!(ship.velocity.length() > 0.0);
+    }
+
+    #[test]
+    fn reset_simulation_records_in_history_and_replays() {
+        // Covers ResetSimulation::record and command_from_record for reset.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        sim.world.connect_player(PlayerId(1));
+        let reset = AuthoritativeCommand {
+            execute_tick: Tick::from(2),
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::ResetSimulation,
+        };
+        assert!(sim.schedule_authoritative(&reset));
+        sim.step().unwrap();
+        sim.step().unwrap();
+        sim.step().unwrap();
+        assert_eq!(sim.commands.history().len(), 1);
+        assert_eq!(sim.commands.history()[0].execute_tick(), Tick::new(2));
+        assert!(matches!(
+            sim.commands.history()[0],
+            crate::command::RecordedCommand::ResetSimulation { .. }
+        ));
+
+        let history = sim.commands.history().to_vec();
+        let mut replay = Simulation::default();
+        replay.world.units[0].owner = Some(PlayerId(1));
+        CommandScheduler::replay(&history, &mut replay, sim.tick() - Tick::new(1)).unwrap();
+        assert_eq!(replay.tick(), sim.tick());
+        assert_eq!(replay.world.units[0].owner, Some(PlayerId(1)));
     }
 }

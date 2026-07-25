@@ -8,7 +8,7 @@
 
 ## Toolchain
 
-- Rust compiler pinned by `rustc 1.89` (MSRV `1.89`); Cargo edition `2024` (`Cargo.toml`).
+- Rust compiler pinned by `rustc 1.91` (MSRV `1.91`); Cargo edition `2024` (`Cargo.toml`).
 - All dependencies in `Cargo.toml` are pinned with exact versions (`=x.y.z`). Do not relax pinning without coordinating.
 
 ## Source layout
@@ -126,7 +126,7 @@ If a new ticket depends on an unmerged PR's work, branch off that PR's branch in
 
 ## Logging
 
-Use `tracing` + `tracing-subscriber` for runtime messages, via the `spacegame2d-logging` crate. The logging crate provides dual stdout + non-blocking file output, per-run log files under `logs/` named `<timestamp>_<binary>_<pid>.log`, `EnvFilter`, and a JSON mode via `SPACEGAME_LOG_FORMAT=json`. Use `println!` only for genuine startup banners or one-off diagnostics.
+Use `tracing` + `tracing-subscriber` for runtime messages, via the `spacegame2d-logging` crate. `tracing` is explicitly permitted for new networking code; the pre-existing `log` + `env_logger` calls in the current 2D client/sim code remain as-is for now. The logging crate provides dual stdout + non-blocking file output, per-run log files under `logs/` named `<timestamp>_<binary>_<pid>.log`, `EnvFilter`, and a JSON mode via `SPACEGAME_LOG_FORMAT=json`. Use `println!` only for genuine startup banners or one-off diagnostics.
 
 New networking code (server, client, protocol) emits structured `tracing` events using the canonical field vocabulary: `event`, `cmd` (formatted `slot:sequence`), `tick`, `execute_tick`, `receive_tick`, `local_tick`, `server_tick`, `kind`, `address`, `slot`, `recipients`, plus event-specific fields. Keep the codebase's logging minimal and purposeful — log state transitions and wire events, not per-tick noise.
 
@@ -145,9 +145,21 @@ The pre-commit hook runs the test gate and blocks the commit if any step fails. 
 ## Style overrides
 
 - `rustfmt.toml` sets `max_width = 100` and edition `2024`.
-- `clippy.toml` pins MSRV to `1.89`. Warnings are denied via `-D warnings` on the test gate.
+- `clippy.toml` pins MSRV to `1.91`. Warnings are denied via `-D warnings` on the test gate.
 
 Follow existing module conventions: small focused files, `mod.rs` re-exporting only the public surface, tests at the bottom of each file under `#[cfg(test)] mod tests { ... }`.
+
+
+## API Preferences
+
+- Prefer `From` and `TryFrom` implementations over free conversion helper functions. Use `From` for infallible conversions and `TryFrom` for conversions that can fail.
+- Keep serialization behavior on the type being serialized. For example, expose `Message::encode()` and `Message::write(...)` rather than `encode_message` or `write_message` free functions.
+- Put behavior on the domain type it belongs to, such as `ClientHello::is_compatible()` and `Client` socket methods, instead of standalone helpers.
+- Preserve structured domain values in tracing fields when possible; prefer recording enums with `?value` over converting them to display strings.
+- Use domain-specific types such as `Tick` for simulation time instead of repeating primitive integer types at protocol boundaries.
+- Use `thiserror` for project error enums; use `Option` only for genuinely absent values and `Result` for conversion or validation failures.
+- Keep wire/protocol DTOs separate from simulation domain types when they serve different purposes: protocol types model serialized data, while simulation newtypes enforce domain invariants. Convert explicitly at the boundary.
+- Put domain arithmetic on domain types. For example, `Tick::increment(...)` owns tick advancement rather than repeating primitive arithmetic at call sites.
 
 ## Documentation discipline
 
