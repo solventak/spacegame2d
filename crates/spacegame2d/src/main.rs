@@ -18,7 +18,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use spacegame2d_simulation::{
     command::Unit,
-    simulation::{SIMULATION_HZ, ShipState, Simulation},
+    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -347,7 +347,30 @@ struct App {
     network: Option<network::NetworkSession>,
     scheduled: std::collections::BTreeMap<u64, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
+    presentation_events: PresentationEventLog,
 }
+
+/// Client-only event state used by presentation code.
+///
+/// Simulation events remain transient consequences of stepping the
+/// authoritative world. Keeping this log here means presentation effects can
+/// outlive a frame without adding event state to `World`, replay history, or
+/// the network protocol.
+#[derive(Debug, Default, PartialEq)]
+struct PresentationEventLog {
+    events: Vec<SimulationEvent>,
+}
+
+impl PresentationEventLog {
+    pub(crate) fn append(&mut self, events: impl IntoIterator<Item = SimulationEvent>) {
+        self.events.extend(events);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+    }
+}
+
 impl Default for App {
     fn default() -> Self {
         Self {
@@ -359,6 +382,7 @@ impl Default for App {
             network: None,
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
+            presentation_events: PresentationEventLog::default(),
         }
     }
 }
@@ -445,7 +469,8 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         while now >= self.next_tick {
             network::apply_due_commands(&mut self.simulation, &mut self.scheduled);
-            self.simulation.step();
+            let events = self.simulation.step();
+            self.presentation_events.append(events);
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -521,6 +546,7 @@ impl ApplicationHandler for App {
                         eprintln!("failed to send reset: {error}");
                         event_loop.exit();
                     }
+                    self.presentation_events.clear();
                     self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }
@@ -578,5 +604,27 @@ mod tests {
     fn ring_mesh_has_expected_vertex_count() {
         let vertices = ring_vertices();
         assert_eq!(vertices.len(), 128 * 6);
+    }
+
+    #[test]
+    fn presentation_event_log_aggregates_and_clears_locally() {
+        let mut log = PresentationEventLog::default();
+        let first = SimulationEvent::BoundaryCrossed {
+            tick: 4,
+            unit_id: spacegame2d_simulation::UnitId(2),
+            position: Vec2::new(17.0, 0.0),
+        };
+        let second = SimulationEvent::BoundaryCrossed {
+            tick: 5,
+            unit_id: spacegame2d_simulation::UnitId(3),
+            position: Vec2::new(-17.0, 0.0),
+        };
+
+        log.append([first]);
+        log.append([second]);
+
+        assert_eq!(log.events, vec![first, second]);
+        log.clear();
+        assert!(log.events.is_empty());
     }
 }
