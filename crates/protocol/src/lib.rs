@@ -56,6 +56,7 @@ pub enum Message {
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
 fn caps(values: &[i32]) -> Vec<Capability> {
     values
         .iter()
@@ -65,131 +66,148 @@ fn caps(values: &[i32]) -> Vec<Capability> {
         })
         .collect()
 }
-fn command(value: Option<wire::command::Payload>) -> io::Result<CommandData> {
-    match value {
-        Some(wire::command::Payload::SetDestination(v)) => {
-            let d = v
-                .destination
-                .ok_or_else(|| invalid("missing destination"))?;
-            Ok(CommandData::SetDestination {
-                unit_id: v.unit_id,
-                destination: [d.x, d.y],
-            })
+impl TryFrom<Option<wire::command::Payload>> for CommandData {
+    type Error = io::Error;
+
+    fn try_from(value: Option<wire::command::Payload>) -> Result<Self, Self::Error> {
+        match value {
+            Some(wire::command::Payload::SetDestination(v)) => {
+                let d = v
+                    .destination
+                    .ok_or_else(|| invalid("missing destination"))?;
+                Ok(Self::SetDestination {
+                    unit_id: v.unit_id,
+                    destination: [d.x, d.y],
+                })
+            }
+            Some(wire::command::Payload::ResetSimulation(_)) => Ok(Self::ResetSimulation),
+            None => Err(invalid("missing command payload")),
         }
-        Some(wire::command::Payload::ResetSimulation(_)) => Ok(CommandData::ResetSimulation),
-        None => Err(invalid("missing command payload")),
     }
 }
-fn wire_command(value: &CommandData) -> wire::Command {
-    let payload = match value {
-        CommandData::SetDestination {
-            unit_id,
-            destination,
-        } => wire::command::Payload::SetDestination(wire::SetDestinationCommand {
-            unit_id: *unit_id,
-            destination: Some(wire::Vector2Bits {
-                x: destination[0],
-                y: destination[1],
+impl From<&CommandData> for wire::Command {
+    fn from(value: &CommandData) -> Self {
+        let payload = match value {
+            CommandData::SetDestination {
+                unit_id,
+                destination,
+            } => wire::command::Payload::SetDestination(wire::SetDestinationCommand {
+                unit_id: *unit_id,
+                destination: Some(wire::Vector2Bits {
+                    x: destination[0],
+                    y: destination[1],
+                }),
             }),
-        }),
-        CommandData::ResetSimulation => {
-            wire::command::Payload::ResetSimulation(wire::ResetSimulationCommand {})
+            CommandData::ResetSimulation => {
+                wire::command::Payload::ResetSimulation(wire::ResetSimulationCommand {})
+            }
+        };
+        Self {
+            payload: Some(payload),
         }
-    };
-    wire::Command {
-        payload: Some(payload),
     }
 }
-fn envelope(message: &Message) -> wire::Envelope {
-    let payload = match message {
-        Message::ClientHello(v) => wire::envelope::Payload::ClientHello(wire::ClientHello {
-            simulation_version: v.simulation_version,
-            supported_capabilities: v
-                .capabilities
-                .iter()
-                .map(|c| match c {
-                    Capability::StateChecksums => 1,
-                })
-                .collect(),
-        }),
-        Message::ServerHello(v) => wire::envelope::Payload::ServerHello(wire::ServerHello {
-            simulation_version: v.simulation_version,
-            simulation_hz: v.simulation_hz,
-            player_slot: v.player_slot,
-            server_tick: v.server_tick,
-            enabled_capabilities: v
-                .capabilities
-                .iter()
-                .map(|c| match c {
-                    Capability::StateChecksums => 1,
-                })
-                .collect(),
-        }),
-        Message::CommandRequest(v) => {
-            wire::envelope::Payload::CommandRequest(wire::CommandRequest {
-                sequence: v.sequence,
-                command: Some(wire_command(&v.command)),
-            })
-        }
-        Message::AuthoritativeCommand(v) => {
-            wire::envelope::Payload::AuthoritativeCommand(wire::AuthoritativeCommand {
-                execute_tick: v.execute_tick,
+impl From<&Message> for wire::Envelope {
+    fn from(message: &Message) -> Self {
+        let payload = match message {
+            Message::ClientHello(v) => wire::envelope::Payload::ClientHello(wire::ClientHello {
+                simulation_version: v.simulation_version,
+                supported_capabilities: v
+                    .capabilities
+                    .iter()
+                    .map(|c| match c {
+                        Capability::StateChecksums => 1,
+                    })
+                    .collect(),
+            }),
+            Message::ServerHello(v) => wire::envelope::Payload::ServerHello(wire::ServerHello {
+                simulation_version: v.simulation_version,
+                simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
-                sequence: v.sequence,
-                command: Some(wire_command(&v.command)),
-            })
+                server_tick: v.server_tick,
+                enabled_capabilities: v
+                    .capabilities
+                    .iter()
+                    .map(|c| match c {
+                        Capability::StateChecksums => 1,
+                    })
+                    .collect(),
+            }),
+            Message::CommandRequest(v) => {
+                wire::envelope::Payload::CommandRequest(wire::CommandRequest {
+                    sequence: v.sequence,
+                    command: Some((&v.command).into()),
+                })
+            }
+            Message::AuthoritativeCommand(v) => {
+                wire::envelope::Payload::AuthoritativeCommand(wire::AuthoritativeCommand {
+                    execute_tick: v.execute_tick,
+                    player_slot: v.player_slot,
+                    sequence: v.sequence,
+                    command: Some((&v.command).into()),
+                })
+            }
+        };
+        Self {
+            payload: Some(payload),
         }
-    };
-    wire::Envelope {
-        payload: Some(payload),
     }
 }
-fn from_envelope(value: wire::Envelope) -> io::Result<Message> {
-    match value
-        .payload
-        .ok_or_else(|| invalid("missing envelope payload"))?
-    {
-        wire::envelope::Payload::ClientHello(v) => Ok(Message::ClientHello(ClientHello {
-            simulation_version: v.simulation_version,
-            capabilities: caps(&v.supported_capabilities),
-        })),
-        wire::envelope::Payload::ServerHello(v) => Ok(Message::ServerHello(ServerHello {
-            simulation_version: v.simulation_version,
-            simulation_hz: v.simulation_hz,
-            player_slot: v.player_slot,
-            server_tick: v.server_tick,
-            capabilities: caps(&v.enabled_capabilities),
-        })),
-        wire::envelope::Payload::CommandRequest(v) => Ok(Message::CommandRequest(CommandRequest {
-            sequence: v.sequence,
-            command: command(v.command.and_then(|c| c.payload))?,
-        })),
-        wire::envelope::Payload::AuthoritativeCommand(v) => {
-            Ok(Message::AuthoritativeCommand(AuthoritativeCommand {
-                execute_tick: v.execute_tick,
+impl TryFrom<wire::Envelope> for Message {
+    type Error = io::Error;
+
+    fn try_from(value: wire::Envelope) -> Result<Self, Self::Error> {
+        match value
+            .payload
+            .ok_or_else(|| invalid("missing envelope payload"))?
+        {
+            wire::envelope::Payload::ClientHello(v) => Ok(Message::ClientHello(ClientHello {
+                simulation_version: v.simulation_version,
+                capabilities: caps(&v.supported_capabilities),
+            })),
+            wire::envelope::Payload::ServerHello(v) => Ok(Message::ServerHello(ServerHello {
+                simulation_version: v.simulation_version,
+                simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
-                sequence: v.sequence,
-                command: command(v.command.and_then(|c| c.payload))?,
-            }))
+                server_tick: v.server_tick,
+                capabilities: caps(&v.enabled_capabilities),
+            })),
+            wire::envelope::Payload::CommandRequest(v) => {
+                Ok(Message::CommandRequest(CommandRequest {
+                    sequence: v.sequence,
+                    command: CommandData::try_from(v.command.and_then(|c| c.payload))?,
+                }))
+            }
+            wire::envelope::Payload::AuthoritativeCommand(v) => {
+                Ok(Message::AuthoritativeCommand(AuthoritativeCommand {
+                    execute_tick: v.execute_tick,
+                    player_slot: v.player_slot,
+                    sequence: v.sequence,
+                    command: CommandData::try_from(v.command.and_then(|c| c.payload))?,
+                }))
+            }
         }
     }
 }
 
-pub fn encode_message(message: &Message) -> io::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    envelope(message)
-        .encode(&mut body)
-        .map_err(|e| invalid(&e.to_string()))?;
-    if body.is_empty() || body.len() > MAX_FRAME_BYTES as usize {
-        return Err(invalid("invalid frame size"));
+impl Message {
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut body = Vec::new();
+        wire::Envelope::from(self)
+            .encode(&mut body)
+            .map_err(|e| invalid(&e.to_string()))?;
+        if body.is_empty() || body.len() > MAX_FRAME_BYTES as usize {
+            return Err(invalid("invalid frame size"));
+        }
+        let mut output = Vec::with_capacity(body.len() + 4);
+        output.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        output.extend_from_slice(&body);
+        Ok(output)
     }
-    let mut output = Vec::with_capacity(body.len() + 4);
-    output.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    output.extend_from_slice(&body);
-    Ok(output)
-}
-pub fn write_message<W: Write>(writer: &mut W, message: &Message) -> io::Result<()> {
-    writer.write_all(&encode_message(message)?)
+
+    pub fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.encode()?)
+    }
 }
 pub fn read_message<R: Read>(reader: &mut R) -> io::Result<Message> {
     let mut header = [0; 4];
@@ -200,7 +218,7 @@ pub fn read_message<R: Read>(reader: &mut R) -> io::Result<Message> {
     }
     let mut body = vec![0; length as usize];
     reader.read_exact(&mut body)?;
-    from_envelope(wire::Envelope::decode(body.as_slice()).map_err(|e| invalid(&e.to_string()))?)
+    Message::try_from(wire::Envelope::decode(body.as_slice()).map_err(|e| invalid(&e.to_string()))?)
 }
 
 #[derive(Default)]
@@ -228,7 +246,7 @@ impl FrameDecoder {
             }
             let body = self.buffer[4..total].to_vec();
             self.buffer.drain(..total);
-            messages.push(from_envelope(
+            messages.push(Message::try_from(
                 wire::Envelope::decode(body.as_slice()).map_err(|e| invalid(&e.to_string()))?,
             )?);
         }
@@ -272,7 +290,7 @@ mod tests {
         ];
         for message in messages {
             let mut bytes = Vec::new();
-            write_message(&mut bytes, &message).unwrap();
+            message.write(&mut bytes).unwrap();
             assert_eq!(read_message(&mut bytes.as_slice()).unwrap(), message);
         }
     }
@@ -282,7 +300,7 @@ mod tests {
             sequence: 1,
             command: destination(),
         });
-        let bytes = encode_message(&message).unwrap();
+        let bytes = message.encode().unwrap();
         let mut decoder = FrameDecoder::new();
         assert!(decoder.push(&bytes[..2]).unwrap().is_empty());
         assert_eq!(decoder.push(&bytes[2..]).unwrap(), vec![message.clone()]);
@@ -315,7 +333,7 @@ mod tests {
     #[test]
     fn missing_command_payload_reaches_empty_command_branch() {
         // Frame: 4-byte length, Envelope field 3 (CommandRequest), sequence 1,
-        // then Command field 2 with an empty oneof. This reaches command(None).
+        // then Command field 2 with an empty oneof. This reaches the TryFrom(None) branch.
         let bytes = [0, 0, 0, 6, 0x1a, 0x04, 0x08, 0x01, 0x12, 0x00];
 
         let error = read_message(&mut bytes.as_slice()).unwrap_err();
@@ -331,7 +349,7 @@ mod tests {
                 destination: [f32::NAN.to_bits(), f32::INFINITY.to_bits()],
             },
         });
-        let decoded = read_message(&mut encode_message(&message).unwrap().as_slice()).unwrap();
+        let decoded = read_message(&mut message.encode().unwrap().as_slice()).unwrap();
         assert_eq!(decoded, message);
         let envelope = wire::Envelope {
             payload: Some(wire::envelope::Payload::ClientHello(wire::ClientHello {

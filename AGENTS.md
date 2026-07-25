@@ -149,6 +149,12 @@ The pre-commit hook runs the test gate and blocks the commit if any step fails. 
 
 Follow existing module conventions: small focused files, `mod.rs` re-exporting only the public surface, tests at the bottom of each file under `#[cfg(test)] mod tests { ... }`.
 
+
+## API Preferences
+
+- Prefer `From` and `TryFrom` implementations over free conversion helper functions. Use `From` for infallible conversions and `TryFrom` for conversions that can fail.
+- Keep serialization behavior on the type being serialized. For example, expose `Message::encode()` and `Message::write(...)` rather than `encode_message` or `write_message` free functions.
+
 ## Documentation discipline
 
 - Update `docs/plans/` when kicking off a new milestone.

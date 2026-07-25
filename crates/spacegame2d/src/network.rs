@@ -23,13 +23,11 @@ impl NetworkSession {
     pub fn connect(address: &str) -> io::Result<Self> {
         let mut stream = TcpStream::connect(address)?;
         stream.set_nodelay(true)?;
-        spacegame2d_protocol::write_message(
-            &mut stream,
-            &Message::ClientHello(ClientHello {
-                simulation_version: SIMULATION_VERSION,
-                capabilities: Vec::new(),
-            }),
-        )?;
+        Message::ClientHello(ClientHello {
+            simulation_version: SIMULATION_VERSION,
+            capabilities: Vec::new(),
+        })
+        .write(&mut stream)?;
         let hello = match spacegame2d_protocol::read_message(&mut stream)? {
             Message::ServerHello(value) => value,
             _ => return Err(invalid("expected ServerHello")),
@@ -87,13 +85,13 @@ impl NetworkSession {
     }
 
     fn send(&mut self, sequence: u32, command: CommandData) -> io::Result<()> {
-        self.outgoing
-            .push_back(spacegame2d_protocol::encode_message(
-                &Message::CommandRequest(CommandRequest {
-                    sequence,
-                    command: command.clone(),
-                }),
-            )?);
+        self.outgoing.push_back(
+            Message::CommandRequest(CommandRequest {
+                sequence,
+                command: command.clone(),
+            })
+            .encode()?,
+        );
         self.flush_outgoing()?;
         tracing::info!(
             event = "command_sent",
@@ -220,7 +218,7 @@ mod tests {
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = spacegame2d_protocol::read_message(&mut stream).unwrap();
-            spacegame2d_protocol::write_message(&mut stream, &response).unwrap();
+            response.write(&mut stream).unwrap();
             if disconnect {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             } else {
@@ -236,13 +234,12 @@ mod tests {
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = spacegame2d_protocol::read_message(&mut stream).unwrap();
-            spacegame2d_protocol::write_message(&mut stream, &Message::ServerHello(server_hello()))
+            Message::ServerHello(server_hello())
+                .write(&mut stream)
                 .unwrap();
-            spacegame2d_protocol::write_message(
-                &mut stream,
-                &Message::AuthoritativeCommand(command),
-            )
-            .unwrap();
+            Message::AuthoritativeCommand(command)
+                .write(&mut stream)
+                .unwrap();
             thread::sleep(std::time::Duration::from_millis(100));
         });
         address

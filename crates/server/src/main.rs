@@ -6,7 +6,7 @@ use std::{
 };
 
 use spacegame2d_protocol::{
-    AuthoritativeCommand, ClientHello, CommandRequest, Message, SIMULATION_VERSION, encode_message,
+    AuthoritativeCommand, ClientHello, CommandRequest, Message, SIMULATION_VERSION,
 };
 use spacegame2d_simulation::{
     command::{PlayerId, command_from_data, valid_authoritative},
@@ -76,7 +76,7 @@ fn handle_read(client: &mut Client) -> io::Result<Vec<Message>> {
 }
 
 fn queue(client: &mut Client, message: &Message) -> io::Result<()> {
-    client.outgoing.push_back(encode_message(message)?);
+    client.outgoing.push_back(message.encode()?);
     Ok(())
 }
 
@@ -189,9 +189,8 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                 command: request.command,
                             };
                             tracing::info!(event = "command_scheduled", cmd = %cmd, receive_tick, execute_tick = authoritative.execute_tick, tick = receive_tick, kind = kind(&authoritative.command), address = %client.address, slot = client.slot);
-                            let encoded = encode_message(&Message::AuthoritativeCommand(
-                                authoritative.clone(),
-                            ))?;
+                            let encoded =
+                                Message::AuthoritativeCommand(authoritative.clone()).encode()?;
                             scheduled
                                 .entry(authoritative.execute_tick)
                                 .or_default()
@@ -265,7 +264,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spacegame2d_protocol::{FrameDecoder, encode_message};
+    use spacegame2d_protocol::FrameDecoder;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::watch,
@@ -331,20 +330,14 @@ mod tests {
                     simulation_version: SIMULATION_VERSION,
                     capabilities: vec![],
                 });
-                first
-                    .write_all(&encode_message(&hello).unwrap())
-                    .await
-                    .unwrap();
+                first.write_all(&hello.encode().unwrap()).await.unwrap();
                 let Message::ServerHello(first_hello) = read_message(&mut first).await else {
                     panic!()
                 };
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let mut second = tokio::net::TcpStream::connect(address).await.unwrap();
-                second
-                    .write_all(&encode_message(&hello).unwrap())
-                    .await
-                    .unwrap();
+                second.write_all(&hello.encode().unwrap()).await.unwrap();
                 let Message::ServerHello(second_hello) = read_message(&mut second).await else {
                     panic!()
                 };
@@ -356,10 +349,7 @@ mod tests {
                     sequence: 7,
                     command: spacegame2d_protocol::CommandData::ResetSimulation,
                 });
-                second
-                    .write_all(&encode_message(&request).unwrap())
-                    .await
-                    .unwrap();
+                second.write_all(&request.encode().unwrap()).await.unwrap();
                 let Message::AuthoritativeCommand(first_command) =
                     tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
                         .await
@@ -384,10 +374,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let mut recycled = tokio::net::TcpStream::connect(address).await.unwrap();
-                recycled
-                    .write_all(&encode_message(&hello).unwrap())
-                    .await
-                    .unwrap();
+                recycled.write_all(&hello.encode().unwrap()).await.unwrap();
                 let Message::ServerHello(recycled_hello) = read_message(&mut recycled).await else {
                     panic!()
                 };
@@ -395,10 +382,11 @@ mod tests {
 
                 second
                     .write_all(
-                        &encode_message(&Message::CommandRequest(CommandRequest {
+                        &Message::CommandRequest(CommandRequest {
                             sequence: 8,
                             command: spacegame2d_protocol::CommandData::ResetSimulation,
-                        }))
+                        })
+                        .encode()
                         .unwrap(),
                     )
                     .await
