@@ -16,6 +16,10 @@ fn destination(slot: u32, sequence: u32, point: Vec2) -> AuthoritativeCommand {
 fn run_crossing() -> (Simulation, f32, Vec<Vec<Vec2>>) {
     let mut simulation = Simulation::default();
     simulation.world.assign_mirror_owners();
+    for unit in &mut simulation.world.units {
+        unit.combat.hull.current = u32::MAX;
+        unit.combat.hull.maximum = u32::MAX;
+    }
     assert!(simulation.schedule_authoritative_trusted(&destination(1, 1, Vec2::new(8.0, 0.0))));
     assert!(simulation.schedule_authoritative_trusted(&destination(2, 2, Vec2::new(-8.0, 0.0))));
     let initial = simulation
@@ -81,6 +85,10 @@ fn canonical_thirty_vs_thirty_crossing_is_finite_progressing_and_repeatable() {
 fn reset_preserves_configured_avoidance_behavior() {
     let mut simulation = Simulation::default();
     simulation.world.assign_mirror_owners();
+    for unit in &mut simulation.world.units {
+        unit.combat.hull.current = u32::MAX;
+        unit.combat.hull.maximum = u32::MAX;
+    }
     let before = simulation.config().avoidance();
     let reset = AuthoritativeCommand {
         execute_tick: Tick::default(),

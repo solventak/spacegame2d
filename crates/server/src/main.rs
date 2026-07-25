@@ -340,12 +340,30 @@ pub async fn run_with_config(
             .step()
             .map_err(|error| io::Error::other(error.to_string()))?
         {
-            let spacegame2d_simulation::SimulationEvent::BoundaryCrossed {
-                tick,
-                unit_id,
-                position,
-            } = event;
-            tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
+            match event {
+                spacegame2d_simulation::SimulationEvent::ShotFired {
+                    tick,
+                    shooter_id,
+                    hit_unit_id,
+                    ..
+                } => {
+                    tracing::info!(event = "shot_fired", tick = ?tick, shooter_id = shooter_id.0, hit_unit_id = ?hit_unit_id.map(|id| id.0));
+                }
+                spacegame2d_simulation::SimulationEvent::HullDepleted {
+                    tick,
+                    unit_id,
+                    position,
+                } => {
+                    tracing::info!(event = "hull_depleted", tick = ?tick, unit_id = unit_id.0, position = ?position);
+                }
+                spacegame2d_simulation::SimulationEvent::BoundaryCrossed {
+                    tick,
+                    unit_id,
+                    position,
+                } => {
+                    tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
+                }
+            }
         }
         let completed_tick = simulation.tick();
         if completed_tick.0 % u64::from(SIMULATION_HZ) == 0 {
