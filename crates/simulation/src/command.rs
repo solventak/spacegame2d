@@ -182,6 +182,9 @@ impl World {
     pub fn unit_mut(&mut self, id: UnitId) -> Option<&mut Unit> {
         self.units.iter_mut().find(|u| u.id == id)
     }
+    pub(crate) fn allocator_state(&self) -> (u32, bool) {
+        (self.next_unit_id, self.unit_id_exhausted)
+    }
     /// Validate an authoritative command against the current world state.
     ///
     /// Ownership rules apply to targeted units and connected players.

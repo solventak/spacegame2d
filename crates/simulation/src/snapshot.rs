@@ -1,0 +1,183 @@
+//! Canonical deterministic simulation snapshots and state hashes.
+
+use crate::{autopilot::AutopilotConfig, command::Unit, simulation::Simulation};
+use spacegame2d_protocol::Tick;
+
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 1;
+pub const STATE_HASH_BYTES: usize = 32;
+pub type StateHash = [u8; STATE_HASH_BYTES];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimulationSnapshot {
+    pub format_version: u16,
+    pub simulation_version: u32,
+    pub tick: Tick,
+    pub world_radius_bits: u32,
+    pub next_unit_id: u32,
+    pub unit_id_exhausted: bool,
+    pub units: Vec<UnitSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitSnapshot {
+    pub id: u32,
+    pub owner: Option<u8>,
+    pub position_bits: [u32; 2],
+    pub velocity_bits: [u32; 2],
+    pub heading_bits: u32,
+    pub angular_velocity_bits: u32,
+    pub controller_kind: String,
+    pub destination_bits: Option<[u32; 2]>,
+    pub active: bool,
+    pub arrival_radius_bits: u32,
+    pub stopped_speed_bits: u32,
+}
+
+impl Simulation {
+    pub fn snapshot(&self) -> SimulationSnapshot {
+        let (next_unit_id, unit_id_exhausted) = self.world.allocator_state();
+        let mut units = self
+            .world
+            .units
+            .iter()
+            .map(UnitSnapshot::from_unit)
+            .collect::<Vec<_>>();
+        units.sort_unstable_by_key(|unit| unit.id);
+        SimulationSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            simulation_version: spacegame2d_protocol::SIMULATION_VERSION,
+            tick: self.tick(),
+            world_radius_bits: self.world_radius().to_bits(),
+            next_unit_id,
+            unit_id_exhausted,
+            units,
+        }
+    }
+
+    pub fn state_hash(&self) -> StateHash {
+        self.snapshot().state_hash()
+    }
+}
+
+impl SimulationSnapshot {
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SWA2STATE");
+        put_u16(&mut bytes, self.format_version);
+        put_u32(&mut bytes, self.simulation_version);
+        put_u64(&mut bytes, self.tick.0);
+        put_u32(&mut bytes, self.world_radius_bits);
+        put_u32(&mut bytes, self.next_unit_id);
+        bytes.push(self.unit_id_exhausted as u8);
+        put_u32(&mut bytes, self.units.len() as u32);
+        for unit in &self.units {
+            unit.encode(&mut bytes);
+        }
+        bytes
+    }
+
+    pub fn state_hash(&self) -> StateHash {
+        *blake3::hash(&self.encode_canonical()).as_bytes()
+    }
+}
+
+impl UnitSnapshot {
+    fn from_unit(unit: &Unit) -> Self {
+        let config: AutopilotConfig = unit.autopilot.config();
+        Self {
+            id: unit.id.0,
+            owner: unit.owner.map(|owner| owner.0),
+            position_bits: [
+                unit.state.position.x.to_bits(),
+                unit.state.position.y.to_bits(),
+            ],
+            velocity_bits: [
+                unit.state.velocity.x.to_bits(),
+                unit.state.velocity.y.to_bits(),
+            ],
+            heading_bits: unit.state.heading_radians.to_bits(),
+            angular_velocity_bits: unit.state.angular_velocity_radians_per_second.to_bits(),
+            controller_kind: unit.autopilot.controller_name().to_owned(),
+            destination_bits: unit
+                .autopilot
+                .destination()
+                .map(|destination| [destination.x.to_bits(), destination.y.to_bits()]),
+            active: unit.autopilot.is_active(),
+            arrival_radius_bits: config.arrival_radius_meters.to_bits(),
+            stopped_speed_bits: config.stopped_speed_meters_per_second.to_bits(),
+        }
+    }
+
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        put_u32(bytes, self.id);
+        match self.owner {
+            Some(owner) => {
+                bytes.push(1);
+                bytes.push(owner);
+            }
+            None => bytes.push(0),
+        }
+        for value in self.position_bits.iter().chain(self.velocity_bits.iter()) {
+            put_u32(bytes, *value);
+        }
+        put_u32(bytes, self.heading_bits);
+        put_u32(bytes, self.angular_velocity_bits);
+        put_bytes(bytes, self.controller_kind.as_bytes());
+        match self.destination_bits {
+            Some(destination) => {
+                bytes.push(1);
+                put_u32(bytes, destination[0]);
+                put_u32(bytes, destination[1]);
+            }
+            None => bytes.push(0),
+        }
+        bytes.push(self.active as u8);
+        put_u32(bytes, self.arrival_radius_bits);
+        put_u32(bytes, self.stopped_speed_bits);
+    }
+}
+
+fn put_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+    put_u32(bytes, value.len() as u32);
+    bytes.extend_from_slice(value);
+}
+fn put_u16(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+fn put_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+fn put_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equal_simulations_have_equal_hashes() {
+        assert_eq!(
+            Simulation::default().state_hash(),
+            Simulation::default().state_hash()
+        );
+    }
+
+    #[test]
+    fn unit_order_is_canonical() {
+        let mut a = Simulation::default();
+        let mut b = Simulation::default();
+        b.world.units.swap(0, 1);
+        assert_eq!(a.state_hash(), b.state_hash());
+        a.world.units[0].state.position.x += 1.0;
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn advancing_tick_changes_hash() {
+        let mut simulation = Simulation::default();
+        let before = simulation.state_hash();
+        simulation.step().unwrap();
+        assert_ne!(before, simulation.state_hash());
+    }
+}

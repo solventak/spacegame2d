@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 2;
+pub const SIMULATION_VERSION: u32 = 3;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,12 +111,18 @@ pub struct CommandRejected {
     pub reason: CommandRejectionReason,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateChecksum {
+    pub tick: Tick,
+    pub hash: Vec<u8>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
     CommandRequest(CommandRequest),
     AuthoritativeCommand(AuthoritativeCommand),
     CommandRejected(CommandRejected),
+    StateChecksum(StateChecksum),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -227,6 +233,12 @@ impl From<&Message> for wire::Envelope {
                     },
                 })
             }
+            Message::StateChecksum(v) => {
+                wire::envelope::Payload::StateChecksum(wire::StateChecksum {
+                    tick: v.tick.0,
+                    hash: v.hash.clone(),
+                })
+            }
         };
         Self {
             payload: Some(payload),
@@ -286,6 +298,15 @@ impl TryFrom<wire::Envelope> for Message {
                 Ok(Message::CommandRejected(CommandRejected {
                     sequence: v.sequence,
                     reason,
+                }))
+            }
+            wire::envelope::Payload::StateChecksum(v) => {
+                if v.hash.len() != 32 {
+                    return Err(invalid("invalid state checksum length"));
+                }
+                Ok(Message::StateChecksum(StateChecksum {
+                    tick: Tick::from(v.tick),
+                    hash: v.hash,
                 }))
             }
         }
@@ -396,6 +417,10 @@ mod tests {
                 sequence: 8,
                 reason: CommandRejectionReason::DestinationOutsideArena,
             }),
+            Message::StateChecksum(StateChecksum {
+                tick: Tick::from(60),
+                hash: (0..32).collect(),
+            }),
         ];
         for message in messages {
             let mut bytes = Vec::new();
@@ -439,6 +464,26 @@ mod tests {
             io::ErrorKind::InvalidData
         );
     }
+    #[test]
+    fn state_checksum_requires_32_bytes() {
+        let envelope = wire::Envelope {
+            payload: Some(wire::envelope::Payload::StateChecksum(
+                wire::StateChecksum {
+                    tick: 60,
+                    hash: vec![0; 31],
+                },
+            )),
+        };
+        let mut body = Vec::new();
+        envelope.encode(&mut body).unwrap();
+        let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
+        bytes.extend(body);
+        assert_eq!(
+            Message::read(&mut bytes.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
     #[test]
     fn missing_command_payload_reaches_empty_command_branch() {
         // Frame: 4-byte length, Envelope field 3 (CommandRequest), sequence 1,

@@ -6,8 +6,8 @@ use std::{
 
 use spacegame2d_protocol::Tick;
 use spacegame2d_protocol::{
-    AuthoritativeCommand, ClientHello, CommandData, CommandRejected, CommandRequest, Message,
-    SIMULATION_VERSION,
+    AuthoritativeCommand, Capability, ClientHello, CommandData, CommandRejected, CommandRequest,
+    Message, SIMULATION_VERSION, StateChecksum,
 };
 use spacegame2d_simulation::simulation::SIMULATION_HZ;
 
@@ -15,6 +15,7 @@ pub struct NetworkSession {
     stream: TcpStream,
     pub player_slot: u32,
     pub server_tick: Tick,
+    checksum_enabled: bool,
     local_tick: Tick,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
@@ -26,7 +27,7 @@ impl NetworkSession {
         stream.set_nodelay(true)?;
         Message::ClientHello(ClientHello {
             simulation_version: SIMULATION_VERSION,
-            capabilities: Vec::new(),
+            capabilities: vec![Capability::StateChecksums],
         })
         .write(&mut stream)?;
         let hello = match Message::read(&mut stream)? {
@@ -39,6 +40,7 @@ impl NetworkSession {
             stream,
             player_slot: hello.player_slot,
             server_tick: hello.server_tick,
+            checksum_enabled: hello.capabilities.contains(&Capability::StateChecksums),
             local_tick: hello.server_tick,
             decoder: spacegame2d_protocol::FrameDecoder::new(),
             outgoing: VecDeque::new(),
@@ -66,6 +68,20 @@ impl NetworkSession {
 
     pub fn set_local_tick(&mut self, tick: Tick) {
         self.local_tick = tick;
+    }
+
+    pub fn send_state_checksum(&mut self, tick: Tick, hash: [u8; 32]) -> io::Result<()> {
+        if self.checksum_enabled {
+            self.outgoing.push_back(
+                Message::StateChecksum(StateChecksum {
+                    tick,
+                    hash: hash.to_vec(),
+                })
+                .encode()?,
+            );
+            self.flush_outgoing()?;
+        }
+        Ok(())
     }
 
     fn send(&mut self, sequence: u32, command: CommandData) -> io::Result<()> {
