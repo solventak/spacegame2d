@@ -68,6 +68,7 @@ pub struct ServerHello {
     pub simulation_hz: u32,
     pub player_slot: u32,
     pub server_tick: Tick,
+    pub fleet_size: u32,
     pub capabilities: Vec<Capability>,
 }
 impl ServerHello {
@@ -80,6 +81,9 @@ impl ServerHello {
         }
         if self.player_slot == 0 || u8::try_from(self.player_slot).is_err() {
             return Err(invalid("server assigned invalid player slot"));
+        }
+        if self.fleet_size == 0 {
+            return Err(invalid("server assigned invalid fleet size"));
         }
         Ok(())
     }
@@ -199,6 +203,7 @@ impl From<&Message> for wire::Envelope {
                 simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
                 server_tick: v.server_tick.0,
+                fleet_size: v.fleet_size,
                 enabled_capabilities: v
                     .capabilities
                     .iter()
@@ -262,6 +267,7 @@ impl TryFrom<wire::Envelope> for Message {
                 simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
                 server_tick: Tick::from(v.server_tick),
+                fleet_size: v.fleet_size,
                 capabilities: caps(&v.enabled_capabilities),
             })),
             wire::envelope::Payload::CommandRequest(v) => {
@@ -397,10 +403,11 @@ mod tests {
                 capabilities: vec![Capability::StateChecksums],
             }),
             Message::ServerHello(ServerHello {
-                simulation_version: 1,
+                simulation_version: SIMULATION_VERSION,
                 simulation_hz: 60,
                 player_slot: 2,
                 server_tick: Tick::from(9),
+                fleet_size: 30,
                 capabilities: vec![],
             }),
             Message::CommandRequest(CommandRequest {

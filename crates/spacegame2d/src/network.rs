@@ -9,12 +9,13 @@ use spacegame2d_protocol::{
     AuthoritativeCommand, Capability, ClientHello, CommandData, CommandRejected, CommandRequest,
     Message, SIMULATION_VERSION, StateChecksum,
 };
-use spacegame2d_simulation::simulation::SIMULATION_HZ;
+use spacegame2d_simulation::{SimulationConfig, simulation::SIMULATION_HZ};
 
 pub struct NetworkSession {
     stream: TcpStream,
     pub player_slot: u32,
     pub server_tick: Tick,
+    simulation_config: SimulationConfig,
     checksum_enabled: bool,
     local_tick: Tick,
     decoder: spacegame2d_protocol::FrameDecoder,
@@ -35,16 +36,23 @@ impl NetworkSession {
             _ => return Err(invalid("expected ServerHello")),
         };
         hello.validate(SIMULATION_HZ)?;
+        let simulation_config = SimulationConfig::try_from(hello.fleet_size)
+            .map_err(|error| invalid(&error.to_string()))?;
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
             player_slot: hello.player_slot,
             server_tick: hello.server_tick,
+            simulation_config,
             checksum_enabled: hello.capabilities.contains(&Capability::StateChecksums),
             local_tick: hello.server_tick,
             decoder: spacegame2d_protocol::FrameDecoder::new(),
             outgoing: VecDeque::new(),
         })
+    }
+
+    pub fn simulation_config(&self) -> SimulationConfig {
+        self.simulation_config
     }
 
     pub fn register_player(
@@ -215,6 +223,7 @@ mod tests {
             simulation_hz: SIMULATION_HZ,
             player_slot: 7,
             server_tick: Tick::from(123),
+            fleet_size: 30,
             capabilities: vec![],
         }
     }
@@ -291,6 +300,7 @@ mod tests {
             simulation_hz: SIMULATION_HZ,
             player_slot: 1,
             server_tick: Tick::from(42),
+            fleet_size: 30,
             capabilities: vec![],
         };
         let mut wrong = base.clone();

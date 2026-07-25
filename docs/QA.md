@@ -24,8 +24,8 @@ There is no auth/login gate, database, or external service dependency. The appli
 |---|---|---|---|
 | `spacegame2d` | `spacegame2d` | GUI desktop app (wgpu/winit) | Simulation logic via `cargo test` |
 | `simulation` | (library) | Game simulation library | `cargo test -p spacegame2d-simulation` |
-| `protocol` | (library) | Wire-format stub | `cargo build -p spacegame2d-protocol` |
-| `server` | `spacegame2d-server` | CLI stub (banner + exit) | `cargo run -p spacegame2d-server` |
+| `protocol` | (library) | Versioned wire protocol | `cargo build -p spacegame2d-protocol` |
+| `server` | `spacegame2d-server` | Authoritative simulation server | `cargo run -p spacegame2d-server -- 127.0.0.1:4000` |
 
 ## Headless QA path (agent-friendly)
 
@@ -57,7 +57,7 @@ This script runs the complete test gate and a server smoke test, then reports a 
 
    - **Ship movement**: forward thrust accelerates along heading, turn keys apply angular torque, velocity/angular speed are capped, damping decays drift, combined inputs curve trajectory.
    - **Autopilot navigation**: right-click-style destination setting drives the ship to a target via the `ArrivalController`, converges from rest without orbiting, brakes near destination, settles with near-zero velocity.
-   - **Reset**: `R`-equivalent `ResetSimulation` command rewinds tick counter and respawns the ship at the origin.
+   - **Reset**: `R`-equivalent `ResetSimulation` command preserves the monotonic tick and respawns the ship at the origin.
    - **World boundary**: ship at the exact 16 m radius survives; ship beyond the boundary is destroyed and removed; destruction emits an info log.
    - **Networked fleets**: each connected player receives an owned fleet, sees the other player's fleet, and right-click movement commands are broadcast and applied at the scheduled tick. Reset restores the deterministic swarm while preserving ownership.
 
@@ -98,7 +98,7 @@ A window titled "Spacegame 2D" opens showing a black background with a subtle ri
 | `W` | Forward thrust (accelerates along ship heading) |
 | `A` | Turn left (counterclockwise angular thrust) |
 | `D` | Turn right (clockwise angular thrust) |
-| `R` | Reset simulation (respawn ship at origin, rewind tick counter) |
+| `R` | Reset simulation (respawn ship at origin, preserve the monotonic tick) |
 | Right-click | Set autopilot destination (ship navigates to clicked world position) |
 | Close window or `Alt+F4` | Exit |
 
@@ -108,7 +108,7 @@ A window titled "Spacegame 2D" opens showing a black background with a subtle ri
 
 2. **Autopilot navigation**: Right-click any visible point. A red marker appears at the clicked location. The ship turns to face the target and thrusts toward it, braking as it approaches. The ship settles near the target with near-zero velocity, and the marker clears when the autopilot deactivates. Right-click a new point mid-flight to redirect the ship.
 
-3. **Reset**: Press `R`. The ship returns to the origin with zero velocity, the tick counter resets, the drone swarm respawns at deterministic positions, and the autopilot destination clears.
+3. **Reset**: Press `R` from either client. The server authorizes one reset event at the next fixed-tick boundary; both clients respawn the deterministic fleets, clear destinations, and preserve the monotonic tick.
 
 4. **World boundary**: Fly the ship beyond the visible ring (16 m radius). The ship is destroyed (disappears). Press `R` to respawn.
 

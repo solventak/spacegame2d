@@ -10,4 +10,3 @@ An issue is Ready for implementation when:
 - the verification approach is understood.
 
 If any of these are missing, keep the issue in Discovery or Triage rather than starting implementation.
-

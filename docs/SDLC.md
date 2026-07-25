@@ -45,4 +45,3 @@ The team may use Scrum, Kanban, Scrumban, or a custom cadence. The lifecycle sta
 3. Keep issues small enough to complete independently within one cycle when practical.
 4. Record scope and architectural decisions before implementation begins.
 5. Do not mark work Done until the change is verified and Linear reflects the final state.
-

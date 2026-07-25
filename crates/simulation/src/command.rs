@@ -6,14 +6,14 @@ use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, CommandData, Tick};
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
+use crate::config::{MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(pub u8);
 
-pub const FLEET_SIZE: usize = 30;
-pub const MAX_PLAYERS: usize = 2;
+pub const FLEET_SIZE: usize = crate::config::DEFAULT_FLEET_SIZE as usize;
 pub const MAX_UNITS: usize = FLEET_SIZE * MAX_PLAYERS;
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -88,6 +88,7 @@ impl Unit {
 }
 
 pub struct World {
+    config: SimulationConfig,
     pub next_unit_id: u32,
     pub units: Vec<Unit>,
     connected_players: BTreeSet<PlayerId>,
@@ -96,17 +97,26 @@ pub struct World {
 
 impl World {
     pub fn demo() -> Self {
-        let units = crate::fleet::initial_world_positions()
+        Self::new(SimulationConfig::default())
+    }
+
+    pub fn new(config: SimulationConfig) -> Self {
+        let units = crate::fleet::initial_world_positions(config)
             .into_iter()
             .enumerate()
             .map(|(i, state)| Unit::new(UnitId(i as u32 + 1), None, state))
             .collect();
         Self {
-            next_unit_id: MAX_UNITS as u32 + 1,
+            config,
+            next_unit_id: config.total_units() as u32 + 1,
             units,
             connected_players: BTreeSet::new(),
             unit_id_exhausted: false,
         }
+    }
+
+    pub fn config(&self) -> SimulationConfig {
+        self.config
     }
 
     pub fn connect_player(&mut self, player: PlayerId) -> bool {
@@ -120,10 +130,11 @@ impl World {
 
     pub fn assign_player_fleet(&mut self, player: PlayerId) -> bool {
         let slot = usize::from(player.0.saturating_sub(1));
-        if slot >= MAX_PLAYERS || self.units.len() < MAX_UNITS {
+        let fleet_size = self.config.fleet_size() as usize;
+        if slot >= MAX_PLAYERS || self.units.len() < self.config.total_units() {
             return false;
         }
-        let range = slot * FLEET_SIZE..(slot + 1) * FLEET_SIZE;
+        let range = slot * fleet_size..(slot + 1) * fleet_size;
         if self.units[range.clone()]
             .iter()
             .any(|unit| unit.owner.is_some_and(|owner| owner != player))
@@ -139,7 +150,7 @@ impl World {
     /// Assign deterministic owners to every unit in a client mirror.
     pub fn assign_mirror_owners(&mut self) {
         for (index, unit) in self.units.iter_mut().enumerate() {
-            let slot = index / FLEET_SIZE;
+            let slot = index / self.config.fleet_size() as usize;
             unit.owner = (slot < MAX_PLAYERS).then(|| PlayerId((slot + 1) as u8));
         }
     }
@@ -301,13 +312,14 @@ impl Command for ResetSimulation {
         // Rebuild the demo swarm using the deterministic demo layout and fresh
         // IDs from the session allocator.
         let mut units = Vec::new();
-        for (i, state) in crate::fleet::initial_world_positions()
+        let config = world.config;
+        for (i, state) in crate::fleet::initial_world_positions(config)
             .into_iter()
             .enumerate()
         {
             let id = world.allocate_unit_id()?;
-            let owner =
-                (i / FLEET_SIZE < MAX_PLAYERS).then(|| PlayerId((i / FLEET_SIZE + 1) as u8));
+            let owner = ((i / config.fleet_size() as usize) < MAX_PLAYERS)
+                .then(|| PlayerId((i / config.fleet_size() as usize + 1) as u8));
             units.push(Unit::new(id, owner, state));
         }
         world.units = units;
@@ -329,6 +341,10 @@ impl CommandScheduler {
     /// Schedule a command to execute at the given tick.
     pub fn schedule(&mut self, tick: Tick, command: Box<dyn Command>) {
         self.pending.entry(tick).or_default().push(command);
+    }
+
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
     }
 
     /// Execute all commands pending for `tick`, recording each one in

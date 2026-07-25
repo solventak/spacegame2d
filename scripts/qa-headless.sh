@@ -70,13 +70,19 @@ run_check "cargo clippy -- -D warnings" cargo clippy -- -D warnings
 #    ship movement, autopilot navigation, reset, world boundary, drone fleet.
 run_check "cargo test" cargo test
 
-# 4. Server smoke test — the server stub should print its banner and exit 0.
+# 4. Server smoke test — the live server should start and listen.
 info "server smoke test (spacegame2d-server)"
-SERVER_OUTPUT=$(cargo run -p spacegame2d-server 2>/dev/null || true)
-if echo "$SERVER_OUTPUT" | grep -q "spacegame2d-server: placeholder startup banner"; then
+SERVER_OUTPUT_FILE=$(mktemp)
+set +e
+timeout 3s cargo run -p spacegame2d-server -- 127.0.0.1:0 >"$SERVER_OUTPUT_FILE" 2>&1
+SERVER_STATUS=$?
+set -e
+SERVER_OUTPUT=$(cat "$SERVER_OUTPUT_FILE")
+rm -f "$SERVER_OUTPUT_FILE"
+if [ "$SERVER_STATUS" -eq 124 ] && ! echo "$SERVER_OUTPUT" | grep -q "panicked|invalid simulation configuration"; then
     pass "server smoke test"
 else
-    fail "server smoke test (expected banner, got: $SERVER_OUTPUT)"
+    fail "server smoke test (status $SERVER_STATUS, output: $SERVER_OUTPUT)"
     FAILED=1
 fi
 

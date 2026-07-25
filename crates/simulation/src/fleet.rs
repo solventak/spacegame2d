@@ -1,11 +1,12 @@
 use glam::Vec2;
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
+use crate::config::{DEFAULT_FLEET_SIZE, SimulationConfig};
 use crate::flight_control::{ArrivalController, NeighborObservation, NeighborRelationship};
 use crate::simulation::{ShipState, is_out_of_bounds, step_ship};
 
 /// Number of drones spawned by [`Fleet::new`] and [`Fleet::reset`].
-pub const DRONE_COUNT: usize = 30;
+pub const DRONE_COUNT: usize = DEFAULT_FLEET_SIZE as usize;
 
 /// One drone: its physical state paired with the autopilot driving it.
 ///
@@ -41,12 +42,18 @@ impl Unit {
 /// `step` / `cull` / `reset` / `set_destination` surface.
 pub struct Fleet {
     units: Vec<Unit>,
+    fleet_size: usize,
 }
 
 impl Fleet {
     pub fn new() -> Self {
+        Self::with_size(DRONE_COUNT)
+    }
+
+    pub fn with_size(fleet_size: usize) -> Self {
         Self {
-            units: initial_units(),
+            units: initial_units(fleet_size),
+            fleet_size,
         }
     }
 
@@ -67,7 +74,7 @@ impl Fleet {
 
     /// Respawn the full starting swarm, discarding survivors.
     pub fn reset(&mut self) {
-        self.units = initial_units();
+        self.units = initial_units(self.fleet_size);
     }
 
     /// Set a shared destination on every drone's autopilot.
@@ -131,8 +138,8 @@ impl Default for Fleet {
     }
 }
 
-fn initial_units() -> Vec<Unit> {
-    initial_drone_positions()
+fn initial_units(fleet_size: usize) -> Vec<Unit> {
+    initial_drone_positions_for_size(fleet_size)
         .into_iter()
         .map(Unit::new_drone)
         .collect()
@@ -141,17 +148,22 @@ fn initial_units() -> Vec<Unit> {
 /// Deterministic starting positions for the drone swarm, derived from a fixed
 /// PRNG seed so resets reproduce the same layout.
 pub fn initial_drone_positions() -> Vec<ShipState> {
-    initial_fleet_positions(0x5EED_1234, -4.0)
+    initial_drone_positions_for_size(DRONE_COUNT)
 }
 
-pub fn initial_world_positions() -> Vec<ShipState> {
-    let mut positions = initial_fleet_positions(0x5EED_1234, -4.0);
-    positions.extend(initial_fleet_positions(0xC0FF_EE42, 4.0));
+pub fn initial_drone_positions_for_size(fleet_size: usize) -> Vec<ShipState> {
+    initial_fleet_positions(0x5EED_1234, -4.0, fleet_size)
+}
+
+pub fn initial_world_positions(config: SimulationConfig) -> Vec<ShipState> {
+    let fleet_size = config.fleet_size() as usize;
+    let mut positions = initial_fleet_positions(0x5EED_1234, -4.0, fleet_size);
+    positions.extend(initial_fleet_positions(0xC0FF_EE42, 4.0, fleet_size));
     positions
 }
 
-fn initial_fleet_positions(mut seed: u32, x_offset: f32) -> Vec<ShipState> {
-    (0..DRONE_COUNT)
+fn initial_fleet_positions(mut seed: u32, x_offset: f32, fleet_size: usize) -> Vec<ShipState> {
+    (0..fleet_size)
         .map(|_| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let x = (seed as f32 / u32::MAX as f32) * 3.0 - 1.5 + x_offset;

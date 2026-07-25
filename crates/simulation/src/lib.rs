@@ -21,6 +21,7 @@
 
 pub mod autopilot;
 pub mod command;
+pub mod config;
 pub mod fleet;
 pub mod flight_control;
 pub mod simulation;
@@ -30,4 +31,5 @@ pub use command::{
     Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, UnitIdAllocationError,
     World,
 };
+pub use config::{DEFAULT_FLEET_SIZE, MAX_PLAYERS, SimulationConfig, SimulationConfigError};
 pub use simulation::SimulationEvent;

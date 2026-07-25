@@ -41,4 +41,3 @@ Agents may read Linear context and prepare drafts automatically. Before writing 
 - archiving or deleting work
 
 After a write, report the affected issue identifiers and links and verify the resulting state.
-
