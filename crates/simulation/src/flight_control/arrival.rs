@@ -262,6 +262,7 @@ mod tests {
     fn neighbors_outside_comfort_radius_produce_no_avoidance() {
         let controller = ArrivalController::default();
         let neighbor = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 2.0,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,
@@ -281,11 +282,13 @@ mod tests {
             },
         };
         let friendly = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 1.5,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,
         };
         let opposing = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 1.5,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Opposing,
@@ -308,11 +311,13 @@ mod tests {
     fn closer_neighbors_produce_stronger_avoidance() {
         let controller = ArrivalController::default();
         let near = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,
         };
         let marginal = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,
@@ -336,6 +341,7 @@ mod tests {
         let controller = ArrivalController::default();
         let neighbors = vec![
             NeighborObservation {
+                unit_id: crate::command::UnitId(1),
                 position: Vec2::X * 0.2,
                 velocity: Vec2::ZERO,
                 relationship: NeighborRelationship::Friendly,
@@ -357,11 +363,13 @@ mod tests {
         };
         let controller = ArrivalController { config };
         let friendly = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,
         };
         let opposing = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Opposing,
@@ -389,6 +397,7 @@ mod tests {
         };
         let controller = ArrivalController { config };
         let neighbor = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Opposing,
@@ -413,6 +422,7 @@ mod tests {
     fn nearby_neighbor_changes_requested_steering() {
         let controller = ArrivalController::default();
         let neighbor = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.5,
             velocity: Vec2::ZERO,
             relationship: NeighborRelationship::Friendly,

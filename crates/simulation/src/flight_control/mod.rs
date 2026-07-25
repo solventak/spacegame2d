@@ -8,6 +8,8 @@
 
 use glam::Vec2;
 
+use crate::command::UnitId;
+
 use crate::simulation::{
     FORWARD_THRUST_NEWTONS, FlightInput, MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, SHIP_MASS_KG,
     ShipState,
@@ -26,6 +28,7 @@ pub enum NeighborRelationship {
 /// so every drone sees a consistent world.
 #[derive(Clone, Copy, Debug)]
 pub struct NeighborObservation {
+    pub unit_id: UnitId,
     /// Neighbor position in arena-space meters.
     pub position: Vec2,
     /// Neighbor velocity in meters per second.

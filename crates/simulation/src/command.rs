@@ -6,7 +6,7 @@ use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, CommandData, Tick};
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
-use crate::config::{MAX_PLAYERS, SimulationConfig};
+use crate::config::{AvoidanceConfig, MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
 
@@ -85,6 +85,31 @@ impl Unit {
             ),
         }
     }
+    pub fn with_avoidance(
+        id: UnitId,
+        owner: Option<PlayerId>,
+        state: ShipState,
+        avoidance: AvoidanceConfig,
+    ) -> Self {
+        let controller = ArrivalController {
+            config: crate::flight_control::arrival::ArrivalControllerConfig {
+                comfort_radius_meters: avoidance.friendly_comfort_radius_meters,
+                opposing_comfort_radius_meters: avoidance.opposing_comfort_radius_meters,
+                avoidance_strength: avoidance.friendly_strength,
+                opposing_avoidance_strength: avoidance.opposing_strength,
+                prediction_horizon_seconds: avoidance.prediction_horizon_seconds,
+                max_avoidance_acceleration: avoidance.max_avoidance_acceleration,
+                opposing_speed_squared_scale: avoidance.opposing_speed_squared_scale,
+                ..Default::default()
+            },
+        };
+        Self {
+            id,
+            owner,
+            state,
+            autopilot: Autopilot::new(Box::new(controller), AutopilotConfig::default()),
+        }
+    }
 }
 
 pub struct World {
@@ -104,7 +129,9 @@ impl World {
         let units = crate::fleet::initial_world_positions(config)
             .into_iter()
             .enumerate()
-            .map(|(i, state)| Unit::new(UnitId(i as u32 + 1), None, state))
+            .map(|(i, state)| {
+                Unit::with_avoidance(UnitId(i as u32 + 1), None, state, config.avoidance())
+            })
             .collect();
         Self {
             config,
@@ -320,7 +347,7 @@ impl Command for ResetSimulation {
             let id = world.allocate_unit_id()?;
             let owner = ((i / config.fleet_size() as usize) < MAX_PLAYERS)
                 .then(|| PlayerId((i / config.fleet_size() as usize + 1) as u8));
-            units.push(Unit::new(id, owner, state));
+            units.push(Unit::with_avoidance(id, owner, state, config.avoidance()));
         }
         world.units = units;
         Ok(())

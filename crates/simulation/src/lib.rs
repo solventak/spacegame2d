@@ -31,5 +31,7 @@ pub use command::{
     Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, UnitIdAllocationError,
     World,
 };
-pub use config::{DEFAULT_FLEET_SIZE, MAX_PLAYERS, SimulationConfig, SimulationConfigError};
+pub use config::{
+    AvoidanceConfig, DEFAULT_FLEET_SIZE, MAX_PLAYERS, SimulationConfig, SimulationConfigError,
+};
 pub use simulation::SimulationEvent;
