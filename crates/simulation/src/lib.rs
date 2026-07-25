@@ -25,5 +25,8 @@ pub mod fleet;
 pub mod flight_control;
 pub mod simulation;
 
-pub use command::{Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, World};
+pub use command::{
+    Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, UnitIdAllocationError,
+    World,
+};
 pub use simulation::SimulationEvent;

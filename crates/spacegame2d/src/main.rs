@@ -17,6 +17,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use spacegame2d_simulation::{
+    command::PlayerId,
     command::Unit,
     simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
 };
@@ -32,6 +33,8 @@ use winit::{
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 
 const VIEW_HEIGHT_METERS: f32 = 40.0;
+const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
+const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
 #[repr(C)]
@@ -40,9 +43,23 @@ struct SceneUniform {
     viewport: [f32; 4],
     ship: [f32; 4],
     marker: [f32; 4],
+    ship_color: [f32; 4],
 }
 
-fn scene_uniform(width: u32, height: u32, ship: &ShipState, marker: Option<Vec2>) -> SceneUniform {
+fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
+    match owner {
+        Some(PlayerId(2)) => PLAYER_TWO_COLOR,
+        _ => PLAYER_ONE_COLOR,
+    }
+}
+
+fn scene_uniform(
+    width: u32,
+    height: u32,
+    ship: &ShipState,
+    marker: Option<Vec2>,
+    ship_color: [f32; 4],
+) -> SceneUniform {
     let aspect = width.max(1) as f32 / height.max(1) as f32;
     let half_height = VIEW_HEIGHT_METERS * 0.5;
     let half_width = half_height * aspect;
@@ -55,6 +72,7 @@ fn scene_uniform(width: u32, height: u32, ship: &ShipState, marker: Option<Vec2>
             ship.heading_radians.cos(),
         ],
         marker: marker.map_or([0.0, 0.0, 0.0, 0.0], |p| [p.x, p.y, 1.0, 0.0]),
+        ship_color,
     }
 }
 
@@ -202,6 +220,7 @@ impl Renderer {
                 config.height,
                 &ShipState::default(),
                 None,
+                PLAYER_ONE_COLOR,
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -224,6 +243,7 @@ impl Renderer {
                         config.height,
                         &ship,
                         None,
+                        PLAYER_ONE_COLOR,
                     )),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
@@ -313,6 +333,7 @@ impl Renderer {
                         self.config.height,
                         &unit.state,
                         None,
+                        fleet_color(unit.owner),
                     )),
                 );
                 pass.set_bind_group(0, &self.scene_bind_groups[index], &[]);
@@ -326,6 +347,7 @@ impl Renderer {
                     self.config.height,
                     &ShipState::default(),
                     None,
+                    PLAYER_ONE_COLOR,
                 )),
             );
             pass.set_vertex_buffer(0, self.ring_vertex_buffer.slice(..));
@@ -412,17 +434,6 @@ impl ApplicationHandler for App {
                     eprintln!("failed to register connected player: {error}");
                     event_loop.exit();
                     return;
-                }
-                if let Some(u) = self
-                    .simulation
-                    .world
-                    .units
-                    .iter_mut()
-                    .find(|u| u.owner.is_none())
-                {
-                    u.owner = u8::try_from(session.player_slot)
-                        .ok()
-                        .and_then(spacegame2d_simulation::command::PlayerId::new);
                 }
                 self.network = Some(session);
             }
@@ -593,8 +604,15 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 mod tests {
     use super::*;
     #[test]
+    fn fleet_color_maps_player_two_to_coral() {
+        assert_eq!(fleet_color(Some(PlayerId(1))), PLAYER_ONE_COLOR);
+        assert_eq!(fleet_color(Some(PlayerId(2))), PLAYER_TWO_COLOR);
+        assert_eq!(fleet_color(None), PLAYER_ONE_COLOR);
+    }
+
+    #[test]
     fn scene_uniform_uses_fixed_world_scale() {
-        let u = scene_uniform(1000, 1000, &ShipState::default(), None);
+        let u = scene_uniform(1000, 1000, &ShipState::default(), None, PLAYER_ONE_COLOR);
         // Square viewport: half_width == half_height == VIEW_HEIGHT_METERS * 0.5.
         let expected = 1.0 / (VIEW_HEIGHT_METERS * 0.5);
         assert!((u.viewport[0] - expected).abs() < 0.0001);

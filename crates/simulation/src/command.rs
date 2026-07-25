@@ -20,6 +20,11 @@ impl PlayerId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UnitId(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitIdAllocationError {
+    Exhausted,
+}
+
 pub struct Unit {
     pub id: UnitId,
     pub owner: Option<PlayerId>,
@@ -45,6 +50,7 @@ pub struct World {
     pub next_unit_id: u32,
     pub units: Vec<Unit>,
     connected_players: BTreeSet<PlayerId>,
+    unit_id_exhausted: bool,
 }
 
 impl World {
@@ -58,11 +64,32 @@ impl World {
             next_unit_id: crate::fleet::DRONE_COUNT as u32 + 1,
             units,
             connected_players: BTreeSet::new(),
+            unit_id_exhausted: false,
         }
     }
 
     pub fn connect_player(&mut self, player: PlayerId) -> bool {
         self.connected_players.insert(player)
+    }
+
+    /// Assign the unit at the player's one-based slot index.
+    pub fn assign_player_unit(&mut self, player: PlayerId) -> bool {
+        let index = usize::from(player.0.saturating_sub(1));
+        let Some(unit) = self.units.get_mut(index) else {
+            return false;
+        };
+        if unit.owner.is_some_and(|owner| owner != player) {
+            return false;
+        }
+        unit.owner = Some(player);
+        true
+    }
+
+    /// Assign deterministic owners to every unit in a client mirror.
+    pub fn assign_mirror_owners(&mut self) {
+        for (index, unit) in self.units.iter_mut().enumerate() {
+            unit.owner = u8::try_from(index + 1).ok().and_then(PlayerId::new);
+        }
     }
 
     pub fn disconnect_player(&mut self, player: PlayerId) -> bool {
@@ -73,15 +100,26 @@ impl World {
         self.connected_players.contains(&player)
     }
 
-    pub fn allocate_unit_id(&mut self) -> UnitId {
+    pub fn allocate_unit_id(&mut self) -> Result<UnitId, UnitIdAllocationError> {
+        if self.unit_id_exhausted {
+            return Err(UnitIdAllocationError::Exhausted);
+        }
         let id = UnitId(self.next_unit_id);
-        self.next_unit_id = self.next_unit_id.saturating_add(1);
-        id
+        if self.next_unit_id == u32::MAX {
+            self.unit_id_exhausted = true;
+        } else {
+            self.next_unit_id += 1;
+        }
+        Ok(id)
     }
 
     fn advance_allocator_past_units(&mut self) {
         if let Some(max_id) = self.units.iter().map(|unit| unit.id.0).max() {
-            self.next_unit_id = self.next_unit_id.max(max_id.saturating_add(1));
+            if max_id == u32::MAX {
+                self.unit_id_exhausted = true;
+            } else {
+                self.next_unit_id = self.next_unit_id.max(max_id + 1);
+            }
         }
     }
 
@@ -170,7 +208,9 @@ impl Command for ResetSimulation {
             .into_iter()
             .enumerate()
             .map(|(i, state)| {
-                let id = world.allocate_unit_id();
+                let id = world
+                    .allocate_unit_id()
+                    .expect("unit ID allocation exhausted while resetting simulation");
                 Unit::new(id, owners.get(i).copied().flatten(), state)
             })
             .collect();
@@ -406,6 +446,59 @@ mod tests {
         assert!(world.disconnect_player(PlayerId(1)));
         assert!(!world.disconnect_player(PlayerId(1)));
         assert!(!world.is_player_connected(PlayerId(1)));
+    }
+
+    #[test]
+    fn mirror_ownership_is_deterministic_for_all_units() {
+        let mut world = World::demo();
+
+        world.assign_mirror_owners();
+
+        assert_eq!(world.units[0].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[1].owner, Some(PlayerId(2)));
+    }
+
+    #[test]
+    fn trusted_authoritative_commands_apply_on_unowned_mirrors() {
+        let mut sim = Simulation::default();
+        let command = AuthoritativeCommand {
+            execute_tick: 0,
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [0.0f32.to_bits(), 10.0f32.to_bits()],
+            },
+        };
+
+        assert!(sim.schedule_authoritative_trusted(&command));
+        sim.step();
+
+        assert_eq!(
+            sim.world.units[0].autopilot.destination(),
+            Some(Vec2::new(0.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn player_slot_assignment_is_deterministic() {
+        let mut world = World::demo();
+
+        assert!(world.assign_player_unit(PlayerId(2)));
+        assert_eq!(world.units[1].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[0].owner, None);
+    }
+
+    #[test]
+    fn unit_id_allocation_reports_exhaustion() {
+        let mut world = World::demo();
+        world.next_unit_id = u32::MAX;
+
+        assert_eq!(world.allocate_unit_id().unwrap(), UnitId(u32::MAX));
+        assert_eq!(
+            world.allocate_unit_id(),
+            Err(UnitIdAllocationError::Exhausted)
+        );
     }
 
     #[test]

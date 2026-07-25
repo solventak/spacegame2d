@@ -128,15 +128,8 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 continue;
             };
             stream.set_nodelay(true)?;
-            if let Some(unit) = simulation
-                .world
-                .units
-                .iter_mut()
-                .find(|unit| unit.owner.is_none())
-            {
-                unit.owner = Some(player_id);
-            }
             simulation.world.connect_player(player_id);
+            simulation.world.assign_player_unit(player_id);
             clients.push(Client {
                 stream,
                 address,

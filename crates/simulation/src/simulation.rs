@@ -114,6 +114,13 @@ impl Simulation {
         if !valid_authoritative(&self.world, cmd) {
             return false;
         }
+        self.schedule_authoritative_trusted(cmd)
+    }
+
+    /// Schedule a command already validated by the authoritative server.
+    /// Client mirrors use this path because they do not maintain the server's
+    /// complete ownership registry.
+    pub fn schedule_authoritative_trusted(&mut self, cmd: &AuthoritativeCommand) -> bool {
         let Some(command) = command_from_data(&cmd.command) else {
             return false;
         };
@@ -121,8 +128,8 @@ impl Simulation {
         true
     }
 
-    /// Advance one deterministic tick. The client demo's drones are stepped by
-    /// [`crate::fleet::Fleet`]; this simulation contains no player entity.
+    /// Advance one deterministic tick by applying queued commands, stepping the
+    /// authoritative World units, and deriving transient boundary events.
     pub fn step(&mut self) -> Vec<SimulationEvent> {
         self.commands.execute_pending(self.tick, &mut self.world);
         let observations: Vec<NeighborObservation> = self
@@ -465,7 +472,7 @@ mod tests {
     #[test]
     fn cross_peer_replay_is_deterministic_tick_by_tick() {
         // DEP-005: compare the authoritative per-tick snapshot, rather than
-        // only comparing a legacy Fleet/ShipState aggregate at the end.
+        // rather than only comparing a legacy aggregate at the end.
         let commands = vec![
             authoritative_set_destination(1, 1, 1, 1, [6.0f32.to_bits(), 5.0f32.to_bits()]),
             authoritative_set_destination(3, 1, 2, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]),
@@ -558,48 +565,27 @@ mod tests {
             peer.world.units.truncate(1);
             peer.world.units[0].owner = Some(PlayerId(1));
             peer.world.units[0].state.position = Vec2::new(0.0, 0.9);
-            peer.world.units[0].state.velocity = Vec2::new(0.0, 2.0);
             peer.world.units[0].state.heading_radians = 0.0;
             assert!(peer.schedule_authoritative(&command));
         }
+
+        let mut control = Simulation::with_world_radius(1.0);
+        control.world.units.truncate(1);
+        control.world.units[0].owner = Some(PlayerId(1));
+        control.world.units[0].state.position = Vec2::new(0.0, 0.9);
+        control.world.units[0].state.heading_radians = 0.0;
 
         let mut peer_events: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
         for _ in 0..30 {
             for (events, peer) in peer_events.iter_mut().zip(&mut peers) {
                 events.push(peer.step());
             }
+            assert!(control.step().is_empty());
         }
 
         assert!(peer_events[0].iter().any(|events| !events.is_empty()));
         assert_eq!(peer_events[0], peer_events[1]);
         assert!(peers.iter().all(|peer| peer.world.units.is_empty()));
-    }
-
-    #[test]
-    fn late_arrival_client_matches_on_time_boundary_event_vectors() {
-        let command =
-            authoritative_set_destination(4, 1, 1, 1, [0.0f32.to_bits(), 100.0f32.to_bits()]);
-        let mut on_time = Simulation::with_world_radius(1.0);
-        let mut late = Simulation::with_world_radius(1.0);
-        for sim in [&mut on_time, &mut late] {
-            sim.world.units.truncate(1);
-            sim.world.units[0].owner = Some(PlayerId(1));
-            sim.world.units[0].state.position = Vec2::new(0.0, 0.9);
-            sim.world.units[0].state.heading_radians = 0.0;
-        }
-        assert!(on_time.schedule_authoritative(&command));
-
-        let mut on_time_events = Vec::new();
-        let mut late_events = Vec::new();
-        for _ in 0..30 {
-            on_time_events.push(on_time.step());
-            if late.tick() == 3 {
-                assert!(late.schedule_authoritative(&command));
-            }
-            late_events.push(late.step());
-        }
-        assert_eq!(on_time_events, late_events);
-        assert!(on_time_events.iter().any(|events| !events.is_empty()));
     }
 
     #[test]

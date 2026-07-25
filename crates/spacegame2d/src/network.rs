@@ -54,6 +54,7 @@ impl NetworkSession {
             .ok()
             .and_then(spacegame2d_simulation::command::PlayerId::new)
             .ok_or_else(|| invalid("server assigned invalid player slot"))?;
+        simulation.world.assign_mirror_owners();
         simulation.world.connect_player(player);
         Ok(())
     }
@@ -158,9 +159,19 @@ pub fn apply_due_commands(
     simulation: &mut spacegame2d_simulation::simulation::Simulation,
     scheduled: &mut BTreeMap<u64, Vec<AuthoritativeCommand>>,
 ) {
-    if let Some(commands) = scheduled.remove(&simulation.tick()) {
-        for command in commands {
-            simulation.schedule_authoritative(&command);
+    let current_tick = simulation.tick();
+    let due_ticks = scheduled
+        .range(..=current_tick)
+        .map(|(tick, _)| *tick)
+        .collect::<Vec<_>>();
+    for tick in due_ticks {
+        if let Some(commands) = scheduled.remove(&tick) {
+            for mut command in commands {
+                if command.execute_tick < current_tick {
+                    command.execute_tick = current_tick;
+                }
+                simulation.schedule_authoritative_trusted(&command);
+            }
         }
     }
 }
@@ -183,6 +194,24 @@ mod tests {
             } else {
                 thread::sleep(std::time::Duration::from_millis(100));
             }
+        });
+        address
+    }
+
+    fn synthetic_server_with_authoritative(command: AuthoritativeCommand) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = spacegame2d_protocol::read_message(&mut stream).unwrap();
+            spacegame2d_protocol::write_message(&mut stream, &Message::ServerHello(server_hello()))
+                .unwrap();
+            spacegame2d_protocol::write_message(
+                &mut stream,
+                &Message::AuthoritativeCommand(command),
+            )
+            .unwrap();
+            thread::sleep(std::time::Duration::from_millis(100));
         });
         address
     }
@@ -313,6 +342,53 @@ mod tests {
         apply_due_commands(&mut simulation, &mut scheduled);
         simulation.step();
         assert_eq!(simulation.commands.history().len(), 1);
+    }
+
+    #[test]
+    fn late_arrival_through_network_session_applies_overdue_command() {
+        let command = AuthoritativeCommand {
+            execute_tick: 0,
+            player_slot: 7,
+            sequence: 1,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [0.0f32.to_bits(), 100.0f32.to_bits()],
+            },
+        };
+        let address = synthetic_server_with_authoritative(command);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        let mut simulation = spacegame2d_simulation::simulation::Simulation::with_world_radius(1.0);
+        simulation.world.units.truncate(1);
+        simulation.world.units[0].owner = Some(spacegame2d_simulation::command::PlayerId(7));
+        simulation.world.units[0].state.position = glam::Vec2::new(0.0, 0.9);
+        simulation.world.units[0].state.heading_radians = 0.0;
+        simulation.set_tick(1);
+        let mut commands = Vec::new();
+        for _ in 0..20 {
+            commands = session.poll_commands().unwrap();
+            if !commands.is_empty() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(commands.len(), 1);
+        let mut scheduled = BTreeMap::new();
+        for command in commands {
+            scheduled
+                .entry(command.execute_tick)
+                .or_insert_with(Vec::new)
+                .push(command);
+        }
+        apply_due_commands(&mut simulation, &mut scheduled);
+        assert!(scheduled.is_empty());
+        let mut events = Vec::new();
+        for _ in 0..30 {
+            events.extend(simulation.step());
+        }
+        assert!(events.iter().any(|event| matches!(
+            event,
+            spacegame2d_simulation::SimulationEvent::BoundaryCrossed { .. }
+        )));
     }
 
     #[test]
