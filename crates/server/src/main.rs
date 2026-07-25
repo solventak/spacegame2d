@@ -111,21 +111,32 @@ async fn run(address: SocketAddr) -> io::Result<()> {
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
     loop {
         interval.tick().await;
-        while let Ok((stream, address)) = listener.accept().await {
+        loop {
+            let accepted = tokio::select! {
+                biased;
+                result = listener.accept() => Some(result?),
+                _ = tokio::task::yield_now() => None,
+            };
+            let Some((stream, address)) = accepted else {
+                break;
+            };
+            let Some(player_id) = u8::try_from(next_slot).ok().and_then(PlayerId::new) else {
+                tracing::warn!(event = "client_rejected", address = %address, slot = next_slot, "player slot exhausted");
+                continue;
+            };
             stream.set_nodelay(true)?;
-            let slot = next_slot;
             if let Some(unit) = simulation
                 .world
                 .units
                 .iter_mut()
                 .find(|unit| unit.owner.is_none())
             {
-                unit.owner = PlayerId::new(slot as u8);
+                unit.owner = Some(player_id);
             }
             clients.push(Client {
                 stream,
                 address,
-                slot,
+                slot: next_slot,
                 connected: false,
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
