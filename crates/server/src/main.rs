@@ -126,7 +126,10 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 .expect("slot is nonzero");
             stream.set_nodelay(true)?;
             simulation.world.connect_player(player_id);
-            simulation.world.assign_player_fleet(player_id);
+            if !simulation.world.assign_player_fleet(player_id) {
+                tracing::warn!(event = "fleet_assignment_failed", address = %address, slot, "could not assign fleet to player");
+                continue;
+            }
             clients.push(Client {
                 stream,
                 address,
