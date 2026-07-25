@@ -8,6 +8,7 @@
 
 mod geometry;
 pub mod network;
+mod presentation;
 
 use std::{
     sync::Arc,
@@ -16,7 +17,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
-use spacegame2d_protocol::{CommandRejected, CommandRejectionReason, Tick};
+use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
     command::PlayerId,
     command::Unit,
@@ -33,6 +34,7 @@ use winit::{
 
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 use crate::network::ServerEvent;
+use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 #[cfg(test)]
 use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
@@ -50,115 +52,6 @@ struct SceneUniform {
     ship: [f32; 4],
     marker: [f32; 4],
     ship_color: [f32; 4],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MarkerStatus {
-    Pending,
-    Confirmed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct DestinationMarker {
-    position: Vec2,
-    status: MarkerStatus,
-}
-
-#[derive(Debug, Default)]
-struct DestinationPresentation {
-    pending: Option<(u32, Vec2)>,
-    confirmed: Option<Vec2>,
-    rejection: Option<(String, Instant)>,
-}
-
-impl DestinationPresentation {
-    fn begin(&mut self, sequence: u32, destination: Vec2) {
-        self.pending = Some((sequence, destination));
-        self.rejection = None;
-    }
-
-    fn authoritative(
-        &mut self,
-        local_slot: u32,
-        command: &spacegame2d_protocol::AuthoritativeCommand,
-    ) {
-        if command.command == spacegame2d_protocol::CommandData::ResetSimulation {
-            self.clear();
-            return;
-        }
-        if command.player_slot != local_slot {
-            return;
-        }
-        let spacegame2d_protocol::CommandData::SetDestination { destination } = &command.command
-        else {
-            return;
-        };
-        let point = Vec2::new(
-            f32::from_bits(destination[0]),
-            f32::from_bits(destination[1]),
-        );
-        self.confirmed = Some(point);
-        if self
-            .pending
-            .is_some_and(|(sequence, _)| sequence == command.sequence)
-        {
-            self.pending = None;
-        }
-    }
-
-    fn rejected(&mut self, rejection: &CommandRejected, now: Instant) {
-        if self
-            .pending
-            .is_some_and(|(sequence, _)| sequence == rejection.sequence)
-        {
-            self.pending = None;
-        }
-        self.rejection = Some((
-            rejection_message(rejection.reason).to_owned(),
-            now + Duration::from_secs(2),
-        ));
-    }
-
-    fn clear(&mut self) {
-        self.pending = None;
-        self.confirmed = None;
-        self.rejection = None;
-    }
-
-    fn marker(&self) -> Option<DestinationMarker> {
-        self.pending
-            .map(|(_, position)| DestinationMarker {
-                position,
-                status: MarkerStatus::Pending,
-            })
-            .or_else(|| {
-                self.confirmed.map(|position| DestinationMarker {
-                    position,
-                    status: MarkerStatus::Confirmed,
-                })
-            })
-    }
-
-    fn rejection_text(&mut self, now: Instant) -> Option<&str> {
-        if self
-            .rejection
-            .as_ref()
-            .is_some_and(|(_, deadline)| *deadline <= now)
-        {
-            self.rejection = None;
-        }
-        self.rejection.as_ref().map(|(message, _)| message.as_str())
-    }
-}
-
-fn rejection_message(reason: CommandRejectionReason) -> &'static str {
-    match reason {
-        CommandRejectionReason::InvalidPlayer => "Command rejected: invalid player",
-        CommandRejectionReason::UnauthorizedFleet => "Command rejected: unauthorized fleet",
-        CommandRejectionReason::NonFiniteDestination => "Command rejected: invalid destination",
-        CommandRejectionReason::DestinationOutsideArena => "Command rejected: outside arena",
-        CommandRejectionReason::InvalidCommand => "Command rejected: invalid command",
-    }
 }
 
 fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
@@ -799,6 +692,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spacegame2d_protocol::{CommandRejected, CommandRejectionReason};
     #[test]
     fn fleet_color_maps_player_two_to_coral() {
         assert_eq!(fleet_color(Some(PlayerId(1))), PLAYER_ONE_COLOR);
