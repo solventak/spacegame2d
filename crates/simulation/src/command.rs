@@ -6,6 +6,7 @@ use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, CommandData, Tick};
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
+use crate::combat::CombatState;
 use crate::config::{AvoidanceConfig, MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
@@ -71,6 +72,7 @@ pub struct Unit {
     pub owner: Option<PlayerId>,
     pub state: ShipState,
     pub autopilot: Autopilot,
+    pub combat: CombatState,
 }
 
 impl Unit {
@@ -83,6 +85,7 @@ impl Unit {
                 Box::new(ArrivalController::default()),
                 AutopilotConfig::default(),
             ),
+            combat: CombatState::new(state.heading_radians),
         }
     }
     pub fn with_avoidance(
@@ -108,6 +111,7 @@ impl Unit {
             owner,
             state,
             autopilot: Autopilot::new(Box::new(controller), AutopilotConfig::default()),
+            combat: CombatState::new(state.heading_radians),
         }
     }
 }
@@ -583,6 +587,28 @@ mod tests {
             world.next_unit_id > next_before,
             "next_unit_id must advance past recreated units"
         );
+    }
+
+    #[test]
+    fn reset_restores_default_combat_state() {
+        use crate::combat::MAX_HULL;
+        let mut world = World::demo();
+        let target = world.units[1].id;
+        let unit = &mut world.units[0];
+        unit.combat.hull.current = 1;
+        unit.combat.turret.heading_radians = 1.5;
+        unit.combat.turret.target = Some(target);
+        unit.combat.turret.cooldown_ticks_remaining = 7;
+        ResetSimulation.execute(&mut world).unwrap();
+        let reset = &world.units[0];
+        assert_eq!(reset.combat.hull.current, MAX_HULL);
+        assert_eq!(reset.combat.hull.maximum, MAX_HULL);
+        assert_eq!(
+            reset.combat.turret.heading_radians,
+            reset.state.heading_radians
+        );
+        assert_eq!(reset.combat.turret.target, None);
+        assert_eq!(reset.combat.turret.cooldown_ticks_remaining, 0);
     }
 
     #[test]

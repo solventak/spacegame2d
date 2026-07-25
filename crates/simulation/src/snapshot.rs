@@ -3,7 +3,7 @@
 use crate::{autopilot::AutopilotConfig, command::Unit, simulation::Simulation};
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 1;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 2;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -31,6 +31,11 @@ pub struct UnitSnapshot {
     pub active: bool,
     pub arrival_radius_bits: u32,
     pub stopped_speed_bits: u32,
+    pub hull_current: u32,
+    pub hull_maximum: u32,
+    pub turret_heading_bits: u32,
+    pub turret_target: Option<u32>,
+    pub turret_cooldown_ticks_remaining: u32,
 }
 
 impl Simulation {
@@ -99,6 +104,11 @@ impl From<&Unit> for UnitSnapshot {
             active: unit.autopilot.is_active(),
             arrival_radius_bits: config.arrival_radius_meters.to_bits(),
             stopped_speed_bits: config.stopped_speed_meters_per_second.to_bits(),
+            hull_current: unit.combat.hull.current,
+            hull_maximum: unit.combat.hull.maximum,
+            turret_heading_bits: unit.combat.turret.heading_radians.to_bits(),
+            turret_target: unit.combat.turret.target.map(|target| target.0),
+            turret_cooldown_ticks_remaining: unit.combat.turret.cooldown_ticks_remaining,
         }
     }
 }
@@ -122,6 +132,17 @@ impl UnitSnapshot {
         put_u32(bytes, self.heading_bits);
         put_u32(bytes, self.angular_velocity_bits);
         bytes.push(self.active as u8);
+        put_u32(bytes, self.hull_current);
+        put_u32(bytes, self.hull_maximum);
+        put_u32(bytes, self.turret_heading_bits);
+        match self.turret_target {
+            Some(target) => {
+                bytes.push(1);
+                put_u32(bytes, target);
+            }
+            None => bytes.push(0),
+        }
+        put_u32(bytes, self.turret_cooldown_ticks_remaining);
         match self.destination_bits {
             Some(destination) => {
                 bytes.push(1);
@@ -168,6 +189,27 @@ mod tests {
         let before = simulation.state_hash();
         simulation.step().unwrap();
         assert_ne!(before, simulation.state_hash());
+    }
+
+    #[test]
+    fn combat_state_changes_hash() {
+        let baseline = Simulation::default().state_hash();
+        let mut hull = Simulation::default();
+        hull.world.units[0].combat.hull.current -= 1;
+        assert_ne!(hull.state_hash(), baseline);
+        let mut heading = Simulation::default();
+        heading.world.units[0].combat.turret.heading_radians = 1.0;
+        assert_ne!(heading.state_hash(), baseline);
+        let mut target = Simulation::default();
+        let id = target.world.units[1].id;
+        target.world.units[0].combat.turret.target = Some(id);
+        assert_ne!(target.state_hash(), baseline);
+        let mut cooldown = Simulation::default();
+        cooldown.world.units[0]
+            .combat
+            .turret
+            .cooldown_ticks_remaining = 1;
+        assert_ne!(cooldown.state_hash(), baseline);
     }
 
     #[test]
