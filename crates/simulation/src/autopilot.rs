@@ -63,6 +63,12 @@ impl Autopilot {
     pub fn destination(&self) -> Option<Vec2> {
         self.destination
     }
+    pub(crate) fn config(&self) -> AutopilotConfig {
+        self.config
+    }
+    pub(crate) fn controller_name(&self) -> &'static str {
+        self.controller.name()
+    }
     pub fn controls_for_tick(
         &mut self,
         ship: &ShipState,

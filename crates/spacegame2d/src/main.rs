@@ -588,6 +588,12 @@ impl ApplicationHandler for App {
             self.simulation.apply_due_commands(&mut self.scheduled);
             let events = self.simulation.step().unwrap_or_default();
             self.presentation_events.append(events);
+            if let Some(session) = self.network.as_mut()
+                && self.simulation.tick().0 % u64::from(SIMULATION_HZ) == 0
+            {
+                let _ = session
+                    .send_state_checksum(self.simulation.tick(), self.simulation.state_hash());
+            }
             self.next_tick += TICK_DURATION;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));

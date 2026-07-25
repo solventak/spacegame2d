@@ -8,6 +8,7 @@ message Envelope {
     CommandRequest command_request = 3;
     AuthoritativeCommand authoritative_command = 4;
     CommandRejected command_rejected = 5;
+    StateChecksum state_checksum = 6;
   }
 }
 
@@ -46,6 +47,10 @@ message ResetSimulationCommand {}
 message Vector2Bits {
   fixed32 x = 1;
   fixed32 y = 2;
+}
+message StateChecksum {
+  uint64 tick = 1;
+  bytes hash = 2;
 }
 message CommandRejected {
   uint32 sequence = 1;

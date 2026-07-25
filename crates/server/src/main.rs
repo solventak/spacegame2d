@@ -6,8 +6,8 @@ use std::{
 };
 
 use spacegame2d_protocol::{
-    AuthoritativeCommand, CommandData, CommandRejected, CommandRejectionReason, CommandRequest,
-    Message, SIMULATION_VERSION, Tick,
+    AuthoritativeCommand, Capability, CommandData, CommandRejected, CommandRejectionReason,
+    CommandRequest, Message, SIMULATION_VERSION, StateChecksum, Tick,
 };
 use spacegame2d_simulation::{
     command::{Command, MAX_PLAYERS, PlayerId},
@@ -26,6 +26,8 @@ struct Client {
     connected: bool,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
+    checksum_enabled: bool,
+    pending_checksums: VecDeque<(Tick, Vec<u8>)>,
 }
 
 impl Client {
@@ -122,6 +124,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
     let mut clients = Vec::new();
     let mut simulation = Simulation::default();
     let mut scheduled = BTreeMap::<Tick, Vec<AuthoritativeCommand>>::new();
+    let mut state_hashes = BTreeMap::<Tick, [u8; 32]>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
     loop {
         tokio::select! {
@@ -161,6 +164,8 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 address,
                 slot,
                 connected: false,
+                checksum_enabled: false,
+                pending_checksums: VecDeque::new(),
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
             });
@@ -181,16 +186,37 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                 remove.push(index);
                                 continue;
                             }
+                            client.checksum_enabled =
+                                hello.capabilities.contains(&Capability::StateChecksums);
                             client.queue(&Message::ServerHello(
                                 spacegame2d_protocol::ServerHello {
                                     simulation_version: SIMULATION_VERSION,
                                     simulation_hz: SIMULATION_HZ,
                                     player_slot: client.slot,
                                     server_tick: simulation.tick(),
-                                    capabilities: Vec::new(),
+                                    capabilities: client
+                                        .checksum_enabled
+                                        .then_some(vec![Capability::StateChecksums])
+                                        .unwrap_or_default(),
                                 },
                             ))?;
                             client.connected = true;
+                        } else if let Message::StateChecksum(StateChecksum { tick, hash }) = message
+                        {
+                            if client.checksum_enabled {
+                                if let Some(server_hash) = state_hashes.get(&tick) {
+                                    if let Some(divergence) =
+                                        checksum_divergence(tick, server_hash, &hash)
+                                    {
+                                        tracing::warn!(event = "state_divergence", address = %client.address, slot = client.slot, tick = ?divergence.tick, server_hash = %hex_hash(&divergence.server_hash), client_hash = %hex_hash(&divergence.client_hash), "client simulation diverged from server");
+                                    }
+                                } else {
+                                    client.pending_checksums.push_back((tick, hash));
+                                    while client.pending_checksums.len() > 16 {
+                                        client.pending_checksums.pop_front();
+                                    }
+                                }
+                            }
                         } else if let Message::CommandRequest(request) = message {
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
@@ -261,6 +287,63 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 position,
             } = event;
             tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
+        }
+        let completed_tick = simulation.tick();
+        if completed_tick.0 % u64::from(SIMULATION_HZ) == 0 {
+            state_hashes.insert(completed_tick, simulation.state_hash());
+            let oldest = completed_tick - Tick::from(u64::from(SIMULATION_HZ) * 10);
+            state_hashes.retain(|tick, _| *tick >= oldest);
+            compare_pending_checksums(&mut clients, &state_hashes, completed_tick);
+        }
+    }
+}
+
+fn hex_hash(hash: &[u8]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ChecksumDivergence {
+    tick: Tick,
+    server_hash: [u8; 32],
+    client_hash: Vec<u8>,
+}
+
+fn checksum_divergence(
+    tick: Tick,
+    server_hash: &[u8; 32],
+    client_hash: &[u8],
+) -> Option<ChecksumDivergence> {
+    (server_hash.as_slice() != client_hash).then(|| ChecksumDivergence {
+        tick,
+        server_hash: *server_hash,
+        client_hash: client_hash.to_vec(),
+    })
+}
+
+fn compare_pending_checksums(
+    clients: &mut [Client],
+    state_hashes: &BTreeMap<Tick, [u8; 32]>,
+    completed_tick: Tick,
+) {
+    for client in clients.iter_mut() {
+        let pending = std::mem::take(&mut client.pending_checksums);
+        for (tick, hash) in pending {
+            if let Some(server_hash) = state_hashes.get(&tick) {
+                if let Some(divergence) = checksum_divergence(tick, server_hash, &hash) {
+                    tracing::warn!(
+                        event = "state_divergence",
+                        address = %client.address,
+                        slot = client.slot,
+                        tick = ?divergence.tick,
+                        server_hash = %hex_hash(&divergence.server_hash),
+                        client_hash = %hex_hash(&divergence.client_hash),
+                        "client simulation diverged from server"
+                    );
+                }
+            } else if tick > completed_tick {
+                client.pending_checksums.push_back((tick, hash));
+            }
         }
     }
 }
@@ -358,6 +441,17 @@ mod tests {
             .is_compatible())
         );
     }
+    #[test]
+    fn deliberate_checksum_difference_is_detected() {
+        let expected = [0u8; 32];
+        let mut different = expected;
+        different[0] = 1;
+        let divergence = checksum_divergence(Tick::from(60), &expected, &different).unwrap();
+        assert_eq!(divergence.tick, Tick::from(60));
+        assert_eq!(divergence.server_hash, expected);
+        assert_eq!(divergence.client_hash, different);
+    }
+
     #[test]
     fn scheduling_tick_math() {
         assert_eq!(
