@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use thiserror::Error;
+
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, CommandData, Tick};
 
@@ -20,9 +22,16 @@ impl PlayerId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UnitId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum UnitIdAllocationError {
+    #[error("unit id allocation exhausted")]
     Exhausted,
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum CommandDataError {
+    #[error("destination coordinates must be finite")]
+    NonFiniteDestination,
 }
 
 pub struct Unit {
@@ -129,6 +138,23 @@ impl World {
 
     pub fn unit_mut(&mut self, id: UnitId) -> Option<&mut Unit> {
         self.units.iter_mut().find(|u| u.id == id)
+    }
+    /// Validate an authoritative command against the current world state.
+    ///
+    /// Ownership rules apply to targeted units and connected players.
+    pub fn valid_authoritative(&self, cmd: &AuthoritativeCommand) -> bool {
+        let Ok(slot) = u8::try_from(cmd.player_slot) else {
+            return false;
+        };
+        let Some(player) = PlayerId::new(slot) else {
+            return false;
+        };
+        match &cmd.command {
+            CommandData::SetDestination { unit_id, .. } => self
+                .unit(UnitId(*unit_id))
+                .is_some_and(|u| u.owner == Some(player)),
+            CommandData::ResetSimulation => self.is_player_connected(player),
+        }
     }
 }
 
@@ -273,9 +299,8 @@ impl CommandScheduler {
         while simulation.tick() <= end_tick {
             if let Some(commands) = by_tick.get(&simulation.tick()) {
                 for command in commands {
-                    if let Some(command) = command_from_record(command) {
-                        simulation.commands.schedule(simulation.tick(), command);
-                    }
+                    let command: Box<dyn Command> = command.into();
+                    simulation.commands.schedule(simulation.tick(), command);
                 }
             }
             events.extend(simulation.step());
@@ -285,68 +310,57 @@ impl CommandScheduler {
     }
 }
 
-fn set_destination_command(unit_id: UnitId, destination: [u32; 2]) -> Option<Box<dyn Command>> {
-    let d = [
-        f32::from_bits(destination[0]),
-        f32::from_bits(destination[1]),
-    ];
-    (d[0].is_finite() && d[1].is_finite()).then(|| {
-        Box::new(SetDestination {
-            unit_id,
-            destination: Vec2::from_array(d),
-        }) as Box<dyn Command>
-    })
-}
+impl TryFrom<&CommandData> for Box<dyn Command> {
+    type Error = CommandDataError;
 
-pub fn command_from_data(data: &CommandData) -> Option<Box<dyn Command>> {
-    match data {
-        CommandData::SetDestination {
-            unit_id,
-            destination,
-        } => set_destination_command(UnitId(*unit_id), *destination),
-        CommandData::ResetSimulation => Some(Box::new(ResetSimulation)),
+    fn try_from(data: &CommandData) -> Result<Self, Self::Error> {
+        match data {
+            CommandData::SetDestination {
+                unit_id,
+                destination,
+            } => {
+                let coordinates = [
+                    f32::from_bits(destination[0]),
+                    f32::from_bits(destination[1]),
+                ];
+                if !coordinates[0].is_finite() || !coordinates[1].is_finite() {
+                    return Err(CommandDataError::NonFiniteDestination);
+                }
+                Ok(Box::new(SetDestination {
+                    unit_id: UnitId(*unit_id),
+                    destination: Vec2::from_array(coordinates),
+                }))
+            }
+            CommandData::ResetSimulation => Ok(Box::new(ResetSimulation)),
+        }
     }
 }
 
-fn command_from_record(recorded: &RecordedCommand) -> Option<Box<dyn Command>> {
-    match recorded {
-        RecordedCommand::SetDestination {
-            execute_tick: _,
-            unit_id,
-            destination,
-        } => set_destination_command(*unit_id, *destination),
-        RecordedCommand::ResetSimulation { execute_tick: _ } => Some(Box::new(ResetSimulation)),
+impl From<&RecordedCommand> for Box<dyn Command> {
+    fn from(recorded: &RecordedCommand) -> Self {
+        match recorded {
+            RecordedCommand::SetDestination {
+                unit_id,
+                destination,
+                ..
+            } => Box::new(SetDestination {
+                unit_id: *unit_id,
+                destination: Vec2::from_array([
+                    f32::from_bits(destination[0]),
+                    f32::from_bits(destination[1]),
+                ]),
+            }),
+            RecordedCommand::ResetSimulation { .. } => Box::new(ResetSimulation),
+        }
     }
 }
-
-/// Validate an authoritative command against the current world state.
-///
-/// Ownership rules:
-/// - `SetDestination` is accepted only when the targeted unit is owned by the
-///   requesting player.
-/// - `ResetSimulation` is accepted only from a connected player.
-pub fn valid_authoritative(world: &World, cmd: &AuthoritativeCommand) -> bool {
-    let Ok(slot) = u8::try_from(cmd.player_slot) else {
-        return false;
-    };
-    let Some(player) = PlayerId::new(slot) else {
-        return false;
-    };
-    match &cmd.command {
-        CommandData::SetDestination { unit_id, .. } => world
-            .unit(UnitId(*unit_id))
-            .is_some_and(|u| u.owner == Some(player)),
-        CommandData::ResetSimulation => world.is_player_connected(player),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn destination(slot: u32, unit_id: u32, execute_tick: Tick) -> AuthoritativeCommand {
+    fn destination(slot: u32, unit_id: u32, execute_tick: u64) -> AuthoritativeCommand {
         AuthoritativeCommand {
-            execute_tick,
+            execute_tick: Tick::from(execute_tick),
             player_slot: slot,
             sequence: 1,
             command: CommandData::SetDestination {
@@ -356,9 +370,9 @@ mod tests {
         }
     }
 
-    fn reset(slot: u32, execute_tick: Tick) -> AuthoritativeCommand {
+    fn reset(slot: u32, execute_tick: u64) -> AuthoritativeCommand {
         AuthoritativeCommand {
-            execute_tick,
+            execute_tick: Tick::from(execute_tick),
             player_slot: slot,
             sequence: 1,
             command: CommandData::ResetSimulation,
@@ -368,26 +382,23 @@ mod tests {
     #[test]
     fn rejects_reserved_slot_and_unowned_units() {
         let world = World::demo();
-        assert!(!valid_authoritative(&world, &destination(0, 1, 0)));
-        assert!(!valid_authoritative(&world, &destination(1, 1, 0)));
+        assert!(!world.valid_authoritative(&destination(0, 1, 0)));
+        assert!(!world.valid_authoritative(&destination(1, 1, 0)));
     }
 
     #[test]
     fn reset_requires_valid_player_slot() {
         let mut world = World::demo();
         world.connect_player(PlayerId(1));
-        assert!(!valid_authoritative(&world, &reset(0, 0)));
-        assert!(valid_authoritative(&world, &reset(1, 0)));
-        assert!(!valid_authoritative(&world, &reset(2, 0)));
+        assert!(!world.valid_authoritative(&reset(0, 0)));
+        assert!(world.valid_authoritative(&reset(1, 0)));
+        assert!(!world.valid_authoritative(&reset(2, 0)));
     }
 
     #[test]
     fn rejects_player_slots_that_do_not_fit_player_id() {
         let world = World::demo();
-        assert!(!valid_authoritative(
-            &world,
-            &reset(u32::from(u8::MAX) + 1, 0)
-        ));
+        assert!(!world.valid_authoritative(&reset(u32::from(u8::MAX) + 1, 0)));
     }
 
     #[test]
@@ -395,9 +406,9 @@ mod tests {
         let mut world = World::demo();
         world.units[0].owner = Some(PlayerId(1));
         let cmd = destination(1, 1, 0);
-        assert!(valid_authoritative(&world, &cmd));
-        let command = command_from_data(&cmd.command).unwrap();
-        let record = command.record(0);
+        assert!(world.valid_authoritative(&cmd));
+        let command: Box<dyn Command> = (&cmd.command).try_into().unwrap();
+        let record = command.record(Tick::default());
         command.execute(&mut world);
         assert_eq!(
             world.units[0].autopilot.destination(),
@@ -405,7 +416,7 @@ mod tests {
         );
 
         let mut replay = Simulation::default();
-        let events = CommandScheduler::replay(&[record], &mut replay, 0);
+        let events = CommandScheduler::replay(&[record], &mut replay, Tick::default());
         assert_eq!(replay.tick(), 1);
         assert_eq!(
             replay.world.units[0].autopilot.destination(),
@@ -462,7 +473,7 @@ mod tests {
     fn trusted_authoritative_commands_apply_on_unowned_mirrors() {
         let mut sim = Simulation::default();
         let command = AuthoritativeCommand {
-            execute_tick: 0,
+            execute_tick: Tick::default(),
             player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
@@ -521,20 +532,20 @@ mod tests {
         world.units[0].owner = Some(PlayerId(1));
 
         scheduler.schedule(
-            0,
+            Tick::default(),
             Box::new(SetDestination {
                 unit_id: UnitId(1),
                 destination: Vec2::new(1.0, 2.0),
             }),
         );
         scheduler.schedule(
-            0,
+            Tick::default(),
             Box::new(SetDestination {
                 unit_id: UnitId(2),
                 destination: Vec2::new(3.0, 4.0),
             }),
         );
-        scheduler.execute_pending(0, &mut world);
+        scheduler.execute_pending(Tick::default(), &mut world);
 
         assert_eq!(scheduler.history().len(), 2);
         assert!(scheduler.history().iter().all(|r| matches!(
@@ -563,25 +574,25 @@ mod tests {
     #[test]
     fn invalid_command_data_rejects_nan_and_infinity() {
         assert!(
-            command_from_data(&CommandData::SetDestination {
+            Box::<dyn Command>::try_from(&CommandData::SetDestination {
                 unit_id: 1,
                 destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
             })
-            .is_none()
+            .is_err()
         );
         assert!(
-            command_from_data(&CommandData::SetDestination {
+            Box::<dyn Command>::try_from(&CommandData::SetDestination {
                 unit_id: 1,
                 destination: [f32::INFINITY.to_bits(), 0.0f32.to_bits()],
             })
-            .is_none()
+            .is_err()
         );
         assert!(
-            command_from_data(&CommandData::SetDestination {
+            Box::<dyn Command>::try_from(&CommandData::SetDestination {
                 unit_id: 1,
                 destination: [f32::NEG_INFINITY.to_bits(), 0.0f32.to_bits()],
             })
-            .is_none()
+            .is_err()
         );
     }
 }

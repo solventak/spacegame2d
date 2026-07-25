@@ -5,7 +5,63 @@ mod wire {
     include!(concat!(env!("OUT_DIR"), "/spacegame2d.protocol.v1.rs"));
 }
 
-pub type Tick = u64;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Tick(pub u64);
+
+impl Tick {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn increment(self, amount: u64) -> Self {
+        Self(self.0.saturating_add(amount))
+    }
+}
+
+impl From<u64> for Tick {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Tick> for u64 {
+    fn from(value: Tick) -> Self {
+        value.0
+    }
+}
+
+impl std::ops::Add for Tick {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        self.increment(rhs.0)
+    }
+}
+
+impl std::ops::Add<u64> for Tick {
+    type Output = Self;
+    fn add(self, rhs: u64) -> Self::Output {
+        self.increment(rhs)
+    }
+}
+
+impl std::ops::Sub<u64> for Tick {
+    type Output = Self;
+    fn sub(self, rhs: u64) -> Self::Output {
+        Self(self.0.saturating_sub(rhs))
+    }
+}
+
+impl PartialEq<u64> for Tick {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Tick> for u64 {
+    fn eq(&self, other: &Tick) -> bool {
+        *self == other.0
+    }
+}
 pub type PlayerSlot = u32;
 pub const SIMULATION_VERSION: u32 = 1;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
@@ -129,7 +185,7 @@ impl From<&Message> for wire::Envelope {
                 simulation_version: v.simulation_version,
                 simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
-                server_tick: v.server_tick,
+                server_tick: v.server_tick.0,
                 enabled_capabilities: v
                     .capabilities
                     .iter()
@@ -146,7 +202,7 @@ impl From<&Message> for wire::Envelope {
             }
             Message::AuthoritativeCommand(v) => {
                 wire::envelope::Payload::AuthoritativeCommand(wire::AuthoritativeCommand {
-                    execute_tick: v.execute_tick,
+                    execute_tick: v.execute_tick.0,
                     player_slot: v.player_slot,
                     sequence: v.sequence,
                     command: Some((&v.command).into()),
@@ -174,7 +230,7 @@ impl TryFrom<wire::Envelope> for Message {
                 simulation_version: v.simulation_version,
                 simulation_hz: v.simulation_hz,
                 player_slot: v.player_slot,
-                server_tick: v.server_tick,
+                server_tick: Tick::from(v.server_tick),
                 capabilities: caps(&v.enabled_capabilities),
             })),
             wire::envelope::Payload::CommandRequest(v) => {
@@ -189,7 +245,7 @@ impl TryFrom<wire::Envelope> for Message {
             }
             wire::envelope::Payload::AuthoritativeCommand(v) => {
                 Ok(Message::AuthoritativeCommand(AuthoritativeCommand {
-                    execute_tick: v.execute_tick,
+                    execute_tick: Tick::from(v.execute_tick),
                     player_slot: v.player_slot,
                     sequence: v.sequence,
                     command: CommandData::try_from(
@@ -287,7 +343,7 @@ mod tests {
                 simulation_version: 1,
                 simulation_hz: 60,
                 player_slot: 2,
-                server_tick: 9,
+                server_tick: Tick::from(9),
                 capabilities: vec![],
             }),
             Message::CommandRequest(CommandRequest {
@@ -295,7 +351,7 @@ mod tests {
                 command: destination(),
             }),
             Message::AuthoritativeCommand(AuthoritativeCommand {
-                execute_tick: 11,
+                execute_tick: Tick::from(11),
                 player_slot: 2,
                 sequence: 4,
                 command: CommandData::ResetSimulation,

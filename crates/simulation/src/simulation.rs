@@ -1,7 +1,7 @@
-use crate::command::{CommandScheduler, UnitId, World, command_from_data, valid_authoritative};
+use crate::command::{CommandScheduler, UnitId, World};
 use crate::flight_control::NeighborObservation;
 use glam::Vec2;
-use spacegame2d_protocol::AuthoritativeCommand;
+use spacegame2d_protocol::{AuthoritativeCommand, Tick};
 
 /// Simulation tick rate in hertz. The integrator advances in fixed
 /// [`FIXED_DT_SECONDS`] steps regardless of wall-clock frame timing.
@@ -70,7 +70,7 @@ impl Default for ShipState {
 
 /// Fixed-timestep driver for the autopilot drone world.
 pub struct Simulation {
-    tick: u64,
+    tick: Tick,
     world_radius: f32,
     pub world: World,
     pub commands: CommandScheduler,
@@ -79,7 +79,7 @@ pub struct Simulation {
 impl Default for Simulation {
     fn default() -> Self {
         Self {
-            tick: 0,
+            tick: Tick::default(),
             world_radius: WORLD_RADIUS_M,
             world: World::demo(),
             commands: CommandScheduler::default(),
@@ -88,12 +88,12 @@ impl Default for Simulation {
 }
 
 impl Simulation {
-    pub fn tick(&self) -> u64 {
+    pub fn tick(&self) -> Tick {
         self.tick
     }
 
     /// Align a mirror simulation with the authoritative server clock.
-    pub fn set_tick(&mut self, tick: u64) {
+    pub fn set_tick(&mut self, tick: Tick) {
         self.tick = tick;
     }
 
@@ -111,7 +111,7 @@ impl Simulation {
         &self.world
     }
     pub fn schedule_authoritative(&mut self, cmd: &AuthoritativeCommand) -> bool {
-        if !valid_authoritative(&self.world, cmd) {
+        if !self.world.valid_authoritative(cmd) {
             return false;
         }
         self.schedule_authoritative_trusted(cmd)
@@ -121,7 +121,7 @@ impl Simulation {
     /// Client mirrors use this path because they do not maintain the server's
     /// complete ownership registry.
     pub fn schedule_authoritative_trusted(&mut self, cmd: &AuthoritativeCommand) -> bool {
-        let Some(command) = command_from_data(&cmd.command) else {
+        let Ok(command) = Box::<dyn crate::command::Command>::try_from(&cmd.command) else {
             return false;
         };
         self.commands.schedule(cmd.execute_tick, command);
@@ -167,7 +167,7 @@ impl Simulation {
         events.sort_by_key(|event| match event {
             SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
         });
-        self.tick = self.tick.saturating_add(1);
+        self.tick = self.tick.increment(1);
         events
     }
 }
@@ -175,7 +175,7 @@ impl Simulation {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SimulationEvent {
     BoundaryCrossed {
-        tick: u64,
+        tick: Tick,
         unit_id: UnitId,
         position: Vec2,
     },
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(
             events,
             vec![SimulationEvent::BoundaryCrossed {
-                tick: 0,
+                tick: Tick::default(),
                 unit_id,
                 position: Vec2::new(1.1, 0.0),
             }]
@@ -328,7 +328,7 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     struct AuthoritativeSnapshot {
-        tick: u64,
+        tick: Tick,
         units: Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)>,
         events: Vec<SimulationEvent>,
     }
@@ -341,7 +341,7 @@ mod tests {
         destination: [u32; 2],
     ) -> AuthoritativeCommand {
         AuthoritativeCommand {
-            execute_tick,
+            execute_tick: Tick::from(execute_tick),
             player_slot,
             sequence,
             command: CommandData::SetDestination {
@@ -387,7 +387,7 @@ mod tests {
         let snapshot_before = unit_snapshot(&sim.world);
 
         let bad_slot = AuthoritativeCommand {
-            execute_tick: 0,
+            execute_tick: Tick::default(),
             player_slot: 0,
             sequence: 1,
             command: CommandData::SetDestination {
@@ -402,7 +402,7 @@ mod tests {
         assert!(!sim.schedule_authoritative(&unknown_unit));
 
         let nan_destination = AuthoritativeCommand {
-            execute_tick: 0,
+            execute_tick: Tick::default(),
             player_slot: 1,
             sequence: 3,
             command: CommandData::SetDestination {
@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(non_empty[0].0, 9);
         assert!(matches!(
             non_empty[0].1.as_slice(),
-            [SimulationEvent::BoundaryCrossed { tick: 9, .. }]
+            [SimulationEvent::BoundaryCrossed { tick, .. }] if *tick == Tick::from(9)
         ));
     }
 
@@ -612,7 +612,7 @@ mod tests {
 
         let mut replay = Simulation::default();
         replay.world.units[0].owner = Some(PlayerId(1));
-        let replay_events = CommandScheduler::replay(&history, &mut replay, ticks - 1);
+        let replay_events = CommandScheduler::replay(&history, &mut replay, Tick::from(ticks - 1));
 
         assert_eq!(replay.tick(), original.tick());
         assert_eq!(unit_snapshot(&replay.world), unit_snapshot(&original.world));
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn set_tick_advances_clock() {
         let mut sim = Simulation::default();
-        sim.set_tick(42);
+        sim.set_tick(Tick::from(42));
         assert_eq!(sim.tick(), 42);
     }
 
@@ -652,7 +652,7 @@ mod tests {
         sim.world.units[0].owner = Some(PlayerId(1));
         sim.world.connect_player(PlayerId(1));
         let reset = AuthoritativeCommand {
-            execute_tick: 2,
+            execute_tick: Tick::from(2),
             player_slot: 1,
             sequence: 1,
             command: CommandData::ResetSimulation,

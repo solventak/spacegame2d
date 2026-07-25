@@ -4,6 +4,7 @@ use std::{
     net::TcpStream,
 };
 
+use spacegame2d_protocol::Tick;
 use spacegame2d_protocol::{
     AuthoritativeCommand, ClientHello, CommandData, CommandRequest, Message, SIMULATION_VERSION,
     ServerHello,
@@ -13,8 +14,8 @@ use spacegame2d_simulation::simulation::SIMULATION_HZ;
 pub struct NetworkSession {
     stream: TcpStream,
     pub player_slot: u32,
-    pub server_tick: u64,
-    local_tick: u64,
+    pub server_tick: Tick,
+    local_tick: Tick,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
 }
@@ -80,7 +81,7 @@ impl NetworkSession {
         self.send(sequence, CommandData::ResetSimulation)
     }
 
-    pub fn set_local_tick(&mut self, tick: u64) {
+    pub fn set_local_tick(&mut self, tick: Tick) {
         self.local_tick = tick;
     }
 
@@ -96,8 +97,8 @@ impl NetworkSession {
         tracing::info!(
             event = "command_sent",
             cmd = %format!("{}:{}", self.player_slot, sequence),
-            local_tick = self.local_tick,
-            kind = command_kind(&command),
+            local_tick = ?self.local_tick,
+            kind = ?command
         );
         Ok(())
     }
@@ -141,10 +142,10 @@ impl NetworkSession {
                         if let Message::AuthoritativeCommand(command) = message {
                             tracing::info!(
                                 event = "authoritative_received",
-                                execute_tick = command.execute_tick,
-                                server_tick = self.server_tick,
-                                local_tick = self.local_tick,
-                                kind = command_kind(&command.command),
+                                execute_tick = ?command.execute_tick,
+                                server_tick = ?self.server_tick,
+                                local_tick = ?self.local_tick,
+                                kind = ?command.command
                             );
                             result.push(command);
                         }
@@ -178,16 +179,9 @@ fn validate_server_hello(hello: &ServerHello) -> io::Result<()> {
     Ok(())
 }
 
-fn command_kind(command: &CommandData) -> &'static str {
-    match command {
-        CommandData::SetDestination { .. } => "set_destination",
-        CommandData::ResetSimulation => "reset_simulation",
-    }
-}
-
 pub fn apply_due_commands(
     simulation: &mut spacegame2d_simulation::simulation::Simulation,
-    scheduled: &mut BTreeMap<u64, Vec<AuthoritativeCommand>>,
+    scheduled: &mut BTreeMap<Tick, Vec<AuthoritativeCommand>>,
 ) {
     let current_tick = simulation.tick();
     let due_ticks = scheduled
@@ -250,7 +244,7 @@ mod tests {
             simulation_version: SIMULATION_VERSION,
             simulation_hz: SIMULATION_HZ,
             player_slot: 7,
-            server_tick: 123,
+            server_tick: Tick::from(123),
             capabilities: vec![],
         }
     }
@@ -327,7 +321,7 @@ mod tests {
             simulation_version: SIMULATION_VERSION,
             simulation_hz: SIMULATION_HZ,
             player_slot: 1,
-            server_tick: 42,
+            server_tick: Tick::from(42),
             capabilities: vec![],
         };
         let mut wrong = base.clone();
@@ -355,7 +349,7 @@ mod tests {
         let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
         simulation.world.units[0].owner = Some(spacegame2d_simulation::command::PlayerId(1));
         let command = AuthoritativeCommand {
-            execute_tick: 2,
+            execute_tick: Tick::from(2),
             player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
@@ -363,7 +357,7 @@ mod tests {
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
             },
         };
-        let mut scheduled = BTreeMap::from([(2, vec![command])]);
+        let mut scheduled = BTreeMap::from([(Tick::from(2), vec![command])]);
         apply_due_commands(&mut simulation, &mut scheduled);
         assert!(simulation.commands.history().is_empty());
         simulation.step();
@@ -376,7 +370,7 @@ mod tests {
     #[test]
     fn late_arrival_through_network_session_applies_overdue_command() {
         let command = AuthoritativeCommand {
-            execute_tick: 0,
+            execute_tick: Tick::default(),
             player_slot: 7,
             sequence: 1,
             command: CommandData::SetDestination {
@@ -391,7 +385,7 @@ mod tests {
         simulation.world.units[0].owner = Some(spacegame2d_simulation::command::PlayerId(7));
         simulation.world.units[0].state.position = glam::Vec2::new(0.0, 0.9);
         simulation.world.units[0].state.heading_radians = 0.0;
-        simulation.set_tick(1);
+        simulation.set_tick(Tick::from(1));
         let mut commands = Vec::new();
         for _ in 0..20 {
             commands = session.poll_commands().unwrap();
@@ -401,7 +395,7 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(commands.len(), 1);
-        let mut scheduled = BTreeMap::new();
+        let mut scheduled: BTreeMap<Tick, Vec<AuthoritativeCommand>> = BTreeMap::new();
         for command in commands {
             scheduled
                 .entry(command.execute_tick)
@@ -427,7 +421,7 @@ mod tests {
         let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
         session.register_player(&mut simulation).unwrap();
         let reset = AuthoritativeCommand {
-            execute_tick: 0,
+            execute_tick: Tick::default(),
             player_slot: session.player_slot,
             sequence: 1,
             command: CommandData::ResetSimulation,

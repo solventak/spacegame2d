@@ -9,14 +9,14 @@ use spacegame2d_protocol::{
     AuthoritativeCommand, CommandRequest, Message, SIMULATION_VERSION, Tick,
 };
 use spacegame2d_simulation::{
-    command::{PlayerId, command_from_data, valid_authoritative},
+    command::{Command, PlayerId},
     simulation::SIMULATION_HZ,
     simulation::Simulation,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
-pub const COMMAND_INPUT_DELAY: Tick = 2;
+pub const COMMAND_INPUT_DELAY: Tick = Tick::new(2);
 
 struct Client {
     stream: TcpStream,
@@ -28,18 +28,18 @@ struct Client {
 }
 
 fn execute_tick(receive_tick: Tick) -> Tick {
-    receive_tick.saturating_add(COMMAND_INPUT_DELAY)
+    receive_tick.increment(COMMAND_INPUT_DELAY.0)
 }
 
 fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
     let command = AuthoritativeCommand {
-        execute_tick: 0,
+        execute_tick: Tick::default(),
         player_slot: slot,
         sequence: request.sequence,
         command: request.command.clone(),
     };
-    valid_authoritative(simulation.world(), &command)
-        && command_from_data(&request.command).is_some()
+    simulation.world().valid_authoritative(&command)
+        && Box::<dyn Command>::try_from(&request.command).is_ok()
 }
 
 impl Client {
@@ -167,9 +167,9 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                         } else if let Message::CommandRequest(request) = message {
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
-                            tracing::info!(event = "command_received", cmd = %cmd, tick = receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
+                            tracing::info!(event = "command_received", cmd = %cmd, tick = ?receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
                             if !valid_request(&simulation, client.slot, &request) {
-                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = receive_tick, address = %client.address, slot = client.slot, "invalid command");
+                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, "invalid command");
                                 continue;
                             }
                             let authoritative = AuthoritativeCommand {
@@ -178,7 +178,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                 sequence: request.sequence,
                                 command: request.command,
                             };
-                            tracing::info!(event = "command_scheduled", cmd = %cmd, receive_tick, execute_tick = authoritative.execute_tick, tick = receive_tick, kind = ?authoritative.command, address = %client.address, slot = client.slot);
+                            tracing::info!(event = "command_scheduled", cmd = %cmd, receive_tick = ?receive_tick, execute_tick = ?authoritative.execute_tick, tick = ?receive_tick, kind = ?authoritative.command, address = %client.address, slot = client.slot);
                             let encoded =
                                 Message::AuthoritativeCommand(authoritative.clone()).encode()?;
                             scheduled
@@ -224,7 +224,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 unit_id,
                 position,
             } = event;
-            tracing::info!(event = "boundary_crossed", tick, unit_id = unit_id.0, position = ?position);
+            tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
         }
     }
 }
@@ -301,7 +301,7 @@ mod tests {
     }
     #[test]
     fn scheduling_tick_math() {
-        assert_eq!(execute_tick(40), 42);
+        assert_eq!(execute_tick(Tick::from(40)), Tick::from(42));
     }
     #[test]
     fn ownership_and_nan_are_rejected() {

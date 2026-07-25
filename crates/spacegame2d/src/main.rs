@@ -16,6 +16,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
+use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
     command::PlayerId,
     command::Unit,
@@ -367,7 +368,7 @@ struct App {
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
     network: Option<network::NetworkSession>,
-    scheduled: std::collections::BTreeMap<u64, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
+    scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
     presentation_events: PresentationEventLog,
 }
@@ -635,12 +636,12 @@ mod tests {
     fn presentation_event_log_aggregates_and_clears_locally() {
         let mut log = PresentationEventLog::default();
         let first = SimulationEvent::BoundaryCrossed {
-            tick: 4,
+            tick: Tick::from(4),
             unit_id: spacegame2d_simulation::UnitId(2),
             position: Vec2::new(17.0, 0.0),
         };
         let second = SimulationEvent::BoundaryCrossed {
-            tick: 5,
+            tick: Tick::from(5),
             unit_id: spacegame2d_simulation::UnitId(3),
             position: Vec2::new(-17.0, 0.0),
         };

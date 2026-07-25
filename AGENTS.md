@@ -157,6 +157,9 @@ Follow existing module conventions: small focused files, `mod.rs` re-exporting o
 - Put behavior on the domain type it belongs to, such as `ClientHello::is_compatible()` and `Client` socket methods, instead of standalone helpers.
 - Preserve structured domain values in tracing fields when possible; prefer recording enums with `?value` over converting them to display strings.
 - Use domain-specific types such as `Tick` for simulation time instead of repeating primitive integer types at protocol boundaries.
+- Use `thiserror` for project error enums; use `Option` only for genuinely absent values and `Result` for conversion or validation failures.
+- Keep wire/protocol DTOs separate from simulation domain types when they serve different purposes: protocol types model serialized data, while simulation newtypes enforce domain invariants. Convert explicitly at the boundary.
+- Put domain arithmetic on domain types. For example, `Tick::increment(...)` owns tick advancement rather than repeating primitive arithmetic at call sites.
 
 ## Documentation discipline
 
