@@ -1,13 +1,13 @@
 # Linear SDLC Triage
 
-This repository uses repository-backed, outcome-focused triage for the Swarm (`SWA`) Linear team. The goal is to make issues clear enough for refinement without prematurely estimating or implementing them.
+This repository uses repository-backed, outcome-focused triage for the Swarm (`SWA`) Linear team. The goal is to make issues clear enough for implementation without requiring estimates or velocity tracking.
 
 ## Working agreement
 
 - Inspect the repository, relevant tests, and project guidance before making a recommendation.
 - Read the complete Linear issue, including status, priority, ownership, cycle, estimate, project, milestone, and relations.
 - Ask one decision question at a time.
-- Do not estimate during triage. Estimation belongs to refinement and planning poker.
+- Estimates are optional and are not part of this workflow. Velocity is not a process goal.
 - Keep each ticket’s scope explicit. Split only when ownership, delivery, or acceptance boundaries materially differ.
 - Do not change Linear without explicit user approval.
 - Once a proposed change has been approved, apply it directly and report exactly what changed. Preserve unrelated fields.
@@ -28,7 +28,7 @@ Use the team’s closest available states. The normal progression is:
 Backlog → Discovery → Needs Refinement → In Progress → Review → QA → Done
 ```
 
-Use `Needs Refinement` only when the outcome, boundaries, acceptance criteria, and major technical decisions are clear enough for implementation decomposition and planning poker. It does not imply an estimate.
+Use `Needs Refinement` when the outcome, boundaries, acceptance criteria, and major technical decisions need one final implementation-focused pass. It does not imply an estimate or planning-poker step.
 
 ## Compatibility and shared-code changes
 
