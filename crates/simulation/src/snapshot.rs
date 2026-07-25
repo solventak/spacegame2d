@@ -40,7 +40,7 @@ impl Simulation {
             .world
             .units
             .iter()
-            .map(UnitSnapshot::from_unit)
+            .map(UnitSnapshot::from)
             .collect::<Vec<_>>();
         units.sort_unstable_by_key(|unit| unit.id);
         SimulationSnapshot {
@@ -81,8 +81,8 @@ impl SimulationSnapshot {
     }
 }
 
-impl UnitSnapshot {
-    fn from_unit(unit: &Unit) -> Self {
+impl From<&Unit> for UnitSnapshot {
+    fn from(unit: &Unit) -> Self {
         let config: AutopilotConfig = unit.autopilot.config();
         Self {
             id: unit.id.0,
@@ -107,7 +107,9 @@ impl UnitSnapshot {
             stopped_speed_bits: config.stopped_speed_meters_per_second.to_bits(),
         }
     }
+}
 
+impl UnitSnapshot {
     fn encode(&self, bytes: &mut Vec<u8>) {
         put_u32(bytes, self.id);
         match self.owner {
