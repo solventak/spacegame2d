@@ -319,6 +319,13 @@ mod tests {
             .collect()
     }
 
+    #[derive(Debug, PartialEq)]
+    struct AuthoritativeSnapshot {
+        tick: u64,
+        units: Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)>,
+        events: Vec<SimulationEvent>,
+    }
+
     fn authoritative_set_destination(
         execute_tick: u64,
         player_slot: u32,
@@ -457,7 +464,8 @@ mod tests {
 
     #[test]
     fn cross_peer_replay_is_deterministic_tick_by_tick() {
-        // CMD-009: cross-peer determinism.
+        // DEP-005: compare the authoritative per-tick snapshot, rather than
+        // only comparing a legacy Fleet/ShipState aggregate at the end.
         let commands = vec![
             authoritative_set_destination(1, 1, 1, 1, [6.0f32.to_bits(), 5.0f32.to_bits()]),
             authoritative_set_destination(3, 1, 2, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]),
@@ -466,31 +474,39 @@ mod tests {
 
         let mut a = Simulation::default();
         a.world.units[0].owner = Some(PlayerId(1));
-        let mut a_events = Vec::new();
+        let mut a_snapshots = Vec::new();
         for _ in 0..ticks {
             for cmd in &commands {
                 if cmd.execute_tick == a.tick() {
                     a.schedule_authoritative(cmd);
                 }
             }
-            a_events.extend(a.step());
+            let events = a.step();
+            a_snapshots.push(AuthoritativeSnapshot {
+                tick: a.tick(),
+                units: unit_snapshot(&a.world),
+                events,
+            });
         }
 
         let mut b = Simulation::default();
         b.world.units[0].owner = Some(PlayerId(1));
-        let mut b_events = Vec::new();
+        let mut b_snapshots = Vec::new();
         for _ in 0..ticks {
             for cmd in &commands {
                 if cmd.execute_tick == b.tick() {
                     b.schedule_authoritative(cmd);
                 }
             }
-            b_events.extend(b.step());
+            let events = b.step();
+            b_snapshots.push(AuthoritativeSnapshot {
+                tick: b.tick(),
+                units: unit_snapshot(&b.world),
+                events,
+            });
         }
 
-        assert_eq!(a.tick(), b.tick());
-        assert_eq!(unit_snapshot(&a.world), unit_snapshot(&b.world));
-        assert_eq!(a_events, b_events);
+        assert_eq!(a_snapshots, b_snapshots);
     }
 
     #[test]
