@@ -20,7 +20,7 @@ use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
     command::PlayerId,
     command::Unit,
-    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
+    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent, WORLD_RADIUS_M},
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -434,7 +434,7 @@ fn screen_to_world(cursor: winit::dpi::PhysicalPosition<f64>, width: u32, height
     let half_width = half_height * aspect;
     let x = (cursor.x as f32 / width.max(1) as f32 * 2.0 - 1.0) * half_width;
     let y = (1.0 - cursor.y as f32 / height.max(1) as f32 * 2.0) * half_height;
-    Vec2::new(x, y).clamp(Vec2::splat(-16.0), Vec2::splat(16.0))
+    Vec2::new(x, y).clamp_length_max(WORLD_RADIUS_M)
 }
 
 impl ApplicationHandler for App {
@@ -667,8 +667,17 @@ mod tests {
     #[test]
     fn screen_to_world_clamps_outside_arena() {
         let point = screen_to_world(winit::dpi::PhysicalPosition::new(-1000.0, 5000.0), 800, 600);
-        assert!(point.x >= -16.0 && point.x <= 16.0);
-        assert!(point.y >= -16.0 && point.y <= 16.0);
+        assert!((point.length() - WORLD_RADIUS_M).abs() < 0.0001);
+        assert!(point.x < 0.0 && point.y < 0.0);
+    }
+
+    #[test]
+    fn screen_to_world_keeps_inside_click_inside_circular_arena() {
+        let point = screen_to_world(winit::dpi::PhysicalPosition::new(400.0, 300.0), 800, 600);
+        assert_eq!(point, Vec2::ZERO);
+
+        let point = screen_to_world(winit::dpi::PhysicalPosition::new(600.0, 300.0), 800, 600);
+        assert!(point.length() < WORLD_RADIUS_M);
     }
 
     #[test]
