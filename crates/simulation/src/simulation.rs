@@ -510,6 +510,99 @@ mod tests {
     }
 
     #[test]
+    fn cross_peer_boundary_event_vectors_are_non_empty_at_same_ticks() {
+        let command =
+            authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 100.0f32.to_bits()]);
+        let mut peers = [
+            Simulation::with_world_radius(1.0),
+            Simulation::with_world_radius(1.0),
+        ];
+        for peer in &mut peers {
+            peer.world.units.truncate(1);
+            peer.world.units[0].owner = Some(PlayerId(1));
+            peer.world.units[0].state.position = Vec2::new(0.0, 0.9);
+            peer.world.units[0].state.heading_radians = 0.0;
+            assert!(peer.schedule_authoritative(&command));
+        }
+
+        let mut event_vectors: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
+        for _ in 0..20 {
+            for (events, peer) in event_vectors.iter_mut().zip(&mut peers) {
+                events.push(peer.step());
+            }
+        }
+
+        assert_eq!(event_vectors[0], event_vectors[1]);
+        let non_empty: Vec<_> = event_vectors[0]
+            .iter()
+            .enumerate()
+            .filter(|(_, events)| !events.is_empty())
+            .collect();
+        assert_eq!(non_empty.len(), 1);
+        assert_eq!(non_empty[0].0, 9);
+        assert!(matches!(
+            non_empty[0].1.as_slice(),
+            [SimulationEvent::BoundaryCrossed { tick: 9, .. }]
+        ));
+    }
+
+    #[test]
+    fn authoritative_command_drives_unit_across_boundary_on_two_peers() {
+        let command =
+            authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 100.0f32.to_bits()]);
+        let mut peers = [
+            Simulation::with_world_radius(1.0),
+            Simulation::with_world_radius(1.0),
+        ];
+        for peer in &mut peers {
+            peer.world.units.truncate(1);
+            peer.world.units[0].owner = Some(PlayerId(1));
+            peer.world.units[0].state.position = Vec2::new(0.0, 0.9);
+            peer.world.units[0].state.velocity = Vec2::new(0.0, 2.0);
+            peer.world.units[0].state.heading_radians = 0.0;
+            assert!(peer.schedule_authoritative(&command));
+        }
+
+        let mut peer_events: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
+        for _ in 0..30 {
+            for (events, peer) in peer_events.iter_mut().zip(&mut peers) {
+                events.push(peer.step());
+            }
+        }
+
+        assert!(peer_events[0].iter().any(|events| !events.is_empty()));
+        assert_eq!(peer_events[0], peer_events[1]);
+        assert!(peers.iter().all(|peer| peer.world.units.is_empty()));
+    }
+
+    #[test]
+    fn late_arrival_client_matches_on_time_boundary_event_vectors() {
+        let command =
+            authoritative_set_destination(4, 1, 1, 1, [0.0f32.to_bits(), 100.0f32.to_bits()]);
+        let mut on_time = Simulation::with_world_radius(1.0);
+        let mut late = Simulation::with_world_radius(1.0);
+        for sim in [&mut on_time, &mut late] {
+            sim.world.units.truncate(1);
+            sim.world.units[0].owner = Some(PlayerId(1));
+            sim.world.units[0].state.position = Vec2::new(0.0, 0.9);
+            sim.world.units[0].state.heading_radians = 0.0;
+        }
+        assert!(on_time.schedule_authoritative(&command));
+
+        let mut on_time_events = Vec::new();
+        let mut late_events = Vec::new();
+        for _ in 0..30 {
+            on_time_events.push(on_time.step());
+            if late.tick() == 3 {
+                assert!(late.schedule_authoritative(&command));
+            }
+            late_events.push(late.step());
+        }
+        assert_eq!(on_time_events, late_events);
+        assert!(on_time_events.iter().any(|events| !events.is_empty()));
+    }
+
+    #[test]
     fn recorded_history_replays_to_identical_state_and_events() {
         // CMD-008: replay determinism.
         let commands = vec![
