@@ -313,6 +313,16 @@ mod tests {
         );
     }
     #[test]
+    fn missing_command_payload_reaches_empty_command_branch() {
+        // Frame: 4-byte length, Envelope field 3 (CommandRequest), sequence 1,
+        // then Command field 2 with an empty oneof. This reaches command(None).
+        let bytes = [0, 0, 0, 6, 0x1a, 0x04, 0x08, 0x01, 0x12, 0x00];
+
+        let error = read_message(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "missing command payload");
+    }
+    #[test]
     fn exact_float_bits_and_unknown_capabilities_survive() {
         let message = Message::CommandRequest(CommandRequest {
             sequence: 2,
