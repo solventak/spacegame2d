@@ -128,6 +128,10 @@ fn validate_server_hello(hello: &ServerHello) -> io::Result<()> {
     if hello.player_slot == 0 {
         return Err(invalid("server assigned reserved player slot"));
     }
+    u8::try_from(hello.player_slot)
+        .ok()
+        .and_then(spacegame2d_simulation::command::PlayerId::new)
+        .ok_or_else(|| invalid("server assigned invalid player slot"))?;
     Ok(())
 }
 
@@ -152,6 +156,99 @@ pub fn apply_due_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn synthetic_server(response: Message, disconnect: bool) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = spacegame2d_protocol::read_message(&mut stream).unwrap();
+            spacegame2d_protocol::write_message(&mut stream, &response).unwrap();
+            if disconnect {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            } else {
+                thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+        address
+    }
+
+    fn server_hello() -> ServerHello {
+        ServerHello {
+            simulation_version: SIMULATION_VERSION,
+            simulation_hz: SIMULATION_HZ,
+            player_slot: 7,
+            server_tick: 123,
+            capabilities: vec![],
+        }
+    }
+
+    #[test]
+    fn connect_returns_slot_and_tick() {
+        let address = synthetic_server(Message::ServerHello(server_hello()), false);
+        let session = NetworkSession::connect(&address).unwrap();
+        assert_eq!(session.player_slot, 7);
+        assert_eq!(session.server_tick, 123);
+        assert!(session.is_connected());
+    }
+
+    #[test]
+    fn connect_rejects_wrong_version() {
+        let mut hello = server_hello();
+        hello.simulation_version += 1;
+        let address = synthetic_server(Message::ServerHello(hello), false);
+        let error = match NetworkSession::connect(&address) {
+            Ok(_) => panic!("wrong version was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn connect_rejects_wrong_hz() {
+        let mut hello = server_hello();
+        hello.simulation_hz += 1;
+        let address = synthetic_server(Message::ServerHello(hello), false);
+        let error = match NetworkSession::connect(&address) {
+            Ok(_) => panic!("wrong frequency was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn connect_refused_returns_err() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        assert!(NetworkSession::connect(&address).is_err());
+    }
+
+    #[test]
+    fn poll_commands_non_blocking_when_empty() {
+        let address = synthetic_server(Message::ServerHello(server_hello()), false);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        assert!(session.poll_commands().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tick_snaps_to_server_tick() {
+        let address = synthetic_server(Message::ServerHello(server_hello()), false);
+        let session = NetworkSession::connect(&address).unwrap();
+        let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
+        simulation.set_tick(session.server_tick);
+        assert_eq!(simulation.tick(), 123);
+    }
+
+    #[test]
+    fn server_disconnect_is_unexpected_eof() {
+        let address = synthetic_server(Message::ServerHello(server_hello()), true);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        let error = session.poll_commands().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
 
     #[test]
     fn validate_server_hello_rejects_version_and_hz() {
@@ -170,6 +267,12 @@ mod tests {
         );
         wrong = base.clone();
         wrong.simulation_hz += 1;
+        assert_eq!(
+            validate_server_hello(&wrong).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        wrong = base;
+        wrong.player_slot = u32::from(u8::MAX) + 1;
         assert_eq!(
             validate_server_hello(&wrong).unwrap_err().kind(),
             io::ErrorKind::InvalidData
