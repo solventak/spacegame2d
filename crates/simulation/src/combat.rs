@@ -9,7 +9,7 @@ pub const FIRING_TOLERANCE_RADIANS: f32 = 0.10;
 pub const FIRE_INTERVAL_TICKS: u32 = 15;
 /// Each hit removes roughly one third of the previous hull damage, giving
 /// ships enough time to maneuver and retarget during an engagement.
-pub const WEAPON_DAMAGE: u32 = 3;
+pub const WEAPON_DAMAGE: u32 = 6;
 pub const TARGET_HIT_RADIUS_METERS: f32 = 0.35;
 pub const MUZZLE_OFFSET_METERS: f32 = 0.5;
 
