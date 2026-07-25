@@ -6,7 +6,7 @@ use std::{
 };
 
 use spacegame2d_protocol::{
-    AuthoritativeCommand, ClientHello, CommandRequest, Message, SIMULATION_VERSION,
+    AuthoritativeCommand, CommandRequest, Message, SIMULATION_VERSION, Tick,
 };
 use spacegame2d_simulation::{
     command::{PlayerId, command_from_data, valid_authoritative},
@@ -16,7 +16,7 @@ use spacegame2d_simulation::{
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
-pub const COMMAND_INPUT_DELAY: u64 = 2;
+pub const COMMAND_INPUT_DELAY: Tick = 2;
 
 struct Client {
     stream: TcpStream,
@@ -27,18 +27,7 @@ struct Client {
     outgoing: VecDeque<Vec<u8>>,
 }
 
-fn kind(command: &spacegame2d_protocol::CommandData) -> &'static str {
-    match command {
-        spacegame2d_protocol::CommandData::SetDestination { .. } => "set_destination",
-        spacegame2d_protocol::CommandData::ResetSimulation => "reset_simulation",
-    }
-}
-
-fn valid_hello(hello: &ClientHello) -> bool {
-    hello.simulation_version == SIMULATION_VERSION
-}
-
-fn execute_tick(receive_tick: u64) -> u64 {
+fn execute_tick(receive_tick: Tick) -> Tick {
     receive_tick.saturating_add(COMMAND_INPUT_DELAY)
 }
 
@@ -53,54 +42,56 @@ fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -
         && command_from_data(&request.command).is_some()
 }
 
-fn handle_read(client: &mut Client) -> io::Result<Vec<Message>> {
-    let mut bytes = [0u8; 4096];
-    let mut messages = Vec::new();
-    loop {
-        match client.stream.try_read(&mut bytes) {
-            Ok(0) => {
-                if messages.is_empty() {
+impl Client {
+    fn read_messages(&mut self) -> io::Result<Vec<Message>> {
+        let mut bytes = [0u8; 4096];
+        let mut messages = Vec::new();
+        loop {
+            match self.stream.try_read(&mut bytes) {
+                Ok(0) => {
+                    if messages.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "client disconnected",
+                        ));
+                    }
+                    break;
+                }
+                Ok(size) => messages.extend(self.decoder.push(&bytes[..size])?),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(messages)
+    }
+
+    fn queue(&mut self, message: &Message) -> io::Result<()> {
+        self.outgoing.push_back(message.encode()?);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        while let Some(frame) = self.outgoing.front_mut() {
+            match self.stream.try_write(frame) {
+                Ok(0) => {
                     return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "client disconnected",
+                        io::ErrorKind::WriteZero,
+                        "client write closed",
                     ));
                 }
-                break;
+                Ok(size) if size == frame.len() => {
+                    self.outgoing.pop_front();
+                }
+                Ok(size) => {
+                    frame.drain(..size);
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
             }
-            Ok(size) => messages.extend(client.decoder.push(&bytes[..size])?),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-            Err(error) => return Err(error),
         }
+        Ok(())
     }
-    Ok(messages)
-}
-
-fn queue(client: &mut Client, message: &Message) -> io::Result<()> {
-    client.outgoing.push_back(message.encode()?);
-    Ok(())
-}
-
-fn flush(client: &mut Client) -> io::Result<()> {
-    while let Some(frame) = client.outgoing.front_mut() {
-        match client.stream.try_write(frame) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "client write closed",
-                ));
-            }
-            Ok(size) if size == frame.len() => {
-                client.outgoing.pop_front();
-            }
-            Ok(size) => {
-                frame.drain(..size);
-                break;
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
 }
 
 pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> io::Result<()> {
@@ -108,7 +99,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
     let mut simulation = Simulation::default();
-    let mut scheduled = BTreeMap::<u64, Vec<AuthoritativeCommand>>::new();
+    let mut scheduled = BTreeMap::<Tick, Vec<AuthoritativeCommand>>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
     loop {
         tokio::select! {
@@ -150,7 +141,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
         let mut remove = Vec::new();
         let mut broadcasts = Vec::new();
         for (index, client) in clients.iter_mut().enumerate() {
-            match handle_read(client) {
+            match client.read_messages() {
                 Ok(messages) => {
                     for message in messages {
                         if !client.connected {
@@ -158,26 +149,25 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                 remove.push(index);
                                 continue;
                             };
-                            if !valid_hello(&hello) {
+                            if !hello.is_compatible() {
                                 tracing::warn!(event = "handshake_rejected", address = %client.address, "wrong simulation version");
                                 remove.push(index);
                                 continue;
                             }
-                            queue(
-                                client,
-                                &Message::ServerHello(spacegame2d_protocol::ServerHello {
+                            client.queue(&Message::ServerHello(
+                                spacegame2d_protocol::ServerHello {
                                     simulation_version: SIMULATION_VERSION,
                                     simulation_hz: SIMULATION_HZ,
                                     player_slot: client.slot,
                                     server_tick: simulation.tick(),
                                     capabilities: Vec::new(),
-                                }),
-                            )?;
+                                },
+                            ))?;
                             client.connected = true;
                         } else if let Message::CommandRequest(request) = message {
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
-                            tracing::info!(event = "command_received", cmd = %cmd, tick = receive_tick, kind = kind(&request.command), address = %client.address, slot = client.slot);
+                            tracing::info!(event = "command_received", cmd = %cmd, tick = receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
                             if !valid_request(&simulation, client.slot, &request) {
                                 tracing::warn!(event = "command_rejected", cmd = %cmd, tick = receive_tick, address = %client.address, slot = client.slot, "invalid command");
                                 continue;
@@ -188,7 +178,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                                 sequence: request.sequence,
                                 command: request.command,
                             };
-                            tracing::info!(event = "command_scheduled", cmd = %cmd, receive_tick, execute_tick = authoritative.execute_tick, tick = receive_tick, kind = kind(&authoritative.command), address = %client.address, slot = client.slot);
+                            tracing::info!(event = "command_scheduled", cmd = %cmd, receive_tick, execute_tick = authoritative.execute_tick, tick = receive_tick, kind = ?authoritative.command, address = %client.address, slot = client.slot);
                             let encoded =
                                 Message::AuthoritativeCommand(authoritative.clone()).encode()?;
                             scheduled
@@ -219,7 +209,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
             tracing::info!(event = "command_broadcast_queued", cmd = %cmd, recipients, address = %address, slot);
         }
         for client in &mut clients {
-            if flush(client).is_err() {
+            if client.flush().is_err() {
                 client.connected = false;
             }
         }
@@ -264,7 +254,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spacegame2d_protocol::FrameDecoder;
+    use spacegame2d_protocol::{ClientHello, FrameDecoder};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::watch,
@@ -294,14 +284,20 @@ mod tests {
     }
     #[test]
     fn handshake_validation() {
-        assert!(valid_hello(&ClientHello {
-            simulation_version: 1,
-            capabilities: vec![]
-        }));
-        assert!(!valid_hello(&ClientHello {
-            simulation_version: 2,
-            capabilities: vec![]
-        }));
+        assert!(
+            ClientHello {
+                simulation_version: 1,
+                capabilities: vec![]
+            }
+            .is_compatible()
+        );
+        assert!(
+            !(ClientHello {
+                simulation_version: 2,
+                capabilities: vec![]
+            }
+            .is_compatible())
+        );
     }
     #[test]
     fn scheduling_tick_math() {

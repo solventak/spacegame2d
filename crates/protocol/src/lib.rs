@@ -66,6 +66,12 @@ fn caps(values: &[i32]) -> Vec<Capability> {
         })
         .collect()
 }
+impl ClientHello {
+    pub fn is_compatible(&self) -> bool {
+        self.simulation_version == SIMULATION_VERSION
+    }
+}
+
 impl TryFrom<wire::command::Payload> for CommandData {
     type Error = io::Error;
 

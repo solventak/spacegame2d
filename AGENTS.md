@@ -154,6 +154,9 @@ Follow existing module conventions: small focused files, `mod.rs` re-exporting o
 
 - Prefer `From` and `TryFrom` implementations over free conversion helper functions. Use `From` for infallible conversions and `TryFrom` for conversions that can fail.
 - Keep serialization behavior on the type being serialized. For example, expose `Message::encode()` and `Message::write(...)` rather than `encode_message` or `write_message` free functions.
+- Put behavior on the domain type it belongs to, such as `ClientHello::is_compatible()` and `Client` socket methods, instead of standalone helpers.
+- Preserve structured domain values in tracing fields when possible; prefer recording enums with `?value` over converting them to display strings.
+- Use domain-specific types such as `Tick` for simulation time instead of repeating primitive integer types at protocol boundaries.
 
 ## Documentation discipline
 
