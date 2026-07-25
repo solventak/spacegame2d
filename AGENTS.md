@@ -8,7 +8,7 @@
 
 ## Toolchain
 
-- Rust compiler pinned by `rustc 1.89` (MSRV `1.89`); Cargo edition `2024` (`Cargo.toml`).
+- Rust compiler pinned by `rustc 1.91` (MSRV `1.91`); Cargo edition `2024` (`Cargo.toml`).
 - All dependencies in `Cargo.toml` are pinned with exact versions (`=x.y.z`). Do not relax pinning without coordinating.
 
 ## Source layout
@@ -145,7 +145,7 @@ The pre-commit hook runs the test gate and blocks the commit if any step fails. 
 ## Style overrides
 
 - `rustfmt.toml` sets `max_width = 100` and edition `2024`.
-- `clippy.toml` pins MSRV to `1.89`. Warnings are denied via `-D warnings` on the test gate.
+- `clippy.toml` pins MSRV to `1.91`. Warnings are denied via `-D warnings` on the test gate.
 
 Follow existing module conventions: small focused files, `mod.rs` re-exporting only the public surface, tests at the bottom of each file under `#[cfg(test)] mod tests { ... }`.
 

@@ -24,8 +24,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain (1.89)
-        uses: dtolnay/rust-toolchain@1.89
+      - name: Install Rust toolchain (1.91)
+        uses: dtolnay/rust-toolchain@1.91
         with:
           components: rust-docs
 

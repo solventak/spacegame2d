@@ -6,7 +6,7 @@ This document describes how to bring the application to an interactive state and
 
 | Requirement | Headless path | GUI path |
 |---|---|---|
-| Rust toolchain (MSRV 1.89) | Yes | Yes |
+| Rust toolchain (MSRV 1.91) | Yes | Yes |
 | GPU adapter (wgpu-compatible) | No | Yes |
 | Display (X11/Wayland/Win32/macOS) | No | Yes |
 
