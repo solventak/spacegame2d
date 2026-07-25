@@ -71,27 +71,22 @@ impl Autopilot {
         let Some(destination) = self.destination else {
             return FlightInput::default();
         };
-        if !self.active {
-            return FlightInput::default();
-        }
         let desired = self.controller.desired_input(FlightObservation::from_ship(
             ship,
             destination,
             neighbors,
         ));
-        if ship.position.distance(destination) <= self.config.arrival_radius_meters
+        let settled = ship.position.distance(destination) <= self.config.arrival_radius_meters
             && ship.velocity.length() <= self.config.stopped_speed_meters_per_second
-            && desired == FlightInput::default()
-        {
-            self.active = false;
-        }
+            && desired == FlightInput::default();
+        self.active = !settled;
         desired
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flight_control::{FlightController, FlightObservation};
+    use crate::flight_control::{FlightController, FlightObservation, NeighborRelationship};
     #[derive(Debug)]
     struct Script(FlightInput);
     impl FlightController for Script {
@@ -125,6 +120,44 @@ mod tests {
         assert_eq!(a.controls_for_tick(&s, &[]), FlightInput::default());
         assert!(!a.is_active());
     }
+    #[test]
+    fn settled_autopilot_reactivates_for_neighbor_guidance() {
+        #[derive(Debug)]
+        struct NeighborGuidance;
+        impl FlightController for NeighborGuidance {
+            fn name(&self) -> &'static str {
+                "neighbor-guidance"
+            }
+            fn desired_input(&self, observation: FlightObservation) -> FlightInput {
+                if observation.neighbors.is_empty() {
+                    FlightInput::default()
+                } else {
+                    FlightInput {
+                        turn_left: true,
+                        ..Default::default()
+                    }
+                }
+            }
+        }
+
+        let mut autopilot = Autopilot::new(Box::new(NeighborGuidance), AutopilotConfig::default());
+        autopilot.set_destination(Vec2::ZERO);
+        assert_eq!(
+            autopilot.controls_for_tick(&ShipState::default(), &[]),
+            FlightInput::default()
+        );
+        assert!(!autopilot.is_active());
+
+        let neighbor = NeighborObservation {
+            position: Vec2::X,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let input = autopilot.controls_for_tick(&ShipState::default(), &[neighbor]);
+        assert!(input.turn_left);
+        assert!(autopilot.is_active());
+    }
+
     #[test]
     fn cancel_clears_destination() {
         let mut a = ap(FlightInput::default());

@@ -1,5 +1,5 @@
 use crate::command::{CommandScheduler, UnitId, World};
-use crate::flight_control::NeighborObservation;
+use crate::flight_control::{NeighborObservation, NeighborRelationship};
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
 use std::collections::BTreeMap;
@@ -154,21 +154,29 @@ impl Simulation {
     /// authoritative World units, and deriving transient boundary events.
     pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
         self.commands.execute_pending(self.tick, &mut self.world)?;
-        let observations: Vec<NeighborObservation> = self
+        let observations: Vec<(Option<crate::command::PlayerId>, Vec2, Vec2)> = self
             .world
             .units
             .iter()
-            .map(|u| NeighborObservation {
-                position: u.state.position,
-                velocity: u.state.velocity,
-            })
+            .map(|u| (u.owner, u.state.position, u.state.velocity))
             .collect();
         for (i, unit) in self.world.units.iter_mut().enumerate() {
+            let owner = unit.owner;
             let neighbors = observations
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != i)
-                .map(|(_, n)| *n)
+                .map(
+                    |(_, (neighbor_owner, position, velocity))| NeighborObservation {
+                        position: *position,
+                        velocity: *velocity,
+                        relationship: if owner.is_some() && owner == *neighbor_owner {
+                            NeighborRelationship::Friendly
+                        } else {
+                            NeighborRelationship::Opposing
+                        },
+                    },
+                )
                 .collect::<Vec<_>>();
             let input = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
             step_ship(&mut unit.state, input);
@@ -255,7 +263,9 @@ mod tests {
 
     use spacegame2d_protocol::CommandData;
 
+    use crate::autopilot::{Autopilot, AutopilotConfig};
     use crate::command::PlayerId;
+    use crate::flight_control::ArrivalController;
 
     #[test]
     fn starts_without_player_ship() {
@@ -330,9 +340,9 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    fn unit_snapshot(
-        world: &World,
-    ) -> Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)> {
+    type UnitSnapshot = (UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool);
+
+    fn unit_snapshot(world: &World) -> Vec<UnitSnapshot> {
         world
             .units
             .iter()
@@ -351,7 +361,7 @@ mod tests {
     #[derive(Debug, PartialEq)]
     struct AuthoritativeSnapshot {
         tick: Tick,
-        units: Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)>,
+        units: Vec<UnitSnapshot>,
         events: Vec<SimulationEvent>,
     }
 
@@ -396,7 +406,7 @@ mod tests {
         let cmd = authoritative_set_destination(0, 2, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
         assert!(!sim.schedule_authoritative(&cmd));
         let events = sim.step().unwrap();
-        assert_eq!(sim.world.units[0].state.position, pos_before);
+        assert!(sim.world.units[0].state.position.distance(pos_before) < 1.0);
         assert!(events.is_empty());
         assert!(sim.commands.history().is_empty());
     }
@@ -472,7 +482,7 @@ mod tests {
             authoritative_set_destination(0, 1, 1, 1, [100.0f32.to_bits(), 100.0f32.to_bits()]);
         assert!(sim.schedule_authoritative(&cmd));
         sim.step().unwrap();
-        assert_eq!(sim.world.units[0].state.position, pos_before);
+        assert!(sim.world.units[0].state.position.distance(pos_before) < 1.0);
     }
 
     #[test]
@@ -639,6 +649,100 @@ mod tests {
         assert_eq!(replay.tick(), original.tick());
         assert_eq!(unit_snapshot(&replay.world), unit_snapshot(&original.world));
         assert_eq!(replay_events.unwrap(), original_events);
+    }
+
+    #[test]
+    fn avoidance_improves_pairwise_separation_without_bypassing_physics() {
+        fn configured_simulation(avoidance_strength: f32) -> Simulation {
+            let mut simulation = Simulation::with_world_radius(100.0);
+            simulation.world.units.truncate(3);
+            let states = [
+                ShipState {
+                    position: Vec2::new(-1.5, 0.0),
+                    ..Default::default()
+                },
+                ShipState {
+                    position: Vec2::new(1.5, 0.0),
+                    ..Default::default()
+                },
+                ShipState {
+                    position: Vec2::new(0.0, -1.5),
+                    ..Default::default()
+                },
+            ];
+            for (unit, state) in simulation.world.units.iter_mut().zip(states) {
+                let mut controller_config = ArrivalController::default().config;
+                controller_config.avoidance_strength = avoidance_strength;
+                controller_config.opposing_avoidance_strength = avoidance_strength;
+                unit.state = state;
+                unit.autopilot = Autopilot::new(
+                    Box::new(ArrivalController {
+                        config: controller_config,
+                    }),
+                    AutopilotConfig::default(),
+                );
+                unit.autopilot.set_destination(Vec2::new(0.0, 6.0));
+            }
+            simulation
+        }
+
+        fn minimum_separation(simulation: &Simulation) -> f32 {
+            simulation
+                .world
+                .units
+                .iter()
+                .enumerate()
+                .flat_map(|(index, unit)| {
+                    simulation.world.units[index + 1..]
+                        .iter()
+                        .map(move |other| unit.state.position.distance(other.state.position))
+                })
+                .fold(f32::INFINITY, f32::min)
+        }
+
+        fn run(mut simulation: Simulation) -> (f32, Vec<ShipState>) {
+            let mut minimum = f32::INFINITY;
+            for _ in 0..360 {
+                simulation.step().unwrap();
+                minimum = minimum.min(minimum_separation(&simulation));
+                for unit in &simulation.world.units {
+                    assert!(unit.state.position.is_finite());
+                    assert!(unit.state.velocity.is_finite());
+                    assert!(unit.state.velocity.length() <= MAX_SPEED_METERS_PER_SECOND);
+                    assert!(unit.state.angular_velocity_radians_per_second.is_finite());
+                    assert!(
+                        unit.state.angular_velocity_radians_per_second.abs()
+                            <= MAX_ANGULAR_SPEED_RADIANS_PER_SECOND
+                    );
+                }
+            }
+            (
+                minimum,
+                simulation
+                    .world
+                    .units
+                    .iter()
+                    .map(|unit| unit.state)
+                    .collect(),
+            )
+        }
+
+        let (baseline_separation, baseline_states) = run(configured_simulation(0.0));
+        let (avoidance_separation, avoidance_states) = run(configured_simulation(8.0));
+        assert!(
+            avoidance_separation > baseline_separation,
+            "avoidance separation {avoidance_separation} should exceed baseline {baseline_separation}"
+        );
+        assert!(
+            avoidance_states
+                .iter()
+                .all(|state| state.position.distance(Vec2::new(0.0, 6.0)) < 6.0),
+            "avoidance should preserve destination progress"
+        );
+
+        let (_, repeated_states) = run(configured_simulation(8.0));
+        assert_eq!(avoidance_states, repeated_states);
+        assert_ne!(baseline_states, avoidance_states);
     }
 
     #[test]
