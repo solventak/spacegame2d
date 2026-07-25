@@ -111,7 +111,7 @@ impl World {
         self.connected_players.insert(player)
     }
 
-    /// Assign the unit at the player's one-based slot index.
+    /// Assign the player's deterministic fleet slice.
     pub fn assign_player_unit(&mut self, player: PlayerId) -> bool {
         self.assign_player_fleet(player)
     }
@@ -282,21 +282,17 @@ impl Command for SetDestination {
     }
 }
 
-/// Reset the world to its deterministic demo state while preserving player
-/// ownership of surviving units.
+/// Reset the world to its deterministic demo state and restore canonical fleet
+/// ownership.
 ///
 /// Ownership rule: any connected player (valid slot >= 1) may issue a reset.
-/// The command is rejected for the reserved slot 0. After a reset, each
-/// surviving unit keeps its [`UnitId`] and owner. The `next_unit_id` counter
-/// is not reset, so future spawns receive fresh [`UnitId`]s and previously
-/// used ids are never reused within a session.
+/// The command is rejected for the reserved slot 0. The `next_unit_id` counter
+/// is not reset, so future spawns receive fresh [`UnitId`]s and previously used
+/// ids are never reused within a session.
 pub struct ResetSimulation;
 
 impl Command for ResetSimulation {
     fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
-        // Capture ownership by deterministic unit order so reset preserves
-        // player assignments even though every recreated unit gets a new ID.
-        let owners: Vec<Option<PlayerId>> = world.units.iter().map(|u| u.owner).collect();
         world.advance_allocator_past_units();
 
         // Rebuild the demo swarm using the deterministic demo layout and fresh
@@ -307,7 +303,9 @@ impl Command for ResetSimulation {
             .enumerate()
         {
             let id = world.allocate_unit_id()?;
-            units.push(Unit::new(id, owners.get(i).copied().flatten(), state));
+            let owner =
+                (i / FLEET_SIZE < MAX_PLAYERS).then(|| PlayerId((i / FLEET_SIZE + 1) as u8));
+            units.push(Unit::new(id, owner, state));
         }
         world.units = units;
         Ok(())
@@ -644,6 +642,28 @@ mod tests {
         let ids: BTreeSet<_> = world.units.iter().map(|unit| unit.id).collect();
         assert_eq!(ids.len(), world.units.len());
         assert!(world.next_unit_id > world.units.iter().map(|unit| unit.id.0).max().unwrap());
+    }
+
+    #[test]
+    fn reset_after_culling_restores_canonical_fleet_ownership() {
+        let mut world = World::demo();
+        world.assign_player_fleet(PlayerId(1));
+        world.assign_player_fleet(PlayerId(2));
+        world.units.drain(0..5);
+
+        ResetSimulation.execute(&mut world).unwrap();
+
+        assert_eq!(world.units.len(), MAX_UNITS);
+        assert!(
+            world.units[..FLEET_SIZE]
+                .iter()
+                .all(|unit| unit.owner == Some(PlayerId(1)))
+        );
+        assert!(
+            world.units[FLEET_SIZE..]
+                .iter()
+                .all(|unit| unit.owner == Some(PlayerId(2)))
+        );
     }
 
     #[test]
