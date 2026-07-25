@@ -12,6 +12,10 @@ use crate::simulation::{ShipState, Simulation, SimulationEvent};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(pub u8);
 
+pub const FLEET_SIZE: usize = 30;
+pub const MAX_PLAYERS: usize = 2;
+pub const MAX_UNITS: usize = FLEET_SIZE * MAX_PLAYERS;
+
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum PlayerIdError {
     #[error("player slot must be nonzero and fit in u8")]
@@ -90,13 +94,13 @@ pub struct World {
 
 impl World {
     pub fn demo() -> Self {
-        let units = crate::fleet::initial_drone_positions()
+        let units = crate::fleet::initial_world_positions()
             .into_iter()
             .enumerate()
             .map(|(i, state)| Unit::new(UnitId(i as u32 + 1), None, state))
             .collect();
         Self {
-            next_unit_id: crate::fleet::DRONE_COUNT as u32 + 1,
+            next_unit_id: MAX_UNITS as u32 + 1,
             units,
             connected_players: BTreeSet::new(),
             unit_id_exhausted: false,
@@ -107,23 +111,34 @@ impl World {
         self.connected_players.insert(player)
     }
 
-    /// Assign the unit at the player's one-based slot index.
+    /// Assign the player's deterministic fleet slice.
     pub fn assign_player_unit(&mut self, player: PlayerId) -> bool {
-        let index = usize::from(player.0.saturating_sub(1));
-        let Some(unit) = self.units.get_mut(index) else {
-            return false;
-        };
-        if unit.owner.is_some_and(|owner| owner != player) {
+        self.assign_player_fleet(player)
+    }
+
+    pub fn assign_player_fleet(&mut self, player: PlayerId) -> bool {
+        let slot = usize::from(player.0.saturating_sub(1));
+        if slot >= MAX_PLAYERS || self.units.len() < MAX_UNITS {
             return false;
         }
-        unit.owner = Some(player);
+        let range = slot * FLEET_SIZE..(slot + 1) * FLEET_SIZE;
+        if self.units[range.clone()]
+            .iter()
+            .any(|unit| unit.owner.is_some_and(|owner| owner != player))
+        {
+            return false;
+        }
+        for unit in &mut self.units[range] {
+            unit.owner = Some(player);
+        }
         true
     }
 
     /// Assign deterministic owners to every unit in a client mirror.
     pub fn assign_mirror_owners(&mut self) {
         for (index, unit) in self.units.iter_mut().enumerate() {
-            unit.owner = u8::try_from(index + 1).ok().and_then(PlayerId::new);
+            let slot = index / FLEET_SIZE;
+            unit.owner = (slot < MAX_PLAYERS).then(|| PlayerId((slot + 1) as u8));
         }
     }
 
@@ -267,32 +282,30 @@ impl Command for SetDestination {
     }
 }
 
-/// Reset the world to its deterministic demo state while preserving player
-/// ownership of surviving units.
+/// Reset the world to its deterministic demo state and restore canonical fleet
+/// ownership.
 ///
 /// Ownership rule: any connected player (valid slot >= 1) may issue a reset.
-/// The command is rejected for the reserved slot 0. After a reset, each
-/// surviving unit keeps its [`UnitId`] and owner. The `next_unit_id` counter
-/// is not reset, so future spawns receive fresh [`UnitId`]s and previously
-/// used ids are never reused within a session.
+/// The command is rejected for the reserved slot 0. The `next_unit_id` counter
+/// is not reset, so future spawns receive fresh [`UnitId`]s and previously used
+/// ids are never reused within a session.
 pub struct ResetSimulation;
 
 impl Command for ResetSimulation {
     fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
-        // Capture ownership by deterministic unit order so reset preserves
-        // player assignments even though every recreated unit gets a new ID.
-        let owners: Vec<Option<PlayerId>> = world.units.iter().map(|u| u.owner).collect();
         world.advance_allocator_past_units();
 
         // Rebuild the demo swarm using the deterministic demo layout and fresh
         // IDs from the session allocator.
         let mut units = Vec::new();
-        for (i, state) in crate::fleet::initial_drone_positions()
+        for (i, state) in crate::fleet::initial_world_positions()
             .into_iter()
             .enumerate()
         {
             let id = world.allocate_unit_id()?;
-            units.push(Unit::new(id, owners.get(i).copied().flatten(), state));
+            let owner =
+                (i / FLEET_SIZE < MAX_PLAYERS).then(|| PlayerId((i / FLEET_SIZE + 1) as u8));
+            units.push(Unit::new(id, owner, state));
         }
         world.units = units;
         Ok(())
@@ -493,17 +506,19 @@ mod tests {
     #[test]
     fn reset_preserves_ownership_and_unit_ids() {
         let mut world = World::demo();
-        world.units[0].owner = Some(PlayerId(1));
-        world.units[1].owner = Some(PlayerId(2));
+        world.assign_player_fleet(PlayerId(1));
+        world.assign_player_fleet(PlayerId(2));
         world.units[2].state.position = Vec2::new(100.0, 0.0);
         let next_before = world.next_unit_id;
 
         ResetSimulation.execute(&mut world).unwrap();
 
-        assert_eq!(world.units.len(), crate::fleet::DRONE_COUNT);
+        assert_eq!(world.units.len(), MAX_UNITS);
         assert_eq!(world.units[0].owner, Some(PlayerId(1)));
-        assert_eq!(world.units[1].owner, Some(PlayerId(2)));
-        assert_eq!(world.units[2].owner, None);
+        assert_eq!(world.units[1].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[29].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[30].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[59].owner, Some(PlayerId(2)));
         assert_ne!(world.units[0].id, UnitId(1));
         assert_ne!(world.units[1].id, UnitId(2));
         assert!(
@@ -531,7 +546,46 @@ mod tests {
         world.assign_mirror_owners();
 
         assert_eq!(world.units[0].owner, Some(PlayerId(1)));
-        assert_eq!(world.units[1].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[1].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[29].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[30].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[59].owner, Some(PlayerId(2)));
+    }
+
+    #[test]
+    fn demo_has_two_deterministic_fleets_in_bounds() {
+        let first = World::demo();
+        let second = World::demo();
+        assert_eq!(first.units.len(), MAX_UNITS);
+        assert_eq!(
+            first
+                .units
+                .iter()
+                .map(|unit| unit.state)
+                .collect::<Vec<_>>(),
+            second
+                .units
+                .iter()
+                .map(|unit| unit.state)
+                .collect::<Vec<_>>()
+        );
+        let left = first.units[..FLEET_SIZE]
+            .iter()
+            .map(|unit| unit.state.position)
+            .sum::<Vec2>()
+            / FLEET_SIZE as f32;
+        let right = first.units[FLEET_SIZE..]
+            .iter()
+            .map(|unit| unit.state.position)
+            .sum::<Vec2>()
+            / FLEET_SIZE as f32;
+        assert!(left.distance(right) > 1.0);
+        assert!(
+            first
+                .units
+                .iter()
+                .all(|unit| unit.state.position.length() <= crate::simulation::WORLD_RADIUS_M)
+        );
     }
 
     #[test]
@@ -561,7 +615,7 @@ mod tests {
         let mut world = World::demo();
 
         assert!(world.assign_player_unit(PlayerId(2)));
-        assert_eq!(world.units[1].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[30].owner, Some(PlayerId(2)));
         assert_eq!(world.units[0].owner, None);
     }
 
@@ -588,6 +642,28 @@ mod tests {
         let ids: BTreeSet<_> = world.units.iter().map(|unit| unit.id).collect();
         assert_eq!(ids.len(), world.units.len());
         assert!(world.next_unit_id > world.units.iter().map(|unit| unit.id.0).max().unwrap());
+    }
+
+    #[test]
+    fn reset_after_culling_restores_canonical_fleet_ownership() {
+        let mut world = World::demo();
+        world.assign_player_fleet(PlayerId(1));
+        world.assign_player_fleet(PlayerId(2));
+        world.units.drain(0..5);
+
+        ResetSimulation.execute(&mut world).unwrap();
+
+        assert_eq!(world.units.len(), MAX_UNITS);
+        assert!(
+            world.units[..FLEET_SIZE]
+                .iter()
+                .all(|unit| unit.owner == Some(PlayerId(1)))
+        );
+        assert!(
+            world.units[FLEET_SIZE..]
+                .iter()
+                .all(|unit| unit.owner == Some(PlayerId(2)))
+        );
     }
 
     #[test]
