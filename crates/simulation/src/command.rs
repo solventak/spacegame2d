@@ -62,8 +62,6 @@ pub enum UnitIdAllocationError {
 pub enum CommandDataError {
     #[error("destination coordinates must be finite")]
     NonFiniteDestination,
-    #[error("player slot is invalid")]
-    InvalidPlayerSlot,
 }
 
 pub struct Unit {
@@ -192,9 +190,12 @@ impl World {
         let player = PlayerId::try_from(cmd.player_slot)
             .map_err(|_| AuthoritativeCommandError::InvalidPlayerSlot)?;
         match &cmd.command {
-            CommandData::SetDestination { .. } => {
-                if !self.units.iter().any(|unit| unit.owner == Some(player)) {
-                    return Err(AuthoritativeCommandError::NoOwnedFleet);
+            CommandData::SetDestination { unit_id, .. } => {
+                let unit = self
+                    .unit(UnitId::from(*unit_id))
+                    .ok_or(AuthoritativeCommandError::UnknownUnit)?;
+                if unit.owner != Some(player) {
+                    return Err(AuthoritativeCommandError::NotOwner);
                 }
                 Ok(())
             }
@@ -213,8 +214,10 @@ impl World {
 pub enum AuthoritativeCommandError {
     #[error("player slot is invalid")]
     InvalidPlayerSlot,
-    #[error("player owns no fleet units")]
-    NoOwnedFleet,
+    #[error("unit does not exist")]
+    UnknownUnit,
+    #[error("player does not own unit")]
+    NotOwner,
     #[error("player is not connected")]
     PlayerNotConnected,
 }
@@ -228,7 +231,7 @@ pub enum AuthoritativeCommandError {
 pub enum RecordedCommand {
     SetDestination {
         execute_tick: Tick,
-        player: PlayerId,
+        unit_id: UnitId,
         destination: [u32; 2],
     },
     ResetSimulation {
@@ -258,17 +261,14 @@ pub trait Command: Send {
 }
 
 pub struct SetDestination {
-    pub player: PlayerId,
+    pub unit_id: UnitId,
     pub destination: Vec2,
 }
 
 impl Command for SetDestination {
     fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
-        let has_owners = world.units.iter().any(|unit| unit.owner.is_some());
-        for unit in &mut world.units {
-            if !has_owners || unit.owner == Some(self.player) {
-                unit.autopilot.set_destination(self.destination);
-            }
+        if let Some(u) = world.unit_mut(self.unit_id) {
+            u.autopilot.set_destination(self.destination);
         }
         Ok(())
     }
@@ -276,7 +276,7 @@ impl Command for SetDestination {
     fn record(&self, execute_tick: Tick) -> RecordedCommand {
         RecordedCommand::SetDestination {
             execute_tick,
-            player: self.player,
+            unit_id: self.unit_id,
             destination: [self.destination.x.to_bits(), self.destination.y.to_bits()],
         }
     }
@@ -388,24 +388,11 @@ impl TryFrom<&CommandData> for Box<dyn Command> {
     type Error = CommandDataError;
 
     fn try_from(data: &CommandData) -> Result<Self, Self::Error> {
-        let command = AuthoritativeCommand {
-            execute_tick: Tick::default(),
-            player_slot: 1,
-            sequence: 0,
-            command: data.clone(),
-        };
-        Box::<dyn Command>::try_from(&command)
-    }
-}
-
-impl TryFrom<&AuthoritativeCommand> for Box<dyn Command> {
-    type Error = CommandDataError;
-
-    fn try_from(cmd: &AuthoritativeCommand) -> Result<Self, Self::Error> {
-        let player =
-            PlayerId::try_from(cmd.player_slot).map_err(|_| CommandDataError::InvalidPlayerSlot)?;
-        match &cmd.command {
-            CommandData::SetDestination { destination } => {
+        match data {
+            CommandData::SetDestination {
+                unit_id,
+                destination,
+            } => {
                 let coordinates = [
                     f32::from_bits(destination[0]),
                     f32::from_bits(destination[1]),
@@ -414,7 +401,7 @@ impl TryFrom<&AuthoritativeCommand> for Box<dyn Command> {
                     return Err(CommandDataError::NonFiniteDestination);
                 }
                 Ok(Box::new(SetDestination {
-                    player,
+                    unit_id: UnitId(*unit_id),
                     destination: Vec2::from_array(coordinates),
                 }))
             }
@@ -427,11 +414,11 @@ impl From<&RecordedCommand> for Box<dyn Command> {
     fn from(recorded: &RecordedCommand) -> Self {
         match recorded {
             RecordedCommand::SetDestination {
-                player,
+                unit_id,
                 destination,
                 ..
             } => Box::new(SetDestination {
-                player: *player,
+                unit_id: *unit_id,
                 destination: Vec2::from_array([
                     f32::from_bits(destination[0]),
                     f32::from_bits(destination[1]),
@@ -445,12 +432,13 @@ impl From<&RecordedCommand> for Box<dyn Command> {
 mod tests {
     use super::*;
 
-    fn destination(slot: u32, _unit_id: u32, execute_tick: u64) -> AuthoritativeCommand {
+    fn destination(slot: u32, unit_id: u32, execute_tick: u64) -> AuthoritativeCommand {
         AuthoritativeCommand {
             execute_tick: Tick::from(execute_tick),
             player_slot: slot,
             sequence: 1,
             command: CommandData::SetDestination {
+                unit_id,
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
             },
         }
@@ -608,6 +596,7 @@ mod tests {
             player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
+                unit_id: 1,
                 destination: [0.0f32.to_bits(), 10.0f32.to_bits()],
             },
         };
@@ -686,14 +675,14 @@ mod tests {
         scheduler.schedule(
             Tick::default(),
             Box::new(SetDestination {
-                player: PlayerId(1),
+                unit_id: UnitId(1),
                 destination: Vec2::new(1.0, 2.0),
             }),
         );
         scheduler.schedule(
             Tick::default(),
             Box::new(SetDestination {
-                player: PlayerId(1),
+                unit_id: UnitId(2),
                 destination: Vec2::new(3.0, 4.0),
             }),
         );
@@ -705,7 +694,7 @@ mod tests {
         assert!(scheduler.history().iter().all(|r| matches!(
             r,
             RecordedCommand::SetDestination {
-                player: PlayerId(1),
+                unit_id: UnitId(1),
                 ..
             }
         ) || r.execute_tick() == Tick::new(0)));
@@ -717,7 +706,7 @@ mod tests {
         let pos_before = world.units[0].state.position;
         let vel_before = world.units[0].state.velocity;
         SetDestination {
-            player: PlayerId(1),
+            unit_id: UnitId(1),
             destination: Vec2::new(100.0, 100.0),
         }
         .execute(&mut world)
@@ -730,18 +719,21 @@ mod tests {
     fn invalid_command_data_rejects_nan_and_infinity() {
         assert!(
             Box::<dyn Command>::try_from(&CommandData::SetDestination {
+                unit_id: 1,
                 destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
             })
             .is_err()
         );
         assert!(
             Box::<dyn Command>::try_from(&CommandData::SetDestination {
+                unit_id: 1,
                 destination: [f32::INFINITY.to_bits(), 0.0f32.to_bits()],
             })
             .is_err()
         );
         assert!(
             Box::<dyn Command>::try_from(&CommandData::SetDestination {
+                unit_id: 1,
                 destination: [f32::NEG_INFINITY.to_bits(), 0.0f32.to_bits()],
             })
             .is_err()
