@@ -180,4 +180,56 @@ mod tests {
         simulation.step().unwrap();
         assert_ne!(before, simulation.state_hash());
     }
+
+    #[test]
+    fn equivalent_authoritative_inputs_have_equal_hashes() {
+        use spacegame2d_protocol::{AuthoritativeCommand, CommandData};
+        let mut left = Simulation::default();
+        let mut right = Simulation::default();
+        left.world.assign_mirror_owners();
+        right.world.assign_mirror_owners();
+        let command = AuthoritativeCommand {
+            execute_tick: Tick::default(),
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::SetDestination {
+                destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+            },
+        };
+        assert!(left.schedule_authoritative_trusted(&command));
+        assert!(right.schedule_authoritative_trusted(&command));
+        left.step().unwrap();
+        right.step().unwrap();
+        assert_eq!(left.state_hash(), right.state_hash());
+    }
+
+    #[test]
+    fn reset_and_repeated_commands_have_equal_hashes() {
+        use spacegame2d_protocol::{AuthoritativeCommand, CommandData};
+        let mut left = Simulation::default();
+        let mut right = Simulation::default();
+        left.world.assign_mirror_owners();
+        right.world.assign_mirror_owners();
+        let reset = AuthoritativeCommand {
+            execute_tick: Tick::default(),
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::ResetSimulation,
+        };
+        let destination = AuthoritativeCommand {
+            execute_tick: Tick::from(1),
+            player_slot: 2,
+            sequence: 2,
+            command: CommandData::SetDestination {
+                destination: [3.0f32.to_bits(), (-2.0f32).to_bits()],
+            },
+        };
+        for simulation in [&mut left, &mut right] {
+            assert!(simulation.schedule_authoritative_trusted(&reset));
+            simulation.step().unwrap();
+            assert!(simulation.schedule_authoritative_trusted(&destination));
+            simulation.step().unwrap();
+        }
+        assert_eq!(left.state_hash(), right.state_hash());
+    }
 }

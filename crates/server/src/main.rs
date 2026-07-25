@@ -27,6 +27,7 @@ struct Client {
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
     checksum_enabled: bool,
+    pending_checksums: VecDeque<(Tick, Vec<u8>)>,
 }
 
 impl Client {
@@ -164,6 +165,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 slot,
                 connected: false,
                 checksum_enabled: false,
+                pending_checksums: VecDeque::new(),
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
             });
@@ -203,11 +205,16 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                         {
                             if client.checksum_enabled {
                                 if let Some(server_hash) = state_hashes.get(&tick) {
-                                    if checksum_mismatch(server_hash, &hash) {
-                                        tracing::warn!(event = "state_divergence", address = %client.address, slot = client.slot, tick = ?tick, server_hash = %hex_hash(server_hash), client_hash = %hex_hash(&hash), "client simulation diverged from server");
+                                    if let Some(divergence) =
+                                        checksum_divergence(tick, server_hash, &hash)
+                                    {
+                                        tracing::warn!(event = "state_divergence", address = %client.address, slot = client.slot, tick = ?divergence.tick, server_hash = %hex_hash(&divergence.server_hash), client_hash = %hex_hash(&divergence.client_hash), "client simulation diverged from server");
                                     }
                                 } else {
-                                    tracing::debug!(event = "state_checksum_expired", address = %client.address, slot = client.slot, tick = ?tick, "server hash was no longer retained");
+                                    client.pending_checksums.push_back((tick, hash));
+                                    while client.pending_checksums.len() > 16 {
+                                        client.pending_checksums.pop_front();
+                                    }
                                 }
                             }
                         } else if let Message::CommandRequest(request) = message {
@@ -286,6 +293,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
             state_hashes.insert(completed_tick, simulation.state_hash());
             let oldest = completed_tick - Tick::from(u64::from(SIMULATION_HZ) * 10);
             state_hashes.retain(|tick, _| *tick >= oldest);
+            compare_pending_checksums(&mut clients, &state_hashes, completed_tick);
         }
     }
 }
@@ -294,8 +302,50 @@ fn hex_hash(hash: &[u8]) -> String {
     hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn checksum_mismatch(server_hash: &[u8; 32], client_hash: &[u8]) -> bool {
-    server_hash.as_slice() != client_hash
+#[derive(Debug, PartialEq, Eq)]
+struct ChecksumDivergence {
+    tick: Tick,
+    server_hash: [u8; 32],
+    client_hash: Vec<u8>,
+}
+
+fn checksum_divergence(
+    tick: Tick,
+    server_hash: &[u8; 32],
+    client_hash: &[u8],
+) -> Option<ChecksumDivergence> {
+    (server_hash.as_slice() != client_hash).then(|| ChecksumDivergence {
+        tick,
+        server_hash: *server_hash,
+        client_hash: client_hash.to_vec(),
+    })
+}
+
+fn compare_pending_checksums(
+    clients: &mut [Client],
+    state_hashes: &BTreeMap<Tick, [u8; 32]>,
+    completed_tick: Tick,
+) {
+    for client in clients.iter_mut() {
+        let pending = std::mem::take(&mut client.pending_checksums);
+        for (tick, hash) in pending {
+            if let Some(server_hash) = state_hashes.get(&tick) {
+                if let Some(divergence) = checksum_divergence(tick, server_hash, &hash) {
+                    tracing::warn!(
+                        event = "state_divergence",
+                        address = %client.address,
+                        slot = client.slot,
+                        tick = ?divergence.tick,
+                        server_hash = %hex_hash(&divergence.server_hash),
+                        client_hash = %hex_hash(&divergence.client_hash),
+                        "client simulation diverged from server"
+                    );
+                }
+            } else if tick > completed_tick {
+                client.pending_checksums.push_back((tick, hash));
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -394,10 +444,12 @@ mod tests {
     #[test]
     fn deliberate_checksum_difference_is_detected() {
         let expected = [0u8; 32];
-        assert!(!checksum_mismatch(&expected, &expected));
         let mut different = expected;
         different[0] = 1;
-        assert!(checksum_mismatch(&expected, &different));
+        let divergence = checksum_divergence(Tick::from(60), &expected, &different).unwrap();
+        assert_eq!(divergence.tick, Tick::from(60));
+        assert_eq!(divergence.server_hash, expected);
+        assert_eq!(divergence.client_hash, different);
     }
 
     #[test]
