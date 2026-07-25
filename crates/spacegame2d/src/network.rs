@@ -1,6 +1,6 @@
 use std::{
-    collections::BTreeMap,
-    io::{self, Read},
+    collections::{BTreeMap, VecDeque},
+    io::{self, Read, Write},
     net::TcpStream,
 };
 
@@ -14,7 +14,9 @@ pub struct NetworkSession {
     stream: TcpStream,
     pub player_slot: u32,
     pub server_tick: u64,
+    local_tick: u64,
     decoder: spacegame2d_protocol::FrameDecoder,
+    outgoing: VecDeque<Vec<u8>>,
 }
 
 impl NetworkSession {
@@ -38,7 +40,9 @@ impl NetworkSession {
             stream,
             player_slot: hello.player_slot,
             server_tick: hello.server_tick,
+            local_tick: hello.server_tick,
             decoder: spacegame2d_protocol::FrameDecoder::new(),
+            outgoing: VecDeque::new(),
         })
     }
 
@@ -78,24 +82,52 @@ impl NetworkSession {
         self.send(sequence, CommandData::ResetSimulation)
     }
 
+    pub fn set_local_tick(&mut self, tick: u64) {
+        self.local_tick = tick;
+    }
+
     fn send(&mut self, sequence: u32, command: CommandData) -> io::Result<()> {
-        spacegame2d_protocol::write_message(
-            &mut self.stream,
-            &Message::CommandRequest(CommandRequest {
-                sequence,
-                command: command.clone(),
-            }),
-        )?;
+        self.outgoing
+            .push_back(spacegame2d_protocol::encode_message(
+                &Message::CommandRequest(CommandRequest {
+                    sequence,
+                    command: command.clone(),
+                }),
+            )?);
+        self.flush_outgoing()?;
         tracing::info!(
             event = "command_sent",
             cmd = %format!("{}:{}", self.player_slot, sequence),
-            local_tick = self.server_tick,
+            local_tick = self.local_tick,
             kind = command_kind(&command),
         );
         Ok(())
     }
 
+    fn flush_outgoing(&mut self) -> io::Result<()> {
+        while let Some(frame) = self.outgoing.front_mut() {
+            match self.stream.write(frame) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "server write closed",
+                    ));
+                }
+                Ok(size) if size == frame.len() => {
+                    self.outgoing.pop_front();
+                }
+                Ok(size) => {
+                    frame.drain(..size);
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     pub fn poll_commands(&mut self) -> io::Result<Vec<AuthoritativeCommand>> {
+        self.flush_outgoing()?;
         let mut bytes = [0u8; 4096];
         let mut result = Vec::new();
         loop {
@@ -113,7 +145,7 @@ impl NetworkSession {
                                 event = "authoritative_received",
                                 execute_tick = command.execute_tick,
                                 server_tick = self.server_tick,
-                                local_tick = self.server_tick,
+                                local_tick = self.local_tick,
                                 kind = command_kind(&command.command),
                             );
                             result.push(command);

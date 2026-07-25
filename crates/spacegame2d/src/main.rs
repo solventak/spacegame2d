@@ -467,6 +467,7 @@ impl ApplicationHandler for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(session) = self.network.as_mut() {
+            session.set_local_tick(self.simulation.tick());
             match session.poll_commands() {
                 Ok(commands) => {
                     for command in commands {

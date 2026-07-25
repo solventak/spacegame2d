@@ -59,10 +59,13 @@ fn handle_read(client: &mut Client) -> io::Result<Vec<Message>> {
     loop {
         match client.stream.try_read(&mut bytes) {
             Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "client disconnected",
-                ));
+                if messages.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "client disconnected",
+                    ));
+                }
+                break;
             }
             Ok(size) => messages.extend(client.decoder.push(&bytes[..size])?),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -104,7 +107,6 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
     let bound = listener.local_addr()?;
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
-    let mut next_slot = 1u32;
     let mut simulation = Simulation::default();
     let mut scheduled = BTreeMap::<u64, Vec<AuthoritativeCommand>>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
@@ -123,22 +125,27 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 Err(_) => break,
             };
             let (stream, address) = accepted;
-            let Some(player_id) = u8::try_from(next_slot).ok().and_then(PlayerId::new) else {
-                tracing::warn!(event = "client_rejected", address = %address, slot = next_slot, "player slot exhausted");
+            let Some(slot) = (1..=u32::from(u8::MAX)).find(|candidate| {
+                clients
+                    .iter()
+                    .all(|client: &Client| client.slot != *candidate)
+            }) else {
+                tracing::warn!(event = "client_rejected", address = %address, "player slots exhausted");
                 continue;
             };
+            let player_id = PlayerId::new(u8::try_from(slot).expect("slot is within u8 range"))
+                .expect("slot is nonzero");
             stream.set_nodelay(true)?;
             simulation.world.connect_player(player_id);
             simulation.world.assign_player_unit(player_id);
             clients.push(Client {
                 stream,
                 address,
-                slot: next_slot,
+                slot,
                 connected: false,
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
             });
-            next_slot = next_slot.saturating_add(1);
         }
         let mut remove = Vec::new();
         let mut broadcasts = Vec::new();
@@ -375,6 +382,17 @@ mod tests {
 
                 first.shutdown().await.unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
+
+                let mut recycled = tokio::net::TcpStream::connect(address).await.unwrap();
+                recycled
+                    .write_all(&encode_message(&hello).unwrap())
+                    .await
+                    .unwrap();
+                let Message::ServerHello(recycled_hello) = read_message(&mut recycled).await else {
+                    panic!()
+                };
+                assert_eq!(recycled_hello.player_slot, 1);
+
                 second
                     .write_all(
                         &encode_message(&Message::CommandRequest(CommandRequest {
