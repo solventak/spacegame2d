@@ -6,7 +6,8 @@ use std::{
 };
 
 use spacegame2d_protocol::{
-    AuthoritativeCommand, CommandRequest, Message, SIMULATION_VERSION, Tick,
+    AuthoritativeCommand, Capability, CommandData, CommandRejected, CommandRejectionReason,
+    CommandRequest, Message, SIMULATION_VERSION, StateChecksum, Tick,
 };
 use spacegame2d_simulation::{
     MAX_PLAYERS, SimulationConfig,
@@ -26,18 +27,45 @@ struct Client {
     connected: bool,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
+    checksum_enabled: bool,
+    pending_checksums: VecDeque<(Tick, Vec<u8>)>,
 }
 
 impl Client {
-    fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
+    fn rejection_reason(
+        simulation: &Simulation,
+        slot: u32,
+        request: &CommandRequest,
+    ) -> Option<CommandRejectionReason> {
         let command = AuthoritativeCommand {
             execute_tick: Tick::default(),
             player_slot: slot,
             sequence: request.sequence,
             command: request.command.clone(),
         };
-        simulation.world().validate_authoritative(&command).is_ok()
-            && Box::<dyn Command>::try_from(&request.command).is_ok()
+        if simulation.world().validate_authoritative(&command).is_err() {
+            return Some(CommandRejectionReason::UnauthorizedFleet);
+        }
+        let CommandData::SetDestination { destination } = &request.command else {
+            return None;
+        };
+        let x = f32::from_bits(destination[0]);
+        let y = f32::from_bits(destination[1]);
+        if !x.is_finite() || !y.is_finite() {
+            return Some(CommandRejectionReason::NonFiniteDestination);
+        }
+        if x.hypot(y) > simulation.world_radius() {
+            return Some(CommandRejectionReason::DestinationOutsideArena);
+        }
+        if Box::<dyn Command>::try_from(&command).is_err() {
+            return Some(CommandRejectionReason::InvalidCommand);
+        }
+        None
+    }
+
+    #[cfg(test)]
+    fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
+        Self::rejection_reason(simulation, slot, request).is_none()
     }
 
     fn read_messages(&mut self) -> io::Result<Vec<Message>> {
@@ -105,6 +133,7 @@ pub async fn run_with_config(
     let mut clients = Vec::new();
     let mut simulation = Simulation::new(config);
     let mut scheduled = BTreeMap::<Tick, Vec<AuthoritativeCommand>>::new();
+    let mut state_hashes = BTreeMap::<Tick, [u8; 32]>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
     loop {
         tokio::select! {
@@ -144,6 +173,8 @@ pub async fn run_with_config(
                 address,
                 slot,
                 connected: false,
+                checksum_enabled: false,
+                pending_checksums: VecDeque::new(),
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
             });
@@ -165,6 +196,8 @@ pub async fn run_with_config(
                                 remove.push(index);
                                 continue;
                             }
+                            client.checksum_enabled =
+                                hello.capabilities.contains(&Capability::StateChecksums);
                             client.queue(&Message::ServerHello(
                                 spacegame2d_protocol::ServerHello {
                                     simulation_version: SIMULATION_VERSION,
@@ -172,10 +205,29 @@ pub async fn run_with_config(
                                     player_slot: client.slot,
                                     server_tick: simulation.tick(),
                                     fleet_size: config.fleet_size(),
-                                    capabilities: Vec::new(),
+                                    capabilities: client
+                                        .checksum_enabled
+                                        .then_some(vec![Capability::StateChecksums])
+                                        .unwrap_or_default(),
                                 },
                             ))?;
                             client.connected = true;
+                        } else if let Message::StateChecksum(StateChecksum { tick, hash }) = message
+                        {
+                            if client.checksum_enabled {
+                                if let Some(server_hash) = state_hashes.get(&tick) {
+                                    if let Some(divergence) =
+                                        checksum_divergence(tick, server_hash, &hash)
+                                    {
+                                        tracing::warn!(event = "state_divergence", address = %client.address, slot = client.slot, tick = ?divergence.tick, server_hash = %hex_hash(&divergence.server_hash), client_hash = %hex_hash(&divergence.client_hash), "client simulation diverged from server");
+                                    }
+                                } else {
+                                    client.pending_checksums.push_back((tick, hash));
+                                    while client.pending_checksums.len() > 16 {
+                                        client.pending_checksums.pop_front();
+                                    }
+                                }
+                            }
                         } else if let Message::CommandRequest(request) = message {
                             if reset_cutover {
                                 tracing::info!(event = "command_rejected", tick = ?simulation.tick(), slot = client.slot, "command ignored after reset cutover");
@@ -184,8 +236,14 @@ pub async fn run_with_config(
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
                             tracing::info!(event = "command_received", cmd = %cmd, tick = ?receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
-                            if !Client::valid_request(&simulation, client.slot, &request) {
-                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, "invalid command");
+                            if let Some(reason) =
+                                Client::rejection_reason(&simulation, client.slot, &request)
+                            {
+                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, reason = ?reason, "invalid command");
+                                client.queue(&Message::CommandRejected(CommandRejected {
+                                    sequence: request.sequence,
+                                    reason,
+                                }))?;
                                 continue;
                             }
                             let is_reset = matches!(
@@ -258,6 +316,63 @@ pub async fn run_with_config(
                 position,
             } = event;
             tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
+        }
+        let completed_tick = simulation.tick();
+        if completed_tick.0 % u64::from(SIMULATION_HZ) == 0 {
+            state_hashes.insert(completed_tick, simulation.state_hash());
+            let oldest = completed_tick - Tick::from(u64::from(SIMULATION_HZ) * 10);
+            state_hashes.retain(|tick, _| *tick >= oldest);
+            compare_pending_checksums(&mut clients, &state_hashes, completed_tick);
+        }
+    }
+}
+
+fn hex_hash(hash: &[u8]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ChecksumDivergence {
+    tick: Tick,
+    server_hash: [u8; 32],
+    client_hash: Vec<u8>,
+}
+
+fn checksum_divergence(
+    tick: Tick,
+    server_hash: &[u8; 32],
+    client_hash: &[u8],
+) -> Option<ChecksumDivergence> {
+    (server_hash.as_slice() != client_hash).then(|| ChecksumDivergence {
+        tick,
+        server_hash: *server_hash,
+        client_hash: client_hash.to_vec(),
+    })
+}
+
+fn compare_pending_checksums(
+    clients: &mut [Client],
+    state_hashes: &BTreeMap<Tick, [u8; 32]>,
+    completed_tick: Tick,
+) {
+    for client in clients.iter_mut() {
+        let pending = std::mem::take(&mut client.pending_checksums);
+        for (tick, hash) in pending {
+            if let Some(server_hash) = state_hashes.get(&tick) {
+                if let Some(divergence) = checksum_divergence(tick, server_hash, &hash) {
+                    tracing::warn!(
+                        event = "state_divergence",
+                        address = %client.address,
+                        slot = client.slot,
+                        tick = ?divergence.tick,
+                        server_hash = %hex_hash(&divergence.server_hash),
+                        client_hash = %hex_hash(&divergence.client_hash),
+                        "client simulation diverged from server"
+                    );
+                }
+            } else if tick > completed_tick {
+                client.pending_checksums.push_back((tick, hash));
+            }
         }
     }
 }
@@ -369,12 +484,23 @@ mod tests {
         );
         assert!(
             !(ClientHello {
-                simulation_version: SIMULATION_VERSION + 1,
+                simulation_version: SIMULATION_VERSION - 1,
                 capabilities: vec![]
             }
             .is_compatible())
         );
     }
+    #[test]
+    fn deliberate_checksum_difference_is_detected() {
+        let expected = [0u8; 32];
+        let mut different = expected;
+        different[0] = 1;
+        let divergence = checksum_divergence(Tick::from(60), &expected, &different).unwrap();
+        assert_eq!(divergence.tick, Tick::from(60));
+        assert_eq!(divergence.server_hash, expected);
+        assert_eq!(divergence.client_hash, different);
+    }
+
     #[test]
     fn scheduling_tick_math() {
         assert_eq!(
@@ -388,7 +514,6 @@ mod tests {
         let request = CommandRequest {
             sequence: 1,
             command: spacegame2d_protocol::CommandData::SetDestination {
-                unit_id: 1,
                 destination: [f32::NAN.to_bits(), 0],
             },
         };
@@ -458,7 +583,6 @@ mod tests {
                 let owned_request = Message::CommandRequest(CommandRequest {
                     sequence: 6,
                     command: spacegame2d_protocol::CommandData::SetDestination {
-                        unit_id: 1,
                         destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
                     },
                 });
@@ -477,7 +601,6 @@ mod tests {
                 assert_eq!(
                     owned_command.command,
                     spacegame2d_protocol::CommandData::SetDestination {
-                        unit_id: 1,
                         destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
                     }
                 );
@@ -494,7 +617,6 @@ mod tests {
                 let p2_request = Message::CommandRequest(CommandRequest {
                     sequence: 10,
                     command: spacegame2d_protocol::CommandData::SetDestination {
-                        unit_id: 31,
                         destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
                     },
                 });
@@ -513,7 +635,6 @@ mod tests {
                 assert_eq!(
                     p2_command.command,
                     spacegame2d_protocol::CommandData::SetDestination {
-                        unit_id: 31,
                         destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
                     }
                 );
@@ -540,14 +661,25 @@ mod tests {
                 let rejected_request = Message::CommandRequest(CommandRequest {
                     sequence: 9,
                     command: spacegame2d_protocol::CommandData::SetDestination {
-                        unit_id: 31,
-                        destination: [3.0f32.to_bits(), 4.0f32.to_bits()],
+                        destination: [30.0f32.to_bits(), 0.0f32.to_bits()],
                     },
                 });
                 first
                     .write_all(&rejected_request.encode().unwrap())
                     .await
                     .unwrap();
+                let Message::CommandRejected(rejection) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(rejection.sequence, 9);
+                assert_eq!(
+                    rejection.reason,
+                    CommandRejectionReason::DestinationOutsideArena
+                );
                 assert!(
                     tokio::time::timeout(Duration::from_millis(100), read_message(&mut second))
                         .await

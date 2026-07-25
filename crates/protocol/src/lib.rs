@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 2;
+pub const SIMULATION_VERSION: u32 = 3;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub enum Capability {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandData {
-    SetDestination { unit_id: u32, destination: [u32; 2] },
+    SetDestination { destination: [u32; 2] },
     ResetSimulation,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,12 +101,32 @@ pub struct AuthoritativeCommand {
     pub sequence: u32,
     pub command: CommandData,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandRejectionReason {
+    InvalidPlayer,
+    UnauthorizedFleet,
+    NonFiniteDestination,
+    DestinationOutsideArena,
+    InvalidCommand,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandRejected {
+    pub sequence: u32,
+    pub reason: CommandRejectionReason,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateChecksum {
+    pub tick: Tick,
+    pub hash: Vec<u8>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     ClientHello(ClientHello),
     ServerHello(ServerHello),
     CommandRequest(CommandRequest),
     AuthoritativeCommand(AuthoritativeCommand),
+    CommandRejected(CommandRejected),
+    StateChecksum(StateChecksum),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -138,7 +158,6 @@ impl TryFrom<wire::command::Payload> for CommandData {
                     .destination
                     .ok_or_else(|| invalid("missing destination"))?;
                 Ok(Self::SetDestination {
-                    unit_id: v.unit_id,
                     destination: [d.x, d.y],
                 })
             }
@@ -149,16 +168,14 @@ impl TryFrom<wire::command::Payload> for CommandData {
 impl From<&CommandData> for wire::Command {
     fn from(value: &CommandData) -> Self {
         let payload = match value {
-            CommandData::SetDestination {
-                unit_id,
-                destination,
-            } => wire::command::Payload::SetDestination(wire::SetDestinationCommand {
-                unit_id: *unit_id,
-                destination: Some(wire::Vector2Bits {
-                    x: destination[0],
-                    y: destination[1],
-                }),
-            }),
+            CommandData::SetDestination { destination } => {
+                wire::command::Payload::SetDestination(wire::SetDestinationCommand {
+                    destination: Some(wire::Vector2Bits {
+                        x: destination[0],
+                        y: destination[1],
+                    }),
+                })
+            }
             CommandData::ResetSimulation => {
                 wire::command::Payload::ResetSimulation(wire::ResetSimulationCommand {})
             }
@@ -209,6 +226,24 @@ impl From<&Message> for wire::Envelope {
                     command: Some((&v.command).into()),
                 })
             }
+            Message::CommandRejected(v) => {
+                wire::envelope::Payload::CommandRejected(wire::CommandRejected {
+                    sequence: v.sequence,
+                    reason: match v.reason {
+                        CommandRejectionReason::InvalidPlayer => 1,
+                        CommandRejectionReason::UnauthorizedFleet => 2,
+                        CommandRejectionReason::NonFiniteDestination => 3,
+                        CommandRejectionReason::DestinationOutsideArena => 4,
+                        CommandRejectionReason::InvalidCommand => 5,
+                    },
+                })
+            }
+            Message::StateChecksum(v) => {
+                wire::envelope::Payload::StateChecksum(wire::StateChecksum {
+                    tick: v.tick.0,
+                    hash: v.hash.clone(),
+                })
+            }
         };
         Self {
             payload: Some(payload),
@@ -255,6 +290,29 @@ impl TryFrom<wire::Envelope> for Message {
                             .and_then(|c| c.payload)
                             .ok_or_else(|| invalid("missing command payload"))?,
                     )?,
+                }))
+            }
+            wire::envelope::Payload::CommandRejected(v) => {
+                let reason = match v.reason {
+                    1 => CommandRejectionReason::InvalidPlayer,
+                    2 => CommandRejectionReason::UnauthorizedFleet,
+                    3 => CommandRejectionReason::NonFiniteDestination,
+                    4 => CommandRejectionReason::DestinationOutsideArena,
+                    5 => CommandRejectionReason::InvalidCommand,
+                    _ => return Err(invalid("invalid command rejection reason")),
+                };
+                Ok(Message::CommandRejected(CommandRejected {
+                    sequence: v.sequence,
+                    reason,
+                }))
+            }
+            wire::envelope::Payload::StateChecksum(v) => {
+                if v.hash.len() != 32 {
+                    return Err(invalid("invalid state checksum length"));
+                }
+                Ok(Message::StateChecksum(StateChecksum {
+                    tick: Tick::from(v.tick),
+                    hash: v.hash,
                 }))
             }
         }
@@ -334,7 +392,6 @@ mod tests {
     use super::*;
     fn destination() -> CommandData {
         CommandData::SetDestination {
-            unit_id: 7,
             destination: [0x8000_0000, 0x0000_0001],
         }
     }
@@ -362,6 +419,14 @@ mod tests {
                 player_slot: 2,
                 sequence: 4,
                 command: CommandData::ResetSimulation,
+            }),
+            Message::CommandRejected(CommandRejected {
+                sequence: 8,
+                reason: CommandRejectionReason::DestinationOutsideArena,
+            }),
+            Message::StateChecksum(StateChecksum {
+                tick: Tick::from(60),
+                hash: (0..32).collect(),
             }),
         ];
         for message in messages {
@@ -407,6 +472,26 @@ mod tests {
         );
     }
     #[test]
+    fn state_checksum_requires_32_bytes() {
+        let envelope = wire::Envelope {
+            payload: Some(wire::envelope::Payload::StateChecksum(
+                wire::StateChecksum {
+                    tick: 60,
+                    hash: vec![0; 31],
+                },
+            )),
+        };
+        let mut body = Vec::new();
+        envelope.encode(&mut body).unwrap();
+        let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
+        bytes.extend(body);
+        assert_eq!(
+            Message::read(&mut bytes.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
     fn missing_command_payload_reaches_empty_command_branch() {
         // Frame: 4-byte length, Envelope field 3 (CommandRequest), sequence 1,
         // then Command field 2 with an empty oneof. This reaches the missing payload check.
@@ -421,7 +506,6 @@ mod tests {
         let message = Message::CommandRequest(CommandRequest {
             sequence: 2,
             command: CommandData::SetDestination {
-                unit_id: 1,
                 destination: [f32::NAN.to_bits(), f32::INFINITY.to_bits()],
             },
         });

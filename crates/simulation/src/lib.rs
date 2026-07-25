@@ -25,6 +25,7 @@ pub mod config;
 pub mod fleet;
 pub mod flight_control;
 pub mod simulation;
+pub mod snapshot;
 
 pub use command::{
     Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, UnitIdAllocationError,

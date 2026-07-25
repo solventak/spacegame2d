@@ -7,6 +7,8 @@ message Envelope {
     ServerHello server_hello = 2;
     CommandRequest command_request = 3;
     AuthoritativeCommand authoritative_command = 4;
+    CommandRejected command_rejected = 5;
+    StateChecksum state_checksum = 6;
   }
 }
 
@@ -39,13 +41,29 @@ message Command {
   }
 }
 message SetDestinationCommand {
-  uint32 unit_id = 1;
+  reserved 1;
   Vector2Bits destination = 2;
 }
 message ResetSimulationCommand {}
 message Vector2Bits {
   fixed32 x = 1;
   fixed32 y = 2;
+}
+message StateChecksum {
+  uint64 tick = 1;
+  bytes hash = 2;
+}
+message CommandRejected {
+  uint32 sequence = 1;
+  CommandRejectionReason reason = 2;
+}
+enum CommandRejectionReason {
+  COMMAND_REJECTION_REASON_UNSPECIFIED = 0;
+  COMMAND_REJECTION_REASON_INVALID_PLAYER = 1;
+  COMMAND_REJECTION_REASON_UNAUTHORIZED_FLEET = 2;
+  COMMAND_REJECTION_REASON_NON_FINITE_DESTINATION = 3;
+  COMMAND_REJECTION_REASON_DESTINATION_OUTSIDE_ARENA = 4;
+  COMMAND_REJECTION_REASON_INVALID_COMMAND = 5;
 }
 enum Capability {
   CAPABILITY_UNSPECIFIED = 0;
