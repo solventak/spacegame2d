@@ -16,15 +16,21 @@ use crate::simulation::{
 pub mod arrival;
 pub use arrival::ArrivalController;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NeighborRelationship {
+    Friendly,
+    Opposing,
+}
+
 /// Snapshot of one neighbor's kinematic state, observed at the start of a tick
 /// so every drone sees a consistent world.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct NeighborObservation {
     /// Neighbor position in arena-space meters.
     pub position: Vec2,
     /// Neighbor velocity in meters per second.
     pub velocity: Vec2,
+    pub relationship: NeighborRelationship,
 }
 
 /// Read-only view of the ship and world state a [`FlightController`] uses to
@@ -42,7 +48,6 @@ pub struct FlightObservation<'a> {
     /// Target destination in arena-space meters.
     pub destination: Vec2,
     /// Neighbors visible to this ship this tick.
-    #[allow(dead_code)]
     pub neighbors: &'a [NeighborObservation],
 }
 

@@ -2,13 +2,13 @@
 
 > **For Hermes:** Implement this plan directly in the current worktree, task-by-task, using strict RED → GREEN TDD. Do not use subagents; the user prefers direct, narrow repository edits.
 
-**Goal:** Reduce close approaches and destination pile-ups among the 10 drones by adding a local, short-horizon predicted-neighbor avoidance acceleration to the existing velocity-arrival controller.
+**Goal:** Reduce close approaches and destination pile-ups among the two 30-body fleets by adding a local, short-horizon predicted-neighbor avoidance acceleration to the existing velocity-arrival controller.
 
-**Architecture:** Each drone receives a temporary borrowed slice of neighbor position/velocity snapshots. The existing arrival controller computes its normal goal-seeking acceleration, computes a soft avoidance acceleration from predicted closest approaches under constant-velocity neighbor motion, then blends the two before producing ordinary `ShipInput`. `main.rs` builds all observations and all controls from one immutable tick snapshot, then advances every drone through the authoritative `step_ship` transition.
+**Architecture:** Each body receives a temporary borrowed slice of neighbor position/velocity snapshots. The existing arrival controller computes its normal goal-seeking acceleration, computes a soft avoidance acceleration from predicted closest approaches under constant-velocity neighbor motion, then blends the two before producing ordinary `ShipInput`. `main.rs` builds all observations and all controls from one immutable tick snapshot, then advances every body through the authoritative `step_ship` transition.
 
 **Tech Stack:** Rust, `glam::Vec2`, existing deterministic 60 Hz simulation, existing `ArrivalController`, existing wgpu renderer.
 
-**Memory model:** Per tick, copy the 10 `ShipState` values and build at most 90 lightweight neighbor observations; no persistent world model, trajectory history, heap-owned data inside controllers, or spatial index.
+**Memory model:** Per tick, copy the 60 `ShipState` values and build at most 3,540 lightweight neighbor observations; no persistent world model, trajectory history, heap-owned data inside controllers, or spatial index.
 
 ---
 
@@ -16,8 +16,8 @@
 
 | Decision | First-pass choice |
 |---|---|
-| Planning scope | Each drone sees only the other nine drones; no theater, hierarchy, group object, enemies, obstacles, or player ship in the neighbor model. |
-| Goal | All drones retain the same exact right-click destination. No slots or formation targets. |
+| Planning scope | Each body sees the other 59 bodies; no theater, hierarchy, group object, enemies, obstacles, or player ship in the neighbor model. |
+| Goal | Each player sends the same right-click destination to every body in its owned 30-body fleet. No slots or formation targets. |
 | Neighbor lifetime | Borrowed, temporary observations rebuilt from an immutable state snapshot each fixed tick. Controllers do not own neighbors. |
 | Prediction model | Constant velocity over a short configurable horizon; analytically evaluate time of closest approach and relative closing motion. |
 | Avoidance shape | Soft comfort-radius penalty; zero outside the radius and smoothly increasing toward the center. No teleportation or direct physics force. |
@@ -26,7 +26,7 @@
 | Simulation authority | All output remains `ShipInput`; only `step_ship` mutates drone physics. |
 | Update ordering | Compute every drone's control from the same pre-step snapshot, then step all drones. Never observe partially updated peers. |
 | Determinism | No runtime randomness. Initial placement remains deterministic and identical inputs produce identical results. |
-| Complexity | O(N²) neighbor collection for N=10. No spatial hash until scale measurements justify it. |
+| Complexity | O(N²) neighbor collection for N=60. No spatial hash until scale measurements justify it. |
 | Success criterion | Fewer/shallower close approaches and a visibly looser destination cluster without preventing destination progress. |
 
 ## Explicit Non-Goals
@@ -617,18 +617,24 @@ The plan is therefore intentionally a **dynamics-compatible reciprocal steering 
 
 ---
 
+## Opposing-Fleet Guidance
+
+Neighbor observations carry a deterministic relationship: ships with the same non-neutral owner are friendly; different owners and neutral ships are opposing. Friendly avoidance retains the existing tuning. Opposing avoidance uses the same prediction horizon but a larger soft radius (`4.0m` by default), then applies a stronger base strength plus a normalized individual-speed-squared multiplier. Both ships calculate their own guidance, so moving and stationary opposing formations use the same system. Guidance remains capped and is converted into ordinary `ShipInput`; it never directly changes position or velocity.
+
+Initial opposing tuning values are `opposing_comfort_radius_meters = 4.0`, `opposing_avoidance_strength = 24.0`, and `opposing_speed_squared_scale = 1.5`.
+
 ## Acceptance Criteria
 
 ### Functional
 
-- A right-click still sends all 10 drones toward one shared destination.
-- Each drone receives exactly the other nine drones as temporary observations.
+- A right-click sends the target to every body in the local player's 30-body fleet.
+- Each body receives the other 59 bodies, including the opposing fleet, as temporary observations.
 - Neighbor state is sampled before any drone advances for that tick.
 - Constant-velocity closest-approach prediction is bounded by a short horizon.
 - Avoidance is zero outside the comfort radius and increases smoothly inside it.
 - Avoidance influences ordinary `ShipInput`; it never mutates physics directly.
-- Drones at the destination can still react to close late arrivals rather than permanently ignoring neighbors.
-- Player ship controls/autopilot remain unchanged and do not participate in drone avoidance.
+- Bodies at the destination can still react to close late arrivals rather than permanently ignoring neighbors.
+- Player ship controls/autopilot remain unchanged and do not participate in fleet-body avoidance.
 
 ### Determinism
 
@@ -640,8 +646,8 @@ The plan is therefore intentionally a **dynamics-compatible reciprocal steering 
 ### Behavioral
 
 - In a controlled deterministic scenario, avoidance improves minimum pairwise separation over a strength-zero baseline.
-- Drones still make material progress toward the shared destination.
-- In the real scene, enabled avoidance visibly reduces pile-ups and deep overlaps.
+- Bodies still make material progress toward the shared destination.
+- In the real two-team scene, enabled avoidance visibly reduces pile-ups and deep overlaps.
 - The result remains a loose emergent cluster, not a rigid ring or formation.
 
 ### Quality Gates

@@ -1,7 +1,7 @@
 use glam::Vec2;
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
-use crate::flight_control::{ArrivalController, NeighborObservation};
+use crate::flight_control::{ArrivalController, NeighborObservation, NeighborRelationship};
 use crate::simulation::{ShipState, is_out_of_bounds, step_ship};
 
 /// Number of drones spawned by [`Fleet::new`] and [`Fleet::reset`].
@@ -89,6 +89,7 @@ impl Fleet {
             .map(|u| NeighborObservation {
                 position: u.state.position,
                 velocity: u.state.velocity,
+                relationship: NeighborRelationship::Friendly,
             })
             .collect();
         for (index, unit) in self.units.iter_mut().enumerate() {

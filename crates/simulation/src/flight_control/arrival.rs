@@ -7,9 +7,41 @@
 //! stopped speed.
 
 use crate::flight_control::{
-    FlightController, FlightObservation, forward, max_angular_speed, thrust_acceleration,
+    FlightController, FlightObservation, NeighborRelationship, forward, max_angular_speed,
+    thrust_acceleration,
 };
 use crate::simulation::FlightInput;
+use glam::Vec2;
+
+const APPROACH_EPSILON: f32 = 1.0e-6;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClosestApproach {
+    pub time_seconds: f32,
+    pub predicted_offset: Vec2,
+    pub distance_meters: f32,
+}
+
+pub(crate) fn closest_approach(
+    relative_position: Vec2,
+    relative_velocity: Vec2,
+    horizon_seconds: f32,
+) -> ClosestApproach {
+    let horizon_seconds = horizon_seconds.max(0.0);
+    let relative_speed_squared = relative_velocity.length_squared();
+    let time_seconds = if relative_speed_squared > APPROACH_EPSILON {
+        (-relative_position.dot(relative_velocity) / relative_speed_squared)
+            .clamp(0.0, horizon_seconds)
+    } else {
+        0.0
+    };
+    let predicted_offset = relative_position + relative_velocity * time_seconds;
+    ClosestApproach {
+        time_seconds,
+        predicted_offset,
+        distance_meters: predicted_offset.length(),
+    }
+}
 
 /// Tuning gains and thresholds for the [`ArrivalController`].
 #[derive(Clone, Copy, Debug)]
@@ -34,26 +66,37 @@ pub struct ArrivalControllerConfig {
     pub angular_deadband: f32,
     /// Distance from the destination at which the controller settles.
     pub arrival_radius_meters: f32,
-    /// Reserved neighbor-collision radius in meters (currently unused).
-    #[allow(dead_code)]
-    pub collision_radius_meters: f32,
-    /// Reserved neighbor-collision repulsion strength (currently unused).
-    #[allow(dead_code)]
-    pub collision_strength: f32,
+    /// Prediction horizon for neighbor closest-approach guidance.
+    pub prediction_horizon_seconds: f32,
+    /// Distance inside which predicted approaches produce guidance.
+    pub comfort_radius_meters: f32,
+    /// Distance inside which opposing predicted approaches produce guidance.
+    pub opposing_comfort_radius_meters: f32,
+    /// Strength of each neighbor guidance contribution.
+    pub avoidance_strength: f32,
+    /// Maximum total neighbor guidance magnitude.
+    pub max_avoidance_acceleration: f32,
+    pub opposing_avoidance_strength: f32,
+    pub opposing_speed_squared_scale: f32,
 }
 impl Default for ArrivalControllerConfig {
     fn default() -> Self {
         Self {
-            max_arrival_speed: 6.0,
+            max_arrival_speed: 12.0,
             position_gain: 2.0,
             velocity_gain: 1.8,
             turn_gain: 2.0,
             angular_velocity_gain: 1.0,
             thrust_angle_radians: 20.0_f32.to_radians(),
             angular_deadband: 0.08,
-            arrival_radius_meters: 0.30,
-            collision_radius_meters: 0.9,
-            collision_strength: 5.0,
+            arrival_radius_meters: 0.6,
+            prediction_horizon_seconds: 0.75,
+            comfort_radius_meters: 2.,
+            opposing_comfort_radius_meters: 4.0,
+            avoidance_strength: 8.0,
+            max_avoidance_acceleration: 12.0,
+            opposing_avoidance_strength: 24.0,
+            opposing_speed_squared_scale: 1.5,
         }
     }
 }
@@ -72,7 +115,11 @@ impl FlightController for ArrivalController {
     fn desired_input(&self, o: FlightObservation) -> FlightInput {
         let offset = o.destination - o.position;
         let distance = offset.length();
-        if distance <= self.config.arrival_radius_meters && o.velocity.length() <= 0.08 {
+        let avoidance = self.avoidance_acceleration(o);
+        if distance <= self.config.arrival_radius_meters
+            && o.velocity.length() <= 0.08
+            && avoidance.length_squared() <= APPROACH_EPSILON
+        {
             return FlightInput::default();
         }
         let target_direction = offset.normalize_or_zero();
@@ -80,7 +127,7 @@ impl FlightController for ArrivalController {
             (distance * self.config.position_gain).min(self.config.max_arrival_speed);
         let desired_velocity = target_direction * desired_speed;
         let velocity_error = desired_velocity - o.velocity;
-        let desired_acceleration = velocity_error * self.config.velocity_gain;
+        let desired_acceleration = velocity_error * self.config.velocity_gain + avoidance;
         let desired_direction = if desired_acceleration.length_squared() > 0.0001 {
             desired_acceleration.normalize()
         } else {
@@ -112,11 +159,272 @@ impl FlightController for ArrivalController {
         }
     }
 }
+impl ArrivalController {
+    fn avoidance_acceleration(&self, observation: FlightObservation) -> Vec2 {
+        if observation.neighbors.is_empty()
+            || (self.config.comfort_radius_meters <= 0.0
+                && self.config.opposing_comfort_radius_meters <= 0.0)
+            || (self.config.avoidance_strength <= 0.0
+                && self.config.opposing_avoidance_strength <= 0.0)
+        {
+            return Vec2::ZERO;
+        }
+
+        let mut friendly_avoidance = Vec2::ZERO;
+        let mut opposing_avoidance = Vec2::ZERO;
+        let speed_fraction = (observation.velocity.length()
+            / crate::simulation::MAX_SPEED_METERS_PER_SECOND)
+            .clamp(0.0, 1.0);
+        let opposing_strength = self.config.opposing_avoidance_strength
+            * (1.0 + self.config.opposing_speed_squared_scale * speed_fraction * speed_fraction);
+
+        for neighbor in observation.neighbors {
+            let relative_position = neighbor.position - observation.position;
+            let relative_velocity = neighbor.velocity - observation.velocity;
+            let closest = closest_approach(
+                relative_position,
+                relative_velocity,
+                self.config.prediction_horizon_seconds,
+            );
+            let comfort_radius = match neighbor.relationship {
+                NeighborRelationship::Friendly => self.config.comfort_radius_meters,
+                NeighborRelationship::Opposing => self.config.opposing_comfort_radius_meters,
+            };
+            if comfort_radius <= 0.0 || closest.distance_meters >= comfort_radius {
+                continue;
+            }
+
+            let away = if closest.predicted_offset.length_squared() > APPROACH_EPSILON {
+                -closest.predicted_offset.normalize()
+            } else if relative_position.length_squared() > APPROACH_EPSILON {
+                -relative_position.normalize()
+            } else if relative_velocity.length_squared() > APPROACH_EPSILON {
+                Vec2::new(-relative_velocity.y, relative_velocity.x).normalize()
+            } else {
+                Vec2::ZERO
+            };
+            let penetration = 1.0 - closest.distance_meters / comfort_radius;
+            let contribution = away * penetration * penetration * 0.5;
+            match neighbor.relationship {
+                NeighborRelationship::Friendly => {
+                    friendly_avoidance += contribution * self.config.avoidance_strength;
+                }
+                NeighborRelationship::Opposing => {
+                    opposing_avoidance += contribution * opposing_strength;
+                }
+            }
+        }
+
+        (friendly_avoidance + opposing_avoidance)
+            .clamp_length_max(self.config.max_avoidance_acceleration.max(0.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flight_control::{NeighborObservation, NeighborRelationship};
     use crate::simulation::ShipState;
     use glam::Vec2;
+    #[test]
+    fn predicts_converging_closest_approach() {
+        let result = closest_approach(Vec2::X * 4.0, Vec2::X * -2.0, 5.0);
+        assert_eq!(result.time_seconds, 2.0);
+        assert_eq!(result.distance_meters, 0.0);
+    }
+
+    #[test]
+    fn clamps_closest_approach_to_horizon() {
+        let result = closest_approach(Vec2::X * 4.0, Vec2::X * -1.0, 0.5);
+        assert_eq!(result.time_seconds, 0.5);
+        assert_eq!(result.distance_meters, 3.5);
+    }
+
+    #[test]
+    fn diverging_and_stationary_neighbors_use_current_distance() {
+        let diverging = closest_approach(Vec2::X * 2.0, Vec2::X, 1.0);
+        assert_eq!(diverging.time_seconds, 0.0);
+        assert_eq!(diverging.distance_meters, 2.0);
+
+        let stationary = closest_approach(Vec2::new(3.0, 4.0), Vec2::ZERO, 1.0);
+        assert_eq!(stationary.time_seconds, 0.0);
+        assert_eq!(stationary.distance_meters, 5.0);
+    }
+
+    #[test]
+    fn empty_neighbors_produce_no_avoidance() {
+        let controller = ArrivalController::default();
+        let observation = FlightObservation::from_ship(&ShipState::default(), Vec2::Y, &[]);
+        assert_eq!(controller.avoidance_acceleration(observation), Vec2::ZERO);
+    }
+
+    #[test]
+    fn neighbors_outside_comfort_radius_produce_no_avoidance() {
+        let controller = ArrivalController::default();
+        let neighbor = NeighborObservation {
+            position: Vec2::X * 2.0,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let neighbors = [neighbor];
+        let observation = FlightObservation::from_ship(&ShipState::default(), Vec2::Y, &neighbors);
+        assert_eq!(controller.avoidance_acceleration(observation), Vec2::ZERO);
+    }
+
+    #[test]
+    fn opposing_neighbors_use_the_larger_soft_radius() {
+        let controller = ArrivalController {
+            config: ArrivalControllerConfig {
+                comfort_radius_meters: 1.2,
+                opposing_comfort_radius_meters: 2.0,
+                ..ArrivalControllerConfig::default()
+            },
+        };
+        let friendly = NeighborObservation {
+            position: Vec2::X * 1.5,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let opposing = NeighborObservation {
+            position: Vec2::X * 1.5,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Opposing,
+        };
+        let friendly_result = controller.avoidance_acceleration(FlightObservation::from_ship(
+            &ShipState::default(),
+            Vec2::Y,
+            &[friendly],
+        ));
+        let opposing_result = controller.avoidance_acceleration(FlightObservation::from_ship(
+            &ShipState::default(),
+            Vec2::Y,
+            &[opposing],
+        ));
+        assert_eq!(friendly_result, Vec2::ZERO);
+        assert!(opposing_result.length() > 0.0);
+    }
+
+    #[test]
+    fn closer_neighbors_produce_stronger_avoidance() {
+        let controller = ArrivalController::default();
+        let near = NeighborObservation {
+            position: Vec2::X * 0.3,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let marginal = NeighborObservation {
+            position: Vec2::X,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let near_neighbors = [near];
+        let marginal_neighbors = [marginal];
+        let near_observation =
+            FlightObservation::from_ship(&ShipState::default(), Vec2::Y, &near_neighbors);
+        let marginal_observation =
+            FlightObservation::from_ship(&ShipState::default(), Vec2::Y, &marginal_neighbors);
+        assert!(
+            controller.avoidance_acceleration(near_observation).length()
+                > controller
+                    .avoidance_acceleration(marginal_observation)
+                    .length()
+        );
+    }
+
+    #[test]
+    fn total_avoidance_is_bounded() {
+        let controller = ArrivalController::default();
+        let neighbors = vec![
+            NeighborObservation {
+                position: Vec2::X * 0.2,
+                velocity: Vec2::ZERO,
+                relationship: NeighborRelationship::Friendly,
+            };
+            64
+        ];
+        let observation = FlightObservation::from_ship(&ShipState::default(), Vec2::Y, &neighbors);
+        assert!(
+            controller.avoidance_acceleration(observation).length()
+                <= controller.config.max_avoidance_acceleration
+        );
+    }
+
+    #[test]
+    fn opposing_neighbor_has_stronger_base_response() {
+        let config = ArrivalControllerConfig {
+            max_avoidance_acceleration: 100.0,
+            ..ArrivalControllerConfig::default()
+        };
+        let controller = ArrivalController { config };
+        let friendly = NeighborObservation {
+            position: Vec2::X * 0.3,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let opposing = NeighborObservation {
+            position: Vec2::X * 0.3,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Opposing,
+        };
+        let friendly_neighbors = [friendly];
+        let opposing_neighbors = [opposing];
+        let friendly_result = controller.avoidance_acceleration(FlightObservation::from_ship(
+            &ShipState::default(),
+            Vec2::Y,
+            &friendly_neighbors,
+        ));
+        let opposing_result = controller.avoidance_acceleration(FlightObservation::from_ship(
+            &ShipState::default(),
+            Vec2::Y,
+            &opposing_neighbors,
+        ));
+        assert!(opposing_result.length() > friendly_result.length());
+    }
+
+    #[test]
+    fn opposing_speed_boost_is_quadratic_and_normalized() {
+        let config = ArrivalControllerConfig {
+            max_avoidance_acceleration: 100.0,
+            ..ArrivalControllerConfig::default()
+        };
+        let controller = ArrivalController { config };
+        let neighbor = NeighborObservation {
+            position: Vec2::X * 0.3,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Opposing,
+        };
+        let response = |speed: f32| {
+            let ship = ShipState {
+                velocity: Vec2::Y * speed,
+                ..Default::default()
+            };
+            let neighbors = [neighbor];
+            controller
+                .avoidance_acceleration(FlightObservation::from_ship(&ship, Vec2::Y, &neighbors))
+                .length()
+        };
+        let base = response(0.0);
+        let half = response(crate::simulation::MAX_SPEED_METERS_PER_SECOND * 0.5);
+        let max = response(crate::simulation::MAX_SPEED_METERS_PER_SECOND);
+        assert!(((half - base) / (max - base) - 0.25).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn nearby_neighbor_changes_requested_steering() {
+        let controller = ArrivalController::default();
+        let neighbor = NeighborObservation {
+            position: Vec2::X * 0.5,
+            velocity: Vec2::ZERO,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let input = controller.desired_input(FlightObservation::from_ship(
+            &ShipState::default(),
+            Vec2::Y * 10.0,
+            &[neighbor],
+        ));
+        assert!(input.turn_left || input.turn_right);
+    }
+
     #[test]
     fn accelerates_toward_a_far_destination() {
         let c = ArrivalController::default();

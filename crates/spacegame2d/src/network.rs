@@ -355,7 +355,7 @@ mod tests {
         for command in commands {
             scheduled
                 .entry(command.execute_tick)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(command);
         }
         simulation.apply_due_commands(&mut scheduled);
