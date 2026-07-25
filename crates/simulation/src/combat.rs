@@ -7,7 +7,9 @@ pub const WEAPON_RANGE_METERS: f32 = 12.0;
 pub const TURRET_TRACKING_RADIANS_PER_SECOND: f32 = std::f32::consts::PI;
 pub const FIRING_TOLERANCE_RADIANS: f32 = 0.10;
 pub const FIRE_INTERVAL_TICKS: u32 = 15;
-pub const WEAPON_DAMAGE: u32 = 25;
+/// Each hit removes roughly one third of the previous hull damage, giving
+/// ships enough time to maneuver and retarget during an engagement.
+pub const WEAPON_DAMAGE: u32 = 3;
 pub const TARGET_HIT_RADIUS_METERS: f32 = 0.35;
 pub const MUZZLE_OFFSET_METERS: f32 = 0.5;
 

@@ -761,7 +761,7 @@ mod tests {
                 let rejected_request = Message::CommandRequest(CommandRequest {
                     sequence: 9,
                     command: spacegame2d_protocol::CommandData::SetDestination {
-                        destination: [30.0f32.to_bits(), 0.0f32.to_bits()],
+                        destination: [40.0f32.to_bits(), 0.0f32.to_bits()],
                     },
                 });
                 first

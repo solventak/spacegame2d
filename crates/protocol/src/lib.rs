@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 7;
+pub const SIMULATION_VERSION: u32 = 8;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

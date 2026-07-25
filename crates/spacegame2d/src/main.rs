@@ -6,6 +6,8 @@
 //!
 //! See the [`spacegame2d_simulation`] crate for the simulation model itself.
 
+mod combat_presentation;
+mod combat_rendering;
 mod geometry;
 pub mod network;
 mod presentation;
@@ -21,7 +23,7 @@ use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
     command::PlayerId,
     command::Unit,
-    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
+    simulation::{SIMULATION_HZ, ShipState, Simulation},
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -32,18 +34,22 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::combat_presentation::CombatPresentation;
+use crate::combat_rendering::{CombatFrame, CombatRenderer};
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
 use crate::network::ServerEvent;
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 #[cfg(test)]
 use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
-const VIEW_HEIGHT_METERS: f32 = 40.0;
+const VIEW_HEIGHT_METERS: f32 = 72.0;
 const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
 const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
 const PENDING_MARKER_COLOR: [f32; 4] = [1.0, 0.85, 0.0, 1.0];
 const CONFIRMED_MARKER_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
+/// All current pipelines share this value so a future MSAA color target can change it centrally.
+const RENDER_SAMPLE_COUNT: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -111,6 +117,7 @@ struct Renderer {
     marker_bind_group: wgpu::BindGroup,
     scene_buffers: Vec<wgpu::Buffer>,
     scene_bind_groups: Vec<wgpu::BindGroup>,
+    combat_renderer: CombatRenderer,
 }
 
 impl Renderer {
@@ -218,7 +225,10 @@ impl Renderer {
                 conservative: false,
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: RENDER_SAMPLE_COUNT,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -301,6 +311,7 @@ impl Renderer {
                 })
             })
             .collect::<Vec<_>>();
+        let combat_renderer = CombatRenderer::new(&device, format, RENDER_SAMPLE_COUNT);
         Ok(Self {
             window,
             surface,
@@ -317,6 +328,7 @@ impl Renderer {
             marker_bind_group,
             scene_buffers: scene_uniforms,
             scene_bind_groups,
+            combat_renderer,
         })
     }
     fn resize(&mut self, width: u32, height: u32) {
@@ -330,9 +342,22 @@ impl Renderer {
     fn render(
         &mut self,
         units: &[Unit],
-        _ship: Option<&ShipState>,
         marker: Option<DestinationMarker>,
+        combat_presentation: &CombatPresentation,
+        now: Instant,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
+        self.combat_renderer.prepare(
+            &self.device,
+            &self.queue,
+            CombatFrame {
+                width: self.config.width,
+                height: self.config.height,
+                view_height: VIEW_HEIGHT_METERS,
+                units,
+                presentation: combat_presentation,
+                now,
+            },
+        );
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -380,6 +405,8 @@ impl Renderer {
                 pass.set_bind_group(0, &self.scene_bind_groups[index], &[]);
                 pass.draw(0..24, 0..1);
             }
+            self.combat_renderer.draw_turrets(&mut pass);
+            pass.set_pipeline(&self.pipeline);
             self.queue.write_buffer(
                 &self.ring_scene_buffer,
                 0,
@@ -394,11 +421,13 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.ring_vertex_buffer.slice(..));
             pass.set_bind_group(0, &self.ring_bind_group, &[]);
             pass.draw(0..self.ring_vertex_count, 0..1);
+            self.combat_renderer.draw_effects(&mut pass);
             if let Some(marker) = marker {
                 let color = match marker.status {
                     MarkerStatus::Pending => PENDING_MARKER_COLOR,
                     MarkerStatus::Confirmed => CONFIRMED_MARKER_COLOR,
                 };
+                pass.set_pipeline(&self.pipeline);
                 self.queue.write_buffer(
                     &self.marker_scene_buffer,
                     0,
@@ -430,29 +459,7 @@ struct App {
     network: Option<network::NetworkSession>,
     scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
-    presentation_events: PresentationEventLog,
-}
-
-/// Client-only event state used by presentation code.
-///
-/// Simulation events remain transient consequences of stepping the
-/// authoritative world. Keeping this log here means presentation effects can
-/// outlive a frame without adding event state to `World`, replay history, or
-/// the network protocol.
-#[derive(Debug, Default, PartialEq)]
-struct PresentationEventLog {
-    events: Vec<SimulationEvent>,
-}
-
-impl PresentationEventLog {
-    pub(crate) fn append(&mut self, events: impl IntoIterator<Item = SimulationEvent>) {
-        self.events.extend(events);
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn clear(&mut self) {
-        self.events.clear();
-    }
+    combat_presentation: CombatPresentation,
 }
 
 impl Default for App {
@@ -466,7 +473,7 @@ impl Default for App {
             network: None,
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
-            presentation_events: PresentationEventLog::default(),
+            combat_presentation: CombatPresentation::default(),
         }
     }
 }
@@ -588,10 +595,12 @@ impl ApplicationHandler for App {
             let applied = self.simulation.apply_due_commands(&mut self.scheduled);
             if applied.reset_applied {
                 self.presentation.clear();
-                self.presentation_events.clear();
+                self.combat_presentation.clear();
             }
             let events = self.simulation.step().unwrap_or_default();
-            self.presentation_events.append(events);
+            self.combat_presentation
+                .ingest(now, &events, &self.simulation.world.units);
+            self.combat_presentation.retain_active(now);
             if let Some(session) = self.network.as_mut()
                 && self.simulation.tick().0 % u64::from(SIMULATION_HZ) == 0
             {
@@ -666,8 +675,9 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     match renderer.render(
                         &self.simulation.world.units,
-                        None,
                         self.presentation.marker(),
+                        &self.combat_presentation,
+                        Instant::now(),
                     ) {
                         Ok(()) => {}
                         Err(
@@ -813,27 +823,5 @@ mod tests {
     fn ring_mesh_has_expected_vertex_count() {
         let vertices = ring_vertices();
         assert_eq!(vertices.len(), 128 * 6);
-    }
-
-    #[test]
-    fn presentation_event_log_aggregates_and_clears_locally() {
-        let mut log = PresentationEventLog::default();
-        let first = SimulationEvent::BoundaryCrossed {
-            tick: Tick::from(4),
-            unit_id: spacegame2d_simulation::UnitId(2),
-            position: Vec2::new(17.0, 0.0),
-        };
-        let second = SimulationEvent::BoundaryCrossed {
-            tick: Tick::from(5),
-            unit_id: spacegame2d_simulation::UnitId(3),
-            position: Vec2::new(-17.0, 0.0),
-        };
-
-        log.append([first]);
-        log.append([second]);
-
-        assert_eq!(log.events, vec![first, second]);
-        log.clear();
-        assert!(log.events.is_empty());
     }
 }
