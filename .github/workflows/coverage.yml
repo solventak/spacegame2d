@@ -30,7 +30,7 @@ jobs:
             libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        run: cargo install cargo-tarpaulin --locked --version 0.36.0
 
       - name: Run coverage gate (fail-under 85%)
         run: |
