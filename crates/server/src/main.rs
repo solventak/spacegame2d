@@ -131,7 +131,6 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 continue;
             }
             clients.push(Client {
-            clients.push(Client {
                 stream,
                 address,
                 slot,
