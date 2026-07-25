@@ -487,8 +487,8 @@ impl ApplicationHandler for App {
         }
         let now = Instant::now();
         while now >= self.next_tick {
-            network::apply_due_commands(&mut self.simulation, &mut self.scheduled);
-            let events = self.simulation.step();
+            self.simulation.apply_due_commands(&mut self.scheduled);
+            let events = self.simulation.step().unwrap_or_default();
             self.presentation_events.append(events);
             self.next_tick += TICK_DURATION;
         }

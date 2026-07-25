@@ -142,20 +142,44 @@ impl World {
     /// Validate an authoritative command against the current world state.
     ///
     /// Ownership rules apply to targeted units and connected players.
-    pub fn valid_authoritative(&self, cmd: &AuthoritativeCommand) -> bool {
-        let Ok(slot) = u8::try_from(cmd.player_slot) else {
-            return false;
-        };
-        let Some(player) = PlayerId::new(slot) else {
-            return false;
-        };
+    pub fn validate_authoritative(
+        &self,
+        cmd: &AuthoritativeCommand,
+    ) -> Result<(), AuthoritativeCommandError> {
+        let slot = u8::try_from(cmd.player_slot)
+            .map_err(|_| AuthoritativeCommandError::InvalidPlayerSlot)?;
+        let player = PlayerId::new(slot).ok_or(AuthoritativeCommandError::InvalidPlayerSlot)?;
         match &cmd.command {
-            CommandData::SetDestination { unit_id, .. } => self
-                .unit(UnitId(*unit_id))
-                .is_some_and(|u| u.owner == Some(player)),
-            CommandData::ResetSimulation => self.is_player_connected(player),
+            CommandData::SetDestination { unit_id, .. } => {
+                let unit = self
+                    .unit(UnitId(*unit_id))
+                    .ok_or(AuthoritativeCommandError::UnknownUnit)?;
+                if unit.owner != Some(player) {
+                    return Err(AuthoritativeCommandError::NotOwner);
+                }
+                Ok(())
+            }
+            CommandData::ResetSimulation => {
+                if self.is_player_connected(player) {
+                    Ok(())
+                } else {
+                    Err(AuthoritativeCommandError::PlayerNotConnected)
+                }
+            }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum AuthoritativeCommandError {
+    #[error("player slot is invalid")]
+    InvalidPlayerSlot,
+    #[error("unit does not exist")]
+    UnknownUnit,
+    #[error("player does not own unit")]
+    NotOwner,
+    #[error("player is not connected")]
+    PlayerNotConnected,
 }
 
 /// A command that has been accepted and recorded in the scheduler's history.
@@ -185,8 +209,14 @@ impl RecordedCommand {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum CommandExecutionError {
+    #[error(transparent)]
+    UnitIdAllocation(#[from] UnitIdAllocationError),
+}
+
 pub trait Command: Send {
-    fn execute(&self, world: &mut World);
+    fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError>;
     fn record(&self, execute_tick: Tick) -> RecordedCommand;
 }
 
@@ -196,10 +226,11 @@ pub struct SetDestination {
 }
 
 impl Command for SetDestination {
-    fn execute(&self, world: &mut World) {
+    fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
         if let Some(u) = world.unit_mut(self.unit_id) {
             u.autopilot.set_destination(self.destination);
         }
+        Ok(())
     }
 
     fn record(&self, execute_tick: Tick) -> RecordedCommand {
@@ -222,7 +253,7 @@ impl Command for SetDestination {
 pub struct ResetSimulation;
 
 impl Command for ResetSimulation {
-    fn execute(&self, world: &mut World) {
+    fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
         // Capture ownership by deterministic unit order so reset preserves
         // player assignments even though every recreated unit gets a new ID.
         let owners: Vec<Option<PlayerId>> = world.units.iter().map(|u| u.owner).collect();
@@ -230,16 +261,16 @@ impl Command for ResetSimulation {
 
         // Rebuild the demo swarm using the deterministic demo layout and fresh
         // IDs from the session allocator.
-        world.units = crate::fleet::initial_drone_positions()
+        let mut units = Vec::new();
+        for (i, state) in crate::fleet::initial_drone_positions()
             .into_iter()
             .enumerate()
-            .map(|(i, state)| {
-                let id = world
-                    .allocate_unit_id()
-                    .expect("unit ID allocation exhausted while resetting simulation");
-                Unit::new(id, owners.get(i).copied().flatten(), state)
-            })
-            .collect();
+        {
+            let id = world.allocate_unit_id()?;
+            units.push(Unit::new(id, owners.get(i).copied().flatten(), state));
+        }
+        world.units = units;
+        Ok(())
     }
 
     fn record(&self, execute_tick: Tick) -> RecordedCommand {
@@ -261,13 +292,18 @@ impl CommandScheduler {
 
     /// Execute all commands pending for `tick`, recording each one in
     /// `history` before executing.
-    pub fn execute_pending(&mut self, tick: Tick, world: &mut World) {
+    pub fn execute_pending(
+        &mut self,
+        tick: Tick,
+        world: &mut World,
+    ) -> Result<(), CommandExecutionError> {
         if let Some(commands) = self.pending.remove(&tick) {
             for command in commands {
+                command.execute(world)?;
                 self.history.push(command.record(tick));
-                command.execute(world);
             }
         }
+        Ok(())
     }
 
     pub fn history(&self) -> &[RecordedCommand] {
@@ -283,7 +319,7 @@ impl CommandScheduler {
         history: &[RecordedCommand],
         simulation: &mut Simulation,
         end_tick: Tick,
-    ) -> Vec<SimulationEvent> {
+    ) -> Result<Vec<SimulationEvent>, CommandExecutionError> {
         // Drop any stale scheduler state so replay starts from a clean slate.
         simulation.commands = CommandScheduler::default();
 
@@ -303,10 +339,10 @@ impl CommandScheduler {
                     simulation.commands.schedule(simulation.tick(), command);
                 }
             }
-            events.extend(simulation.step());
+            events.extend(simulation.step()?);
         }
 
-        events
+        Ok(events)
     }
 }
 
@@ -382,23 +418,27 @@ mod tests {
     #[test]
     fn rejects_reserved_slot_and_unowned_units() {
         let world = World::demo();
-        assert!(!world.valid_authoritative(&destination(0, 1, 0)));
-        assert!(!world.valid_authoritative(&destination(1, 1, 0)));
+        assert!(world.validate_authoritative(&destination(0, 1, 0)).is_err());
+        assert!(world.validate_authoritative(&destination(1, 1, 0)).is_err());
     }
 
     #[test]
     fn reset_requires_valid_player_slot() {
         let mut world = World::demo();
         world.connect_player(PlayerId(1));
-        assert!(!world.valid_authoritative(&reset(0, 0)));
-        assert!(world.valid_authoritative(&reset(1, 0)));
-        assert!(!world.valid_authoritative(&reset(2, 0)));
+        assert!(world.validate_authoritative(&reset(0, 0)).is_err());
+        assert!(world.validate_authoritative(&reset(1, 0)).is_ok());
+        assert!(world.validate_authoritative(&reset(2, 0)).is_err());
     }
 
     #[test]
     fn rejects_player_slots_that_do_not_fit_player_id() {
         let world = World::demo();
-        assert!(!world.valid_authoritative(&reset(u32::from(u8::MAX) + 1, 0)));
+        assert!(
+            world
+                .validate_authoritative(&reset(u32::from(u8::MAX) + 1, 0))
+                .is_err()
+        );
     }
 
     #[test]
@@ -406,10 +446,10 @@ mod tests {
         let mut world = World::demo();
         world.units[0].owner = Some(PlayerId(1));
         let cmd = destination(1, 1, 0);
-        assert!(world.valid_authoritative(&cmd));
+        assert!(world.validate_authoritative(&cmd).is_ok());
         let command: Box<dyn Command> = (&cmd.command).try_into().unwrap();
         let record = command.record(Tick::default());
-        command.execute(&mut world);
+        command.execute(&mut world).unwrap();
         assert_eq!(
             world.units[0].autopilot.destination(),
             Some(Vec2::new(1.0, 2.0))
@@ -417,12 +457,12 @@ mod tests {
 
         let mut replay = Simulation::default();
         let events = CommandScheduler::replay(&[record], &mut replay, Tick::default());
-        assert_eq!(replay.tick(), 1);
+        assert_eq!(replay.tick(), Tick::new(1));
         assert_eq!(
             replay.world.units[0].autopilot.destination(),
             Some(Vec2::new(1.0, 2.0))
         );
-        assert!(events.is_empty());
+        assert!(events.unwrap().is_empty());
     }
 
     #[test]
@@ -433,7 +473,7 @@ mod tests {
         world.units[2].state.position = Vec2::new(100.0, 0.0);
         let next_before = world.next_unit_id;
 
-        ResetSimulation.execute(&mut world);
+        ResetSimulation.execute(&mut world).unwrap();
 
         assert_eq!(world.units.len(), crate::fleet::DRONE_COUNT);
         assert_eq!(world.units[0].owner, Some(PlayerId(1)));
@@ -483,7 +523,7 @@ mod tests {
         };
 
         assert!(sim.schedule_authoritative_trusted(&command));
-        sim.step();
+        sim.step().unwrap();
 
         assert_eq!(
             sim.world.units[0].autopilot.destination(),
@@ -517,7 +557,7 @@ mod tests {
         let mut world = World::demo();
         let highest_before = world.units.iter().map(|unit| unit.id.0).max().unwrap();
         world.units.truncate(1);
-        ResetSimulation.execute(&mut world);
+        ResetSimulation.execute(&mut world).unwrap();
 
         assert!(world.units.iter().all(|unit| unit.id.0 > highest_before));
         let ids: BTreeSet<_> = world.units.iter().map(|unit| unit.id).collect();
@@ -545,7 +585,9 @@ mod tests {
                 destination: Vec2::new(3.0, 4.0),
             }),
         );
-        scheduler.execute_pending(Tick::default(), &mut world);
+        scheduler
+            .execute_pending(Tick::default(), &mut world)
+            .unwrap();
 
         assert_eq!(scheduler.history().len(), 2);
         assert!(scheduler.history().iter().all(|r| matches!(
@@ -554,7 +596,7 @@ mod tests {
                 unit_id: UnitId(1),
                 ..
             }
-        ) || r.execute_tick() == 0));
+        ) || r.execute_tick() == Tick::new(0)));
     }
 
     #[test]
@@ -566,7 +608,8 @@ mod tests {
             unit_id: UnitId(1),
             destination: Vec2::new(100.0, 100.0),
         }
-        .execute(&mut world);
+        .execute(&mut world)
+        .unwrap();
         assert_eq!(world.units[0].state.position, pos_before);
         assert_eq!(world.units[0].state.velocity, vel_before);
     }

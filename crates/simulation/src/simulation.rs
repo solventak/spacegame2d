@@ -2,6 +2,7 @@ use crate::command::{CommandScheduler, UnitId, World};
 use crate::flight_control::NeighborObservation;
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
+use std::collections::BTreeMap;
 
 /// Simulation tick rate in hertz. The integrator advances in fixed
 /// [`FIXED_DT_SECONDS`] steps regardless of wall-clock frame timing.
@@ -111,10 +112,31 @@ impl Simulation {
         &self.world
     }
     pub fn schedule_authoritative(&mut self, cmd: &AuthoritativeCommand) -> bool {
-        if !self.world.valid_authoritative(cmd) {
+        if self.world.validate_authoritative(cmd).is_err() {
             return false;
         }
         self.schedule_authoritative_trusted(cmd)
+    }
+
+    pub fn apply_due_commands(
+        &mut self,
+        scheduled: &mut BTreeMap<Tick, Vec<AuthoritativeCommand>>,
+    ) {
+        let current_tick = self.tick;
+        let due_ticks: Vec<Tick> = scheduled
+            .range(..=current_tick)
+            .map(|(tick, _)| *tick)
+            .collect();
+        for tick in due_ticks {
+            if let Some(commands) = scheduled.remove(&tick) {
+                for mut command in commands {
+                    if command.execute_tick < current_tick {
+                        command.execute_tick = current_tick;
+                    }
+                    self.schedule_authoritative_trusted(&command);
+                }
+            }
+        }
     }
 
     /// Schedule a command already validated by the authoritative server.
@@ -130,8 +152,8 @@ impl Simulation {
 
     /// Advance one deterministic tick by applying queued commands, stepping the
     /// authoritative World units, and deriving transient boundary events.
-    pub fn step(&mut self) -> Vec<SimulationEvent> {
-        self.commands.execute_pending(self.tick, &mut self.world);
+    pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
+        self.commands.execute_pending(self.tick, &mut self.world)?;
         let observations: Vec<NeighborObservation> = self
             .world
             .units
@@ -167,8 +189,8 @@ impl Simulation {
         events.sort_by_key(|event| match event {
             SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
         });
-        self.tick = self.tick.increment(1);
-        events
+        self.tick = self.tick.increment(Tick::new(1));
+        Ok(events)
     }
 }
 
@@ -238,13 +260,13 @@ mod tests {
     #[test]
     fn starts_without_player_ship() {
         let sim = Simulation::default();
-        assert_eq!(sim.tick(), 0);
+        assert_eq!(sim.tick(), Tick::new(0));
     }
     #[test]
     fn step_advances_tick_without_player_input() {
         let mut sim = Simulation::default();
-        assert!(sim.step().is_empty());
-        assert_eq!(sim.tick(), 1);
+        assert!(sim.step().unwrap().is_empty());
+        assert_eq!(sim.tick(), Tick::new(1));
     }
 
     #[test]
@@ -254,7 +276,7 @@ mod tests {
         sim.world.units[0].state.position = Vec2::new(1.1, 0.0);
         let unit_id = sim.world.units[0].id;
 
-        let events = sim.step();
+        let events = sim.step().unwrap();
 
         assert_eq!(
             events,
@@ -265,7 +287,7 @@ mod tests {
             }]
         );
         assert!(sim.world.units.is_empty());
-        assert_eq!(sim.tick(), 1);
+        assert_eq!(sim.tick(), Tick::new(1));
     }
 
     #[test]
@@ -284,7 +306,7 @@ mod tests {
             .collect::<Vec<_>>();
         expected.sort_unstable();
 
-        let events = sim.step();
+        let events = sim.step().unwrap();
         let actual = events
             .iter()
             .map(|event| match event {
@@ -360,7 +382,7 @@ mod tests {
         let owner_before = sim.world.units[0].owner;
         let cmd = authoritative_set_destination(0, 1, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
         assert!(sim.schedule_authoritative(&cmd));
-        sim.step();
+        sim.step().unwrap();
         assert_eq!(sim.world.units[0].id, id_before);
         assert_eq!(sim.world.units[0].owner, owner_before);
     }
@@ -373,7 +395,7 @@ mod tests {
         let pos_before = sim.world.units[0].state.position;
         let cmd = authoritative_set_destination(0, 2, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
         assert!(!sim.schedule_authoritative(&cmd));
-        let events = sim.step();
+        let events = sim.step().unwrap();
         assert_eq!(sim.world.units[0].state.position, pos_before);
         assert!(events.is_empty());
         assert!(sim.commands.history().is_empty());
@@ -412,7 +434,7 @@ mod tests {
         };
         assert!(!sim.schedule_authoritative(&nan_destination));
 
-        let events = sim.step();
+        let events = sim.step().unwrap();
         assert_eq!(unit_snapshot(&sim.world), snapshot_before);
         assert!(events.is_empty());
         assert!(sim.commands.history().is_empty());
@@ -432,8 +454,8 @@ mod tests {
         let cmd = authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]);
         assert!(sim.schedule_authoritative(&cmd));
         let tick_before = sim.tick();
-        sim.step();
-        assert_eq!(sim.tick(), tick_before + 1);
+        sim.step().unwrap();
+        assert_eq!(sim.tick(), tick_before + Tick::new(1));
         // The command applied before physics: the destination is set and the
         // unit has moved toward it in the same tick.
         assert_eq!(sim.world.units[0].autopilot.destination(), Some(Vec2::ZERO));
@@ -449,7 +471,7 @@ mod tests {
         let cmd =
             authoritative_set_destination(0, 1, 1, 1, [100.0f32.to_bits(), 100.0f32.to_bits()]);
         assert!(sim.schedule_authoritative(&cmd));
-        sim.step();
+        sim.step().unwrap();
         assert_eq!(sim.world.units[0].state.position, pos_before);
     }
 
@@ -464,9 +486,9 @@ mod tests {
             authoritative_set_destination(0, 2, 2, 1, [3.0f32.to_bits(), 4.0f32.to_bits()]);
         assert!(sim.schedule_authoritative(&accepted));
         assert!(!sim.schedule_authoritative(&rejected));
-        sim.step();
+        sim.step().unwrap();
         assert_eq!(sim.commands.history().len(), 1);
-        assert_eq!(sim.commands.history()[0].execute_tick(), 0);
+        assert_eq!(sim.commands.history()[0].execute_tick(), Tick::new(0));
     }
 
     #[test]
@@ -488,7 +510,7 @@ mod tests {
                     a.schedule_authoritative(cmd);
                 }
             }
-            let events = a.step();
+            let events = a.step().unwrap();
             a_snapshots.push(AuthoritativeSnapshot {
                 tick: a.tick(),
                 units: unit_snapshot(&a.world),
@@ -505,7 +527,7 @@ mod tests {
                     b.schedule_authoritative(cmd);
                 }
             }
-            let events = b.step();
+            let events = b.step().unwrap();
             b_snapshots.push(AuthoritativeSnapshot {
                 tick: b.tick(),
                 units: unit_snapshot(&b.world),
@@ -535,7 +557,7 @@ mod tests {
         let mut event_vectors: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
         for _ in 0..20 {
             for (events, peer) in event_vectors.iter_mut().zip(&mut peers) {
-                events.push(peer.step());
+                events.push(peer.step().unwrap());
             }
         }
 
@@ -578,9 +600,9 @@ mod tests {
         let mut peer_events: [Vec<Vec<SimulationEvent>>; 2] = [Vec::new(), Vec::new()];
         for _ in 0..30 {
             for (events, peer) in peer_events.iter_mut().zip(&mut peers) {
-                events.push(peer.step());
+                events.push(peer.step().unwrap());
             }
-            assert!(control.step().is_empty());
+            assert!(control.step().unwrap().is_empty());
         }
 
         assert!(peer_events[0].iter().any(|events| !events.is_empty()));
@@ -606,7 +628,7 @@ mod tests {
                     original.schedule_authoritative(cmd);
                 }
             }
-            original_events.extend(original.step());
+            original_events.extend(original.step().unwrap());
         }
         let history = original.commands.history().to_vec();
 
@@ -616,14 +638,14 @@ mod tests {
 
         assert_eq!(replay.tick(), original.tick());
         assert_eq!(unit_snapshot(&replay.world), unit_snapshot(&original.world));
-        assert_eq!(replay_events, original_events);
+        assert_eq!(replay_events.unwrap(), original_events);
     }
 
     #[test]
     fn set_tick_advances_clock() {
         let mut sim = Simulation::default();
         sim.set_tick(Tick::from(42));
-        assert_eq!(sim.tick(), 42);
+        assert_eq!(sim.tick(), Tick::new(42));
     }
 
     #[test]
@@ -658,11 +680,11 @@ mod tests {
             command: CommandData::ResetSimulation,
         };
         assert!(sim.schedule_authoritative(&reset));
-        sim.step();
-        sim.step();
-        sim.step();
+        sim.step().unwrap();
+        sim.step().unwrap();
+        sim.step().unwrap();
         assert_eq!(sim.commands.history().len(), 1);
-        assert_eq!(sim.commands.history()[0].execute_tick(), 2);
+        assert_eq!(sim.commands.history()[0].execute_tick(), Tick::new(2));
         assert!(matches!(
             sim.commands.history()[0],
             crate::command::RecordedCommand::ResetSimulation { .. }
@@ -671,7 +693,7 @@ mod tests {
         let history = sim.commands.history().to_vec();
         let mut replay = Simulation::default();
         replay.world.units[0].owner = Some(PlayerId(1));
-        CommandScheduler::replay(&history, &mut replay, sim.tick() - 1);
+        CommandScheduler::replay(&history, &mut replay, sim.tick() - Tick::new(1)).unwrap();
         assert_eq!(replay.tick(), sim.tick());
         assert_eq!(replay.world.units[0].owner, Some(PlayerId(1)));
     }

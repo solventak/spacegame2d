@@ -13,8 +13,8 @@ impl Tick {
         Self(value)
     }
 
-    pub fn increment(self, amount: u64) -> Self {
-        Self(self.0.saturating_add(amount))
+    pub fn increment(self, amount: Tick) -> Self {
+        Self(self.0.saturating_add(amount.0))
     }
 }
 
@@ -33,36 +33,17 @@ impl From<Tick> for u64 {
 impl std::ops::Add for Tick {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
-        self.increment(rhs.0)
-    }
-}
-
-impl std::ops::Add<u64> for Tick {
-    type Output = Self;
-    fn add(self, rhs: u64) -> Self::Output {
         self.increment(rhs)
     }
 }
 
-impl std::ops::Sub<u64> for Tick {
+impl std::ops::Sub for Tick {
     type Output = Self;
-    fn sub(self, rhs: u64) -> Self::Output {
-        Self(self.0.saturating_sub(rhs))
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self(self.0.saturating_sub(rhs.0))
     }
 }
 
-impl PartialEq<u64> for Tick {
-    fn eq(&self, other: &u64) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<Tick> for u64 {
-    fn eq(&self, other: &Tick) -> bool {
-        *self == other.0
-    }
-}
-pub type PlayerSlot = u32;
 pub const SIMULATION_VERSION: u32 = 1;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
@@ -89,6 +70,21 @@ pub struct ServerHello {
     pub server_tick: Tick,
     pub capabilities: Vec<Capability>,
 }
+impl ServerHello {
+    pub fn validate(&self, simulation_hz: u32) -> io::Result<()> {
+        if self.simulation_version != SIMULATION_VERSION {
+            return Err(invalid("simulation version mismatch"));
+        }
+        if self.simulation_hz != simulation_hz {
+            return Err(invalid("simulation frequency mismatch"));
+        }
+        if self.player_slot == 0 || u8::try_from(self.player_slot).is_err() {
+            return Err(invalid("server assigned invalid player slot"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandRequest {
     pub sequence: u32,
@@ -278,16 +274,20 @@ impl Message {
         writer.write_all(&self.encode()?)
     }
 }
-pub fn read_message<R: Read>(reader: &mut R) -> io::Result<Message> {
-    let mut header = [0; 4];
-    reader.read_exact(&mut header)?;
-    let length = u32::from_be_bytes(header);
-    if length == 0 || length > MAX_FRAME_BYTES {
-        return Err(invalid("invalid frame size"));
+impl Message {
+    pub fn read<R: Read>(reader: &mut R) -> io::Result<Message> {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header)?;
+        let length = u32::from_be_bytes(header);
+        if length == 0 || length > MAX_FRAME_BYTES {
+            return Err(invalid("invalid frame size"));
+        }
+        let mut body = vec![0; length as usize];
+        reader.read_exact(&mut body)?;
+        Message::try_from(
+            wire::Envelope::decode(body.as_slice()).map_err(|e| invalid(&e.to_string()))?,
+        )
     }
-    let mut body = vec![0; length as usize];
-    reader.read_exact(&mut body)?;
-    Message::try_from(wire::Envelope::decode(body.as_slice()).map_err(|e| invalid(&e.to_string()))?)
 }
 
 #[derive(Default)]
@@ -360,7 +360,7 @@ mod tests {
         for message in messages {
             let mut bytes = Vec::new();
             message.write(&mut bytes).unwrap();
-            assert_eq!(read_message(&mut bytes.as_slice()).unwrap(), message);
+            assert_eq!(Message::read(&mut bytes.as_slice()).unwrap(), message);
         }
     }
     #[test]
@@ -395,7 +395,7 @@ mod tests {
         let mut bytes = (frame.len() as u32).to_be_bytes().to_vec();
         bytes.extend(frame);
         assert_eq!(
-            read_message(&mut bytes.as_slice()).unwrap_err().kind(),
+            Message::read(&mut bytes.as_slice()).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
     }
@@ -405,7 +405,7 @@ mod tests {
         // then Command field 2 with an empty oneof. This reaches the missing payload check.
         let bytes = [0, 0, 0, 6, 0x1a, 0x04, 0x08, 0x01, 0x12, 0x00];
 
-        let error = read_message(&mut bytes.as_slice()).unwrap_err();
+        let error = Message::read(&mut bytes.as_slice()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "missing command payload");
     }
@@ -418,7 +418,7 @@ mod tests {
                 destination: [f32::NAN.to_bits(), f32::INFINITY.to_bits()],
             },
         });
-        let decoded = read_message(&mut message.encode().unwrap().as_slice()).unwrap();
+        let decoded = Message::read(&mut message.encode().unwrap().as_slice()).unwrap();
         assert_eq!(decoded, message);
         let envelope = wire::Envelope {
             payload: Some(wire::envelope::Payload::ClientHello(wire::ClientHello {
@@ -431,7 +431,7 @@ mod tests {
         let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
         bytes.extend(body);
         assert_eq!(
-            read_message(&mut bytes.as_slice()).unwrap(),
+            Message::read(&mut bytes.as_slice()).unwrap(),
             Message::ClientHello(ClientHello {
                 simulation_version: 1,
                 capabilities: vec![Capability::StateChecksums]

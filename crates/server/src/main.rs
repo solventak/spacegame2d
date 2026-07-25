@@ -27,22 +27,18 @@ struct Client {
     outgoing: VecDeque<Vec<u8>>,
 }
 
-fn execute_tick(receive_tick: Tick) -> Tick {
-    receive_tick.increment(COMMAND_INPUT_DELAY.0)
-}
-
-fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
-    let command = AuthoritativeCommand {
-        execute_tick: Tick::default(),
-        player_slot: slot,
-        sequence: request.sequence,
-        command: request.command.clone(),
-    };
-    simulation.world().valid_authoritative(&command)
-        && Box::<dyn Command>::try_from(&request.command).is_ok()
-}
-
 impl Client {
+    fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
+        let command = AuthoritativeCommand {
+            execute_tick: Tick::default(),
+            player_slot: slot,
+            sequence: request.sequence,
+            command: request.command.clone(),
+        };
+        simulation.world().validate_authoritative(&command).is_ok()
+            && Box::<dyn Command>::try_from(&request.command).is_ok()
+    }
+
     fn read_messages(&mut self) -> io::Result<Vec<Message>> {
         let mut bytes = [0u8; 4096];
         let mut messages = Vec::new();
@@ -168,12 +164,12 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
                             tracing::info!(event = "command_received", cmd = %cmd, tick = ?receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
-                            if !valid_request(&simulation, client.slot, &request) {
+                            if !Client::valid_request(&simulation, client.slot, &request) {
                                 tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, "invalid command");
                                 continue;
                             }
                             let authoritative = AuthoritativeCommand {
-                                execute_tick: execute_tick(receive_tick),
+                                execute_tick: receive_tick.increment(COMMAND_INPUT_DELAY),
                                 player_slot: client.slot,
                                 sequence: request.sequence,
                                 command: request.command,
@@ -218,7 +214,10 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 simulation.schedule_authoritative(&command);
             }
         }
-        for event in simulation.step() {
+        for event in simulation
+            .step()
+            .map_err(|error| io::Error::other(error.to_string()))?
+        {
             let spacegame2d_simulation::SimulationEvent::BoundaryCrossed {
                 tick,
                 unit_id,
@@ -301,7 +300,10 @@ mod tests {
     }
     #[test]
     fn scheduling_tick_math() {
-        assert_eq!(execute_tick(Tick::from(40)), Tick::from(42));
+        assert_eq!(
+            Tick::from(40).increment(COMMAND_INPUT_DELAY),
+            Tick::from(42)
+        );
     }
     #[test]
     fn ownership_and_nan_are_rejected() {
@@ -313,7 +315,7 @@ mod tests {
                 destination: [f32::NAN.to_bits(), 0],
             },
         };
-        assert!(!valid_request(&sim, 1, &request));
+        assert!(!Client::valid_request(&sim, 1, &request));
     }
 
     #[tokio::test(flavor = "current_thread")]

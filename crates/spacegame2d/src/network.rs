@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     io::{self, Read, Write},
     net::TcpStream,
 };
@@ -7,7 +7,6 @@ use std::{
 use spacegame2d_protocol::Tick;
 use spacegame2d_protocol::{
     AuthoritativeCommand, ClientHello, CommandData, CommandRequest, Message, SIMULATION_VERSION,
-    ServerHello,
 };
 use spacegame2d_simulation::simulation::SIMULATION_HZ;
 
@@ -29,11 +28,11 @@ impl NetworkSession {
             capabilities: Vec::new(),
         })
         .write(&mut stream)?;
-        let hello = match spacegame2d_protocol::read_message(&mut stream)? {
+        let hello = match Message::read(&mut stream)? {
             Message::ServerHello(value) => value,
             _ => return Err(invalid("expected ServerHello")),
         };
-        validate_server_hello(&hello)?;
+        hello.validate(SIMULATION_HZ)?;
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
@@ -43,10 +42,6 @@ impl NetworkSession {
             decoder: spacegame2d_protocol::FrameDecoder::new(),
             outgoing: VecDeque::new(),
         })
-    }
-
-    pub fn is_connected(&self) -> bool {
-        true
     }
 
     pub fn register_player(
@@ -162,47 +157,11 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn validate_server_hello(hello: &ServerHello) -> io::Result<()> {
-    if hello.simulation_version != SIMULATION_VERSION {
-        return Err(invalid("simulation version mismatch"));
-    }
-    if hello.simulation_hz != SIMULATION_HZ {
-        return Err(invalid("simulation frequency mismatch"));
-    }
-    if hello.player_slot == 0 {
-        return Err(invalid("server assigned reserved player slot"));
-    }
-    u8::try_from(hello.player_slot)
-        .ok()
-        .and_then(spacegame2d_simulation::command::PlayerId::new)
-        .ok_or_else(|| invalid("server assigned invalid player slot"))?;
-    Ok(())
-}
-
-pub fn apply_due_commands(
-    simulation: &mut spacegame2d_simulation::simulation::Simulation,
-    scheduled: &mut BTreeMap<Tick, Vec<AuthoritativeCommand>>,
-) {
-    let current_tick = simulation.tick();
-    let due_ticks = scheduled
-        .range(..=current_tick)
-        .map(|(tick, _)| *tick)
-        .collect::<Vec<_>>();
-    for tick in due_ticks {
-        if let Some(commands) = scheduled.remove(&tick) {
-            for mut command in commands {
-                if command.execute_tick < current_tick {
-                    command.execute_tick = current_tick;
-                }
-                simulation.schedule_authoritative_trusted(&command);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spacegame2d_protocol::ServerHello;
+    use std::collections::BTreeMap;
     use std::net::TcpListener;
     use std::thread;
 
@@ -211,7 +170,7 @@ mod tests {
         let address = listener.local_addr().unwrap().to_string();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let _ = spacegame2d_protocol::read_message(&mut stream).unwrap();
+            let _ = Message::read(&mut stream).unwrap();
             response.write(&mut stream).unwrap();
             if disconnect {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -227,7 +186,7 @@ mod tests {
         let address = listener.local_addr().unwrap().to_string();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let _ = spacegame2d_protocol::read_message(&mut stream).unwrap();
+            let _ = Message::read(&mut stream).unwrap();
             Message::ServerHello(server_hello())
                 .write(&mut stream)
                 .unwrap();
@@ -254,8 +213,7 @@ mod tests {
         let address = synthetic_server(Message::ServerHello(server_hello()), false);
         let session = NetworkSession::connect(&address).unwrap();
         assert_eq!(session.player_slot, 7);
-        assert_eq!(session.server_tick, 123);
-        assert!(session.is_connected());
+        assert_eq!(session.server_tick, Tick::new(123));
     }
 
     #[test]
@@ -303,7 +261,7 @@ mod tests {
         let session = NetworkSession::connect(&address).unwrap();
         let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
         simulation.set_tick(session.server_tick);
-        assert_eq!(simulation.tick(), 123);
+        assert_eq!(simulation.tick(), Tick::new(123));
     }
 
     #[test]
@@ -327,19 +285,19 @@ mod tests {
         let mut wrong = base.clone();
         wrong.simulation_version += 1;
         assert_eq!(
-            validate_server_hello(&wrong).unwrap_err().kind(),
+            wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
         wrong = base.clone();
         wrong.simulation_hz += 1;
         assert_eq!(
-            validate_server_hello(&wrong).unwrap_err().kind(),
+            wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
         wrong = base;
         wrong.player_slot = u32::from(u8::MAX) + 1;
         assert_eq!(
-            validate_server_hello(&wrong).unwrap_err().kind(),
+            wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
     }
@@ -358,12 +316,12 @@ mod tests {
             },
         };
         let mut scheduled = BTreeMap::from([(Tick::from(2), vec![command])]);
-        apply_due_commands(&mut simulation, &mut scheduled);
+        simulation.apply_due_commands(&mut scheduled);
         assert!(simulation.commands.history().is_empty());
-        simulation.step();
-        simulation.step();
-        apply_due_commands(&mut simulation, &mut scheduled);
-        simulation.step();
+        simulation.step().unwrap();
+        simulation.step().unwrap();
+        simulation.apply_due_commands(&mut scheduled);
+        simulation.step().unwrap();
         assert_eq!(simulation.commands.history().len(), 1);
     }
 
@@ -402,11 +360,11 @@ mod tests {
                 .or_insert_with(Vec::new)
                 .push(command);
         }
-        apply_due_commands(&mut simulation, &mut scheduled);
+        simulation.apply_due_commands(&mut scheduled);
         assert!(scheduled.is_empty());
         let mut events = Vec::new();
         for _ in 0..30 {
-            events.extend(simulation.step());
+            events.extend(simulation.step().unwrap());
         }
         assert!(events.iter().any(|event| matches!(
             event,
@@ -427,7 +385,7 @@ mod tests {
             command: CommandData::ResetSimulation,
         };
         assert!(simulation.schedule_authoritative(&reset));
-        simulation.step();
+        simulation.step().unwrap();
         assert!(matches!(
             simulation.commands.history().first(),
             Some(spacegame2d_simulation::command::RecordedCommand::ResetSimulation { .. })
