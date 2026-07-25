@@ -85,7 +85,7 @@ impl Unit {
                 Box::new(ArrivalController::default()),
                 AutopilotConfig::default(),
             ),
-            combat: CombatState::new(state.heading_radians),
+            combat: CombatState::new(),
         }
     }
     pub fn with_avoidance(
@@ -111,7 +111,7 @@ impl Unit {
             owner,
             state,
             autopilot: Autopilot::new(Box::new(controller), AutopilotConfig::default()),
-            combat: CombatState::new(state.heading_radians),
+            combat: CombatState::new(),
         }
     }
 }
@@ -596,17 +596,14 @@ mod tests {
         let target = world.units[1].id;
         let unit = &mut world.units[0];
         unit.combat.hull.current = 1;
-        unit.combat.turret.heading_radians = 1.5;
+        unit.combat.turret.local_heading_radians = 1.5;
         unit.combat.turret.target = Some(target);
         unit.combat.turret.cooldown_ticks_remaining = 7;
         ResetSimulation.execute(&mut world).unwrap();
         let reset = &world.units[0];
         assert_eq!(reset.combat.hull.current, MAX_HULL);
         assert_eq!(reset.combat.hull.maximum, MAX_HULL);
-        assert_eq!(
-            reset.combat.turret.heading_radians,
-            reset.state.heading_radians
-        );
+        assert_eq!(reset.combat.turret.local_heading_radians, 0.0);
         assert_eq!(reset.combat.turret.target, None);
         assert_eq!(reset.combat.turret.cooldown_ticks_remaining, 0);
     }

@@ -30,8 +30,8 @@ pub mod snapshot;
 
 pub use combat::{
     CombatState, FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, HullState, MAX_HULL,
-    TARGET_HIT_RADIUS_METERS, TURRET_TRACKING_RADIANS_PER_SECOND, TurretState, WEAPON_DAMAGE,
-    WEAPON_RANGE_METERS,
+    MUZZLE_OFFSET_METERS, TARGET_HIT_RADIUS_METERS, TURRET_TRACKING_RADIANS_PER_SECOND,
+    TurretState, WEAPON_DAMAGE, WEAPON_RANGE_METERS,
 };
 pub use command::{
     Command, CommandScheduler, PlayerId, RecordedCommand, Unit, UnitId, UnitIdAllocationError,
