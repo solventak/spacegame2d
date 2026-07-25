@@ -9,7 +9,7 @@ use spacegame2d_protocol::{
     AuthoritativeCommand, CommandRequest, Message, SIMULATION_VERSION, Tick,
 };
 use spacegame2d_simulation::{
-    command::{Command, PlayerId},
+    command::{Command, MAX_PLAYERS, PlayerId},
     simulation::SIMULATION_HZ,
     simulation::Simulation,
 };
@@ -112,11 +112,13 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 Err(_) => break,
             };
             let (stream, address) = accepted;
-            let Some(slot) = (1..=u32::from(u8::MAX)).find(|candidate| {
-                clients
-                    .iter()
-                    .all(|client: &Client| client.slot != *candidate)
-            }) else {
+            let Some(slot) = (1..=u32::try_from(MAX_PLAYERS).expect("player count fits u32")).find(
+                |candidate| {
+                    clients
+                        .iter()
+                        .all(|client: &Client| client.slot != *candidate)
+                },
+            ) else {
                 tracing::warn!(event = "client_rejected", address = %address, "player slots exhausted");
                 continue;
             };
@@ -124,7 +126,7 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                 .expect("slot is nonzero");
             stream.set_nodelay(true)?;
             simulation.world.connect_player(player_id);
-            simulation.world.assign_player_unit(player_id);
+            simulation.world.assign_player_fleet(player_id);
             clients.push(Client {
                 stream,
                 address,
@@ -270,6 +272,21 @@ mod tests {
         decoder.push(&body).unwrap().pop().unwrap()
     }
 
+    async fn try_read_message(stream: &mut tokio::net::TcpStream) -> io::Result<Message> {
+        let mut header = [0; 4];
+        stream.read_exact(&mut header).await?;
+        let size = u32::from_be_bytes(header) as usize;
+        let mut body = vec![0; size];
+        stream.read_exact(&mut body).await?;
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&header).map_err(io::Error::other)?;
+        decoder
+            .push(&body)
+            .map_err(io::Error::other)?
+            .pop()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "empty frame"))
+    }
+
     async fn start_server() -> (
         SocketAddr,
         watch::Sender<bool>,
@@ -341,7 +358,60 @@ mod tests {
                 };
                 assert_eq!(first_hello.player_slot, 1);
                 assert_eq!(second_hello.player_slot, 2);
+                first_hello.validate(SIMULATION_HZ).unwrap();
+                second_hello.validate(SIMULATION_HZ).unwrap();
                 assert!(second_hello.server_tick > first_hello.server_tick);
+
+                let owned_request = Message::CommandRequest(CommandRequest {
+                    sequence: 6,
+                    command: spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 1,
+                        destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                    },
+                });
+                first
+                    .write_all(&owned_request.encode().unwrap())
+                    .await
+                    .unwrap();
+                let Message::AuthoritativeCommand(owned_command) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut second))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(owned_command.player_slot, 1);
+                assert_eq!(
+                    owned_command.command,
+                    spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 1,
+                        destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                    }
+                );
+                let Message::AuthoritativeCommand(_) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
+                        .await
+                        .unwrap()
+                else {
+                    panic!()
+                };
+
+                let rejected_request = Message::CommandRequest(CommandRequest {
+                    sequence: 9,
+                    command: spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 31,
+                        destination: [3.0f32.to_bits(), 4.0f32.to_bits()],
+                    },
+                });
+                first
+                    .write_all(&rejected_request.encode().unwrap())
+                    .await
+                    .unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), read_message(&mut second))
+                        .await
+                        .is_err()
+                );
 
                 let request = Message::CommandRequest(CommandRequest {
                     sequence: 7,
@@ -367,6 +437,13 @@ mod tests {
                 assert!(
                     first_command.execute_tick >= second_hello.server_tick + COMMAND_INPUT_DELAY
                 );
+
+                let mut third = tokio::net::TcpStream::connect(address).await.unwrap();
+                third.write_all(&hello.encode().unwrap()).await.unwrap();
+                let third_result =
+                    tokio::time::timeout(Duration::from_millis(200), try_read_message(&mut third))
+                        .await;
+                assert!(matches!(third_result, Err(_) | Ok(Err(_))));
 
                 first.shutdown().await.unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
