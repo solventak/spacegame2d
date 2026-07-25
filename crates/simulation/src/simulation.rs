@@ -43,16 +43,6 @@ pub struct FlightInput {
     pub turn_right: bool,
 }
 
-/// Command issued to a [`Simulation`], distinct from per-tick [`FlightInput`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SimulationCommand {
-    #[allow(dead_code)]
-    /// Respawn the ship at the origin without rewinding the tick counter.
-    ResetShip,
-    /// Respawn the ship and rewind the tick counter to zero.
-    ResetSimulation,
-}
-
 /// Integrated kinematic state of a single ship.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShipState {
@@ -127,14 +117,14 @@ impl Simulation {
         let Some(command) = command_from_data(&cmd.command) else {
             return false;
         };
-        self.commands.schedule(command);
+        self.commands.schedule(cmd.execute_tick, command);
         true
     }
 
     /// Advance one deterministic tick. The client demo's drones are stepped by
     /// [`crate::fleet::Fleet`]; this simulation contains no player entity.
     pub fn step(&mut self) -> Vec<SimulationEvent> {
-        self.commands.execute_pending(&mut self.world);
+        self.commands.execute_pending(self.tick, &mut self.world);
         let observations: Vec<NeighborObservation> = self
             .world
             .units
@@ -233,6 +223,11 @@ fn wrap_angle(angle: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use spacegame2d_protocol::CommandData;
+
+    use crate::command::PlayerId;
+
     #[test]
     fn starts_without_player_ship() {
         let sim = Simulation::default();
@@ -304,5 +299,284 @@ mod tests {
         step_ship(&mut a, input);
         step_ship(&mut b, input);
         assert_eq!(a, b);
+    }
+
+    fn unit_snapshot(
+        world: &World,
+    ) -> Vec<(UnitId, Option<PlayerId>, ShipState, Option<Vec2>, bool)> {
+        world
+            .units
+            .iter()
+            .map(|u| {
+                (
+                    u.id,
+                    u.owner,
+                    u.state,
+                    u.autopilot.destination(),
+                    u.autopilot.is_active(),
+                )
+            })
+            .collect()
+    }
+
+    fn authoritative_set_destination(
+        execute_tick: u64,
+        player_slot: u32,
+        sequence: u32,
+        unit_id: u32,
+        destination: [u32; 2],
+    ) -> AuthoritativeCommand {
+        AuthoritativeCommand {
+            execute_tick,
+            player_slot,
+            sequence,
+            command: CommandData::SetDestination {
+                unit_id,
+                destination,
+            },
+        }
+    }
+
+    #[test]
+    fn unit_id_and_owner_are_stable_across_commands() {
+        // CMD-002: stable identity and ownership.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let id_before = sim.world.units[0].id;
+        let owner_before = sim.world.units[0].owner;
+        let cmd = authoritative_set_destination(0, 1, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&cmd));
+        sim.step();
+        assert_eq!(sim.world.units[0].id, id_before);
+        assert_eq!(sim.world.units[0].owner, owner_before);
+    }
+
+    #[test]
+    fn cross_player_command_is_rejected() {
+        // CMD-004: ownership validation.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let pos_before = sim.world.units[0].state.position;
+        let cmd = authoritative_set_destination(0, 2, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        assert!(!sim.schedule_authoritative(&cmd));
+        let events = sim.step();
+        assert_eq!(sim.world.units[0].state.position, pos_before);
+        assert!(events.is_empty());
+        assert!(sim.commands.history().is_empty());
+    }
+
+    #[test]
+    fn invalid_commands_leave_world_unchanged() {
+        // CMD-006: invalid commands cause no state mutation or panic.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let snapshot_before = unit_snapshot(&sim.world);
+
+        let bad_slot = AuthoritativeCommand {
+            execute_tick: 0,
+            player_slot: 0,
+            sequence: 1,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+            },
+        };
+        assert!(!sim.schedule_authoritative(&bad_slot));
+
+        let unknown_unit =
+            authoritative_set_destination(0, 1, 2, 999, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        assert!(!sim.schedule_authoritative(&unknown_unit));
+
+        let nan_destination = AuthoritativeCommand {
+            execute_tick: 0,
+            player_slot: 1,
+            sequence: 3,
+            command: CommandData::SetDestination {
+                unit_id: 1,
+                destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
+            },
+        };
+        assert!(!sim.schedule_authoritative(&nan_destination));
+
+        let events = sim.step();
+        assert_eq!(unit_snapshot(&sim.world), snapshot_before);
+        assert!(events.is_empty());
+        assert!(sim.commands.history().is_empty());
+    }
+
+    #[test]
+    fn commands_execute_before_physics_and_tick_advances_by_one() {
+        // CMD-007: fixed tick order. The command must be applied before physics
+        // so the same tick produces a steering result based on the new destination.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        // Position the unit far from the requested destination and face it so
+        // the autopilot produces thrust on the very first tick.
+        sim.world.units[0].state.position = Vec2::new(10.0, 0.0);
+        // Forward vector is (-sin(h), cos(h)); heading = PI/2 points along -X.
+        sim.world.units[0].state.heading_radians = std::f32::consts::FRAC_PI_2;
+        let cmd = authoritative_set_destination(0, 1, 1, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&cmd));
+        let tick_before = sim.tick();
+        sim.step();
+        assert_eq!(sim.tick(), tick_before + 1);
+        // The command applied before physics: the destination is set and the
+        // unit has moved toward it in the same tick.
+        assert_eq!(sim.world.units[0].autopilot.destination(), Some(Vec2::ZERO));
+        assert_ne!(sim.world.units[0].state.position, Vec2::new(10.0, 0.0));
+    }
+
+    #[test]
+    fn set_destination_does_not_teleport_units() {
+        // CMD-010: no teleport.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let pos_before = sim.world.units[0].state.position;
+        let cmd =
+            authoritative_set_destination(0, 1, 1, 1, [100.0f32.to_bits(), 100.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&cmd));
+        sim.step();
+        assert_eq!(sim.world.units[0].state.position, pos_before);
+    }
+
+    #[test]
+    fn history_records_only_accepted_commands() {
+        // CMD-014: accepted-only history.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let accepted =
+            authoritative_set_destination(0, 1, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
+        let rejected =
+            authoritative_set_destination(0, 2, 2, 1, [3.0f32.to_bits(), 4.0f32.to_bits()]);
+        assert!(sim.schedule_authoritative(&accepted));
+        assert!(!sim.schedule_authoritative(&rejected));
+        sim.step();
+        assert_eq!(sim.commands.history().len(), 1);
+        assert_eq!(sim.commands.history()[0].execute_tick(), 0);
+    }
+
+    #[test]
+    fn cross_peer_replay_is_deterministic_tick_by_tick() {
+        // CMD-009: cross-peer determinism.
+        let commands = vec![
+            authoritative_set_destination(1, 1, 1, 1, [6.0f32.to_bits(), 5.0f32.to_bits()]),
+            authoritative_set_destination(3, 1, 2, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]),
+        ];
+        let ticks = 10;
+
+        let mut a = Simulation::default();
+        a.world.units[0].owner = Some(PlayerId(1));
+        let mut a_events = Vec::new();
+        for _ in 0..ticks {
+            for cmd in &commands {
+                if cmd.execute_tick == a.tick() {
+                    a.schedule_authoritative(cmd);
+                }
+            }
+            a_events.extend(a.step());
+        }
+
+        let mut b = Simulation::default();
+        b.world.units[0].owner = Some(PlayerId(1));
+        let mut b_events = Vec::new();
+        for _ in 0..ticks {
+            for cmd in &commands {
+                if cmd.execute_tick == b.tick() {
+                    b.schedule_authoritative(cmd);
+                }
+            }
+            b_events.extend(b.step());
+        }
+
+        assert_eq!(a.tick(), b.tick());
+        assert_eq!(unit_snapshot(&a.world), unit_snapshot(&b.world));
+        assert_eq!(a_events, b_events);
+    }
+
+    #[test]
+    fn recorded_history_replays_to_identical_state_and_events() {
+        // CMD-008: replay determinism.
+        let commands = vec![
+            authoritative_set_destination(1, 1, 1, 1, [6.0f32.to_bits(), 5.0f32.to_bits()]),
+            authoritative_set_destination(3, 1, 2, 1, [0.0f32.to_bits(), 0.0f32.to_bits()]),
+        ];
+        let ticks = 10;
+
+        let mut original = Simulation::default();
+        original.world.units[0].owner = Some(PlayerId(1));
+        let mut original_events = Vec::new();
+        for _ in 0..ticks {
+            for cmd in &commands {
+                if cmd.execute_tick == original.tick() {
+                    original.schedule_authoritative(cmd);
+                }
+            }
+            original_events.extend(original.step());
+        }
+        let history = original.commands.history().to_vec();
+
+        let mut replay = Simulation::default();
+        replay.world.units[0].owner = Some(PlayerId(1));
+        let replay_events = CommandScheduler::replay(&history, &mut replay, ticks - 1);
+
+        assert_eq!(replay.tick(), original.tick());
+        assert_eq!(unit_snapshot(&replay.world), unit_snapshot(&original.world));
+        assert_eq!(replay_events, original_events);
+    }
+
+    #[test]
+    fn set_tick_advances_clock() {
+        let mut sim = Simulation::default();
+        sim.set_tick(42);
+        assert_eq!(sim.tick(), 42);
+    }
+
+    #[test]
+    fn world_accessors_and_custom_radius() {
+        let sim = Simulation::with_world_radius(2.0);
+        assert_eq!(sim.world_radius(), 2.0);
+        assert_eq!(sim.world().units.len(), crate::fleet::DRONE_COUNT);
+    }
+
+    #[test]
+    fn step_ship_damps_velocity_without_thrust() {
+        let mut ship = ShipState {
+            velocity: Vec2::new(4.0, 0.0),
+            ..Default::default()
+        };
+        let speed = ship.velocity.length();
+        step_ship(&mut ship, FlightInput::default());
+        assert!(ship.velocity.length() < speed);
+        assert!(ship.velocity.length() > 0.0);
+    }
+
+    #[test]
+    fn reset_simulation_records_in_history_and_replays() {
+        // Covers ResetSimulation::record and command_from_record for reset.
+        let mut sim = Simulation::default();
+        sim.world.units[0].owner = Some(PlayerId(1));
+        let reset = AuthoritativeCommand {
+            execute_tick: 2,
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::ResetSimulation,
+        };
+        assert!(sim.schedule_authoritative(&reset));
+        sim.step();
+        sim.step();
+        sim.step();
+        assert_eq!(sim.commands.history().len(), 1);
+        assert_eq!(sim.commands.history()[0].execute_tick(), 2);
+        assert!(matches!(
+            sim.commands.history()[0],
+            crate::command::RecordedCommand::ResetSimulation { .. }
+        ));
+
+        let history = sim.commands.history().to_vec();
+        let mut replay = Simulation::default();
+        replay.world.units[0].owner = Some(PlayerId(1));
+        CommandScheduler::replay(&history, &mut replay, sim.tick() - 1);
+        assert_eq!(replay.tick(), sim.tick());
+        assert_eq!(replay.world.units[0].owner, Some(PlayerId(1)));
     }
 }
