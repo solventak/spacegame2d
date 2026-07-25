@@ -4,7 +4,7 @@ use glam::Vec2;
 
 /// Default radius around the destination within which the autopilot considers
 /// itself "arrived".
-pub const DEFAULT_ARRIVAL_RADIUS_METERS: f32 = 0.30;
+pub const DEFAULT_ARRIVAL_RADIUS_METERS: f32 = 0.6;
 /// Default speed threshold below which a ship inside the arrival radius is
 /// considered stopped.
 pub const DEFAULT_STOPPED_SPEED_METERS_PER_SECOND: f32 = 0.08;

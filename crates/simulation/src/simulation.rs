@@ -406,7 +406,7 @@ mod tests {
         let cmd = authoritative_set_destination(0, 2, 1, 1, [1.0f32.to_bits(), 2.0f32.to_bits()]);
         assert!(!sim.schedule_authoritative(&cmd));
         let events = sim.step().unwrap();
-        assert!(sim.world.units[0].state.position.distance(pos_before) < 1.0);
+        assert_eq!(sim.world.units[0].state.position, pos_before);
         assert!(events.is_empty());
         assert!(sim.commands.history().is_empty());
     }
@@ -482,7 +482,13 @@ mod tests {
             authoritative_set_destination(0, 1, 1, 1, [100.0f32.to_bits(), 100.0f32.to_bits()]);
         assert!(sim.schedule_authoritative(&cmd));
         sim.step().unwrap();
-        assert!(sim.world.units[0].state.position.distance(pos_before) < 1.0);
+        assert!(
+            sim.world.units[0]
+                .state
+                .position
+                .distance(pos_before)
+                <= MAX_SPEED_METERS_PER_SECOND * FIXED_DT_SECONDS + 1.0e-6
+        );
     }
 
     #[test]

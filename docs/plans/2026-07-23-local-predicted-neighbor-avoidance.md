@@ -619,7 +619,7 @@ The plan is therefore intentionally a **dynamics-compatible reciprocal steering 
 
 ## Opposing-Fleet Guidance
 
-Neighbor observations carry a deterministic relationship: ships with the same non-neutral owner are friendly; different owners and neutral ships are opposing. Friendly avoidance retains the existing tuning. Opposing avoidance uses the same prediction horizon but a larger soft radius (`2.0m` by default), then applies a stronger base strength plus a normalized individual-speed-squared multiplier. Both ships calculate their own guidance, so moving and stationary opposing formations use the same system. Guidance remains capped and is converted into ordinary `ShipInput`; it never directly changes position or velocity.
+Neighbor observations carry a deterministic relationship: ships with the same non-neutral owner are friendly; different owners and neutral ships are opposing. Friendly avoidance retains the existing tuning. Opposing avoidance uses the same prediction horizon but a larger soft radius (`4.0m` by default), then applies a stronger base strength plus a normalized individual-speed-squared multiplier. Both ships calculate their own guidance, so moving and stationary opposing formations use the same system. Guidance remains capped and is converted into ordinary `ShipInput`; it never directly changes position or velocity.
 
 Initial opposing tuning values are `opposing_comfort_radius_meters = 4.0`, `opposing_avoidance_strength = 24.0`, and `opposing_speed_squared_scale = 1.5`.
 
