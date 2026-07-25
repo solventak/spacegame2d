@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 4;
+pub const SIMULATION_VERSION: u32 = 5;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +84,9 @@ impl ServerHello {
         }
         if self.fleet_size == 0 {
             return Err(invalid("server assigned invalid fleet size"));
+        }
+        if !self.capabilities.contains(&Capability::StateChecksums) {
+            return Err(invalid("server does not support state checksums"));
         }
         Ok(())
     }
@@ -145,6 +148,7 @@ fn caps(values: &[i32]) -> Vec<Capability> {
 impl ClientHello {
     pub fn is_compatible(&self) -> bool {
         self.simulation_version == SIMULATION_VERSION
+            && self.capabilities.contains(&Capability::StateChecksums)
     }
 }
 
@@ -307,9 +311,6 @@ impl TryFrom<wire::Envelope> for Message {
                 }))
             }
             wire::envelope::Payload::StateChecksum(v) => {
-                if v.hash.len() != 32 {
-                    return Err(invalid("invalid state checksum length"));
-                }
                 Ok(Message::StateChecksum(StateChecksum {
                     tick: Tick::from(v.tick),
                     hash: v.hash,
@@ -472,7 +473,7 @@ mod tests {
         );
     }
     #[test]
-    fn state_checksum_requires_32_bytes() {
+    fn state_checksum_accepts_malformed_for_server_validation() {
         let envelope = wire::Envelope {
             payload: Some(wire::envelope::Payload::StateChecksum(
                 wire::StateChecksum {
@@ -485,9 +486,8 @@ mod tests {
         envelope.encode(&mut body).unwrap();
         let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
         bytes.extend(body);
-        assert_eq!(
-            Message::read(&mut bytes.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
+        assert!(
+            matches!(Message::read(&mut bytes.as_slice()).unwrap(), Message::StateChecksum(StateChecksum { hash, .. }) if hash.len() == 31)
         );
     }
 

@@ -224,7 +224,7 @@ mod tests {
             player_slot: 7,
             server_tick: Tick::from(123),
             fleet_size: 30,
-            capabilities: vec![],
+            capabilities: vec![Capability::StateChecksums],
         }
     }
 
@@ -301,7 +301,7 @@ mod tests {
             player_slot: 1,
             server_tick: Tick::from(42),
             fleet_size: 30,
-            capabilities: vec![],
+            capabilities: vec![Capability::StateChecksums],
         };
         let mut wrong = base.clone();
         wrong.simulation_version += 1;

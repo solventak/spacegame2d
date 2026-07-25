@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env, io,
     net::SocketAddr,
     time::Duration,
@@ -29,6 +29,7 @@ struct Client {
     outgoing: VecDeque<Vec<u8>>,
     checksum_enabled: bool,
     pending_checksums: VecDeque<(Tick, Vec<u8>)>,
+    seen_checksums: BTreeSet<Tick>,
 }
 
 impl Client {
@@ -175,6 +176,7 @@ pub async fn run_with_config(
                 connected: false,
                 checksum_enabled: false,
                 pending_checksums: VecDeque::new(),
+                seen_checksums: BTreeSet::new(),
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
             });
@@ -191,13 +193,14 @@ pub async fn run_with_config(
                                 remove.push(index);
                                 continue;
                             };
-                            if !hello.is_compatible() {
+                            if !hello.is_compatible()
+                                || !hello.capabilities.contains(&Capability::StateChecksums)
+                            {
                                 tracing::warn!(event = "handshake_rejected", address = %client.address, "wrong simulation version");
                                 remove.push(index);
                                 continue;
                             }
-                            client.checksum_enabled =
-                                hello.capabilities.contains(&Capability::StateChecksums);
+                            client.checksum_enabled = true;
                             client.queue(&Message::ServerHello(
                                 spacegame2d_protocol::ServerHello {
                                     simulation_version: SIMULATION_VERSION,
@@ -205,23 +208,50 @@ pub async fn run_with_config(
                                     player_slot: client.slot,
                                     server_tick: simulation.tick(),
                                     fleet_size: config.fleet_size(),
-                                    capabilities: client
-                                        .checksum_enabled
-                                        .then_some(vec![Capability::StateChecksums])
-                                        .unwrap_or_default(),
+                                    capabilities: vec![Capability::StateChecksums],
                                 },
                             ))?;
                             client.connected = true;
                         } else if let Message::StateChecksum(StateChecksum { tick, hash }) = message
                         {
                             if client.checksum_enabled {
-                                if let Some(server_hash) = state_hashes.get(&tick) {
-                                    if let Some(divergence) =
-                                        checksum_divergence(tick, server_hash, &hash)
-                                    {
-                                        tracing::warn!(event = "state_divergence", address = %client.address, slot = client.slot, tick = ?divergence.tick, server_hash = %hex_hash(&divergence.server_hash), client_hash = %hex_hash(&divergence.client_hash), "client simulation diverged from server");
-                                    }
-                                } else {
+                                if hash.len() != 32 {
+                                    log_checksum_result(
+                                        &client.address,
+                                        client.slot,
+                                        ChecksumResult::Malformed {
+                                            tick,
+                                            length: hash.len(),
+                                        },
+                                    );
+                                    continue;
+                                }
+                                if client.seen_checksums.contains(&tick) {
+                                    log_checksum_result(
+                                        &client.address,
+                                        client.slot,
+                                        ChecksumResult::Duplicate { tick },
+                                    );
+                                } else if let Some(server_hash) = state_hashes.get(&tick) {
+                                    client.seen_checksums.insert(tick);
+                                    let result = if server_hash.as_slice() == hash.as_slice() {
+                                        ChecksumResult::Match { tick }
+                                    } else {
+                                        ChecksumResult::Divergence {
+                                            tick,
+                                            server_hash: *server_hash,
+                                            client_hash: hash.clone(),
+                                        }
+                                    };
+                                    log_checksum_result(&client.address, client.slot, result);
+                                } else if tick.0 % u64::from(SIMULATION_HZ) != 0 {
+                                    client.seen_checksums.insert(tick);
+                                    log_checksum_result(
+                                        &client.address,
+                                        client.slot,
+                                        ChecksumResult::UnknownTick { tick },
+                                    );
+                                } else if tick > simulation.tick() {
                                     client.pending_checksums.push_back((tick, hash));
                                     while client.pending_checksums.len() > 16 {
                                         client.pending_checksums.pop_front();
@@ -332,6 +362,56 @@ fn hex_hash(hash: &[u8]) -> String {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum ChecksumResult {
+    Match {
+        tick: Tick,
+    },
+    Divergence {
+        tick: Tick,
+        server_hash: [u8; 32],
+        client_hash: Vec<u8>,
+    },
+    Duplicate {
+        tick: Tick,
+    },
+    Late {
+        tick: Tick,
+    },
+    UnknownTick {
+        tick: Tick,
+    },
+    Malformed {
+        tick: Tick,
+        length: usize,
+    },
+}
+
+fn log_checksum_result(address: &SocketAddr, slot: u32, result: ChecksumResult) {
+    match result {
+        ChecksumResult::Match { .. } => {}
+        ChecksumResult::Divergence {
+            tick,
+            server_hash,
+            client_hash,
+        } => {
+            tracing::warn!(event = "state_divergence", address = %address, slot, tick = ?tick, server_hash = %hex_hash(&server_hash), client_hash = %hex_hash(&client_hash), "client simulation diverged from server")
+        }
+        ChecksumResult::Duplicate { tick } => {
+            tracing::warn!(event = "state_checksum_report_warning", address = %address, slot, tick = ?tick, classification = "duplicate", "duplicate checksum report")
+        }
+        ChecksumResult::Late { tick } => {
+            tracing::warn!(event = "state_checksum_report_warning", address = %address, slot, tick = ?tick, classification = "late", "late checksum report")
+        }
+        ChecksumResult::UnknownTick { tick } => {
+            tracing::warn!(event = "state_checksum_report_warning", address = %address, slot, tick = ?tick, classification = "unknown_tick", "checksum report for unknown tick")
+        }
+        ChecksumResult::Malformed { tick, length } => {
+            tracing::warn!(event = "state_checksum_report_warning", address = %address, slot, tick = ?tick, length, classification = "malformed", "ignored malformed checksum report")
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct ChecksumDivergence {
     tick: Tick,
     server_hash: [u8; 32],
@@ -372,6 +452,8 @@ fn compare_pending_checksums(
                 }
             } else if tick > completed_tick {
                 client.pending_checksums.push_back((tick, hash));
+            } else {
+                log_checksum_result(&client.address, client.slot, ChecksumResult::Late { tick });
             }
         }
     }
@@ -478,14 +560,14 @@ mod tests {
         assert!(
             ClientHello {
                 simulation_version: SIMULATION_VERSION,
-                capabilities: vec![]
+                capabilities: vec![Capability::StateChecksums]
             }
             .is_compatible()
         );
         assert!(
             !(ClientHello {
                 simulation_version: SIMULATION_VERSION - 1,
-                capabilities: vec![]
+                capabilities: vec![Capability::StateChecksums]
             }
             .is_compatible())
         );
@@ -528,7 +610,7 @@ mod tests {
                 let mut first = tokio::net::TcpStream::connect(address).await.unwrap();
                 let hello = Message::ClientHello(ClientHello {
                     simulation_version: SIMULATION_VERSION,
-                    capabilities: vec![],
+                    capabilities: vec![Capability::StateChecksums],
                 });
                 first.write_all(&hello.encode().unwrap()).await.unwrap();
                 let Message::ServerHello(first_hello) = read_message(&mut first).await else {

@@ -62,13 +62,7 @@ impl Simulation {
 impl SimulationSnapshot {
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"SWA2STATE");
-        put_u16(&mut bytes, self.format_version);
-        put_u32(&mut bytes, self.simulation_version);
         put_u64(&mut bytes, self.tick.0);
-        put_u32(&mut bytes, self.world_radius_bits);
-        put_u32(&mut bytes, self.next_unit_id);
-        bytes.push(self.unit_id_exhausted as u8);
         put_u32(&mut bytes, self.units.len() as u32);
         for unit in &self.units {
             unit.encode(&mut bytes);
@@ -117,14 +111,17 @@ impl UnitSnapshot {
                 bytes.push(1);
                 bytes.push(owner);
             }
-            None => bytes.push(0),
+            None => {
+                bytes.push(0);
+                bytes.push(0);
+            }
         }
         for value in self.position_bits.iter().chain(self.velocity_bits.iter()) {
             put_u32(bytes, *value);
         }
         put_u32(bytes, self.heading_bits);
         put_u32(bytes, self.angular_velocity_bits);
-        put_bytes(bytes, self.controller_kind.as_bytes());
+        bytes.push(self.active as u8);
         match self.destination_bits {
             Some(destination) => {
                 bytes.push(1);
@@ -133,19 +130,9 @@ impl UnitSnapshot {
             }
             None => bytes.push(0),
         }
-        bytes.push(self.active as u8);
-        put_u32(bytes, self.arrival_radius_bits);
-        put_u32(bytes, self.stopped_speed_bits);
     }
 }
 
-fn put_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
-    put_u32(bytes, value.len() as u32);
-    bytes.extend_from_slice(value);
-}
-fn put_u16(bytes: &mut Vec<u8>, value: u16) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
 fn put_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
