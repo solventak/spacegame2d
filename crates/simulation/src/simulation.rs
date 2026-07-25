@@ -35,7 +35,7 @@ pub const MAX_ANGULAR_SPEED_RADIANS_PER_SECOND: f32 = 3.0;
 pub const ANGULAR_DAMPING_PER_SECOND: f32 = 2.5;
 /// Radius of the circular arena in meters. A ship whose position exceeds this
 /// radius is destroyed on the next tick.
-pub const WORLD_RADIUS_M: f32 = 16.0;
+pub const WORLD_RADIUS_M: f32 = 32.0;
 const VELOCITY_EPSILON: f32 = 0.0001;
 
 /// Per-tick discrete input applied to a ship by the player or an autopilot.
@@ -280,13 +280,15 @@ impl Simulation {
             let direction = forward_from_heading(world_heading);
             let muzzle_origin = shooter.state.position + direction * MUZZLE_OFFSET_METERS;
             let ray_endpoint = muzzle_origin + direction * WEAPON_RANGE_METERS;
-            let hit_unit_id = first_hostile_hit(
+            let hit = first_hostile_hit(
                 shooter.id,
                 shooter.owner,
                 muzzle_origin,
                 direction,
                 &observations,
             );
+            let hit_unit_id = hit.map(|(unit_id, _)| unit_id);
+            let impact_position = hit.map_or(ray_endpoint, |(_, position)| position);
             if let Some(hit_unit_id) = hit_unit_id {
                 *damage.entry(hit_unit_id).or_insert(0) += WEAPON_DAMAGE;
             }
@@ -296,6 +298,7 @@ impl Simulation {
                 shooter_id,
                 muzzle_origin,
                 ray_endpoint,
+                impact_position,
                 hit_unit_id,
             });
         }
@@ -422,7 +425,7 @@ fn first_hostile_hit(
     origin: Vec2,
     direction: Vec2,
     observations: &[CombatObservation],
-) -> Option<UnitId> {
+) -> Option<(UnitId, Vec2)> {
     observations
         .iter()
         .filter(|observation| observation.id != shooter_id && is_hostile(owner, observation.owner))
@@ -442,7 +445,7 @@ fn first_hostile_hit(
             Some((entry_distance, observation.id))
         })
         .min_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)))
-        .map(|(_, id)| id)
+        .map(|(entry_distance, id)| (id, origin + direction * entry_distance))
 }
 
 fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, UnitId) {
@@ -460,6 +463,7 @@ pub enum SimulationEvent {
         shooter_id: UnitId,
         muzzle_origin: Vec2,
         ray_endpoint: Vec2,
+        impact_position: Vec2,
         hit_unit_id: Option<UnitId>,
     },
     HullDepleted {
@@ -1137,7 +1141,10 @@ mod tests {
             simulation.world.units[0].combat.turret.target,
             Some(target_id)
         );
-        assert_eq!(simulation.world.units[1].combat.hull.current, 75);
+        assert_eq!(
+            simulation.world.units[1].combat.hull.current,
+            simulation.world.units[1].combat.hull.maximum - WEAPON_DAMAGE
+        );
         assert!(
             matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, hit_unit_id: Some(hit), .. }] if *id == shooter_id && *hit == target_id)
         );

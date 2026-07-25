@@ -161,8 +161,8 @@ pub fn initial_drone_positions_for_size(fleet_size: usize) -> Vec<ShipState> {
 
 pub fn initial_world_positions(config: SimulationConfig) -> Vec<ShipState> {
     let fleet_size = config.fleet_size() as usize;
-    let mut positions = initial_fleet_positions(0x5EED_1234, -4.0, fleet_size);
-    positions.extend(initial_fleet_positions(0xC0FF_EE42, 4.0, fleet_size));
+    let mut positions = initial_fleet_positions(0x5EED_1234, -12.0, fleet_size);
+    positions.extend(initial_fleet_positions(0xC0FF_EE42, 12.0, fleet_size));
     positions
 }
 
@@ -195,6 +195,23 @@ mod tests {
             first
                 .iter()
                 .all(|drone| { drone.position.x.abs() <= 8.0 && drone.position.y.abs() <= 5.0 })
+        );
+    }
+
+    #[test]
+    fn world_fleets_start_far_apart_and_inside_the_larger_arena() {
+        let positions = initial_world_positions(SimulationConfig::default());
+        let split = DEFAULT_FLEET_SIZE as usize;
+        assert!(
+            positions[..split]
+                .iter()
+                .all(|ship| ship.position.x < -10.0)
+        );
+        assert!(positions[split..].iter().all(|ship| ship.position.x > 10.0));
+        assert!(
+            positions
+                .iter()
+                .all(|ship| ship.position.length() < WORLD_RADIUS_M)
         );
     }
 
