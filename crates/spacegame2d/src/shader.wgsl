@@ -35,7 +35,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let marker_world = input.position + scene.marker.xy;
     let world = select(select(ship_world, marker_world, is_marker), input.position, is_ring);
     output.clip_position = vec4<f32>(world * scene.viewport.xy, 0.0, 1.0);
-    let color = select(select(input.color, scene.ship_color, is_ship_fill), scene.ship_color, is_marker);
+    let color = select(input.color, scene.ship_color, is_ship_fill);
     output.color = vec4<f32>(
         color.rgb,
         select(select(1.0, scene.marker.z, is_marker), 1.0, is_ring),

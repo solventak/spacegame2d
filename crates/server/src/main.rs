@@ -6,8 +6,7 @@ use std::{
 };
 
 use spacegame2d_protocol::{
-    AuthoritativeCommand, CommandData, CommandRejected, CommandRejectionReason, CommandRequest,
-    Message, SIMULATION_VERSION, Tick,
+    AuthoritativeCommand, CommandRequest, Message, SIMULATION_VERSION, Tick,
 };
 use spacegame2d_simulation::{
     command::{Command, MAX_PLAYERS, PlayerId},
@@ -29,40 +28,15 @@ struct Client {
 }
 
 impl Client {
-    fn rejection_reason(
-        simulation: &Simulation,
-        slot: u32,
-        request: &CommandRequest,
-    ) -> Option<CommandRejectionReason> {
+    fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
         let command = AuthoritativeCommand {
             execute_tick: Tick::default(),
             player_slot: slot,
             sequence: request.sequence,
             command: request.command.clone(),
         };
-        if simulation.world().validate_authoritative(&command).is_err() {
-            return Some(CommandRejectionReason::UnauthorizedFleet);
-        }
-        let CommandData::SetDestination { destination } = &request.command else {
-            return None;
-        };
-        let x = f32::from_bits(destination[0]);
-        let y = f32::from_bits(destination[1]);
-        if !x.is_finite() || !y.is_finite() {
-            return Some(CommandRejectionReason::NonFiniteDestination);
-        }
-        if x.hypot(y) > simulation.world_radius() {
-            return Some(CommandRejectionReason::DestinationOutsideArena);
-        }
-        if Box::<dyn Command>::try_from(&command).is_err() {
-            return Some(CommandRejectionReason::InvalidCommand);
-        }
-        None
-    }
-
-    #[cfg(test)]
-    fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
-        Self::rejection_reason(simulation, slot, request).is_none()
+        simulation.world().validate_authoritative(&command).is_ok()
+            && Box::<dyn Command>::try_from(&request.command).is_ok()
     }
 
     fn read_messages(&mut self) -> io::Result<Vec<Message>> {
@@ -195,14 +169,8 @@ pub async fn run(listener: TcpListener, mut shutdown: watch::Receiver<bool>) -> 
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
                             tracing::info!(event = "command_received", cmd = %cmd, tick = ?receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
-                            if let Some(reason) =
-                                Client::rejection_reason(&simulation, client.slot, &request)
-                            {
-                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, reason = ?reason, "invalid command");
-                                client.queue(&Message::CommandRejected(CommandRejected {
-                                    sequence: request.sequence,
-                                    reason,
-                                }))?;
+                            if !Client::valid_request(&simulation, client.slot, &request) {
+                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, "invalid command");
                                 continue;
                             }
                             let authoritative = AuthoritativeCommand {
@@ -345,14 +313,14 @@ mod tests {
     fn handshake_validation() {
         assert!(
             ClientHello {
-                simulation_version: SIMULATION_VERSION,
+                simulation_version: 1,
                 capabilities: vec![]
             }
             .is_compatible()
         );
         assert!(
             !(ClientHello {
-                simulation_version: SIMULATION_VERSION - 1,
+                simulation_version: 2,
                 capabilities: vec![]
             }
             .is_compatible())
@@ -371,6 +339,7 @@ mod tests {
         let request = CommandRequest {
             sequence: 1,
             command: spacegame2d_protocol::CommandData::SetDestination {
+                unit_id: 1,
                 destination: [f32::NAN.to_bits(), 0],
             },
         };
@@ -440,6 +409,7 @@ mod tests {
                 let owned_request = Message::CommandRequest(CommandRequest {
                     sequence: 6,
                     command: spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 1,
                         destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
                     },
                 });
@@ -458,6 +428,7 @@ mod tests {
                 assert_eq!(
                     owned_command.command,
                     spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 1,
                         destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
                     }
                 );
@@ -474,6 +445,7 @@ mod tests {
                 let p2_request = Message::CommandRequest(CommandRequest {
                     sequence: 10,
                     command: spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 31,
                         destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
                     },
                 });
@@ -492,6 +464,7 @@ mod tests {
                 assert_eq!(
                     p2_command.command,
                     spacegame2d_protocol::CommandData::SetDestination {
+                        unit_id: 31,
                         destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
                     }
                 );
@@ -518,25 +491,14 @@ mod tests {
                 let rejected_request = Message::CommandRequest(CommandRequest {
                     sequence: 9,
                     command: spacegame2d_protocol::CommandData::SetDestination {
-                        destination: [30.0f32.to_bits(), 0.0f32.to_bits()],
+                        unit_id: 31,
+                        destination: [3.0f32.to_bits(), 4.0f32.to_bits()],
                     },
                 });
                 first
                     .write_all(&rejected_request.encode().unwrap())
                     .await
                     .unwrap();
-                let Message::CommandRejected(rejection) =
-                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
-                        .await
-                        .unwrap()
-                else {
-                    panic!()
-                };
-                assert_eq!(rejection.sequence, 9);
-                assert_eq!(
-                    rejection.reason,
-                    CommandRejectionReason::DestinationOutsideArena
-                );
                 assert!(
                     tokio::time::timeout(Duration::from_millis(100), read_message(&mut second))
                         .await

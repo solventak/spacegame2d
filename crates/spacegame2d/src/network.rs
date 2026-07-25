@@ -6,8 +6,7 @@ use std::{
 
 use spacegame2d_protocol::Tick;
 use spacegame2d_protocol::{
-    AuthoritativeCommand, ClientHello, CommandData, CommandRejected, CommandRequest, Message,
-    SIMULATION_VERSION,
+    AuthoritativeCommand, ClientHello, CommandData, CommandRequest, Message, SIMULATION_VERSION,
 };
 use spacegame2d_simulation::simulation::SIMULATION_HZ;
 
@@ -56,8 +55,19 @@ impl NetworkSession {
         Ok(())
     }
 
-    pub fn send_set_destination(&mut self, sequence: u32, destination: [u32; 2]) -> io::Result<()> {
-        self.send(sequence, CommandData::SetDestination { destination })
+    pub fn send_set_destination(
+        &mut self,
+        sequence: u32,
+        unit_id: u32,
+        destination: [u32; 2],
+    ) -> io::Result<()> {
+        self.send(
+            sequence,
+            CommandData::SetDestination {
+                unit_id,
+                destination,
+            },
+        )
     }
 
     pub fn send_reset_simulation(&mut self, sequence: u32) -> io::Result<()> {
@@ -108,7 +118,7 @@ impl NetworkSession {
         Ok(())
     }
 
-    pub fn poll_events(&mut self) -> io::Result<Vec<ServerEvent>> {
+    pub fn poll_commands(&mut self) -> io::Result<Vec<AuthoritativeCommand>> {
         self.flush_outgoing()?;
         let mut bytes = [0u8; 4096];
         let mut result = Vec::new();
@@ -122,16 +132,15 @@ impl NetworkSession {
                 }
                 Ok(size) => {
                     for message in self.decoder.push(&bytes[..size])? {
-                        match message {
-                            Message::AuthoritativeCommand(command) => {
-                                tracing::info!(event = "authoritative_received", execute_tick = ?command.execute_tick, server_tick = ?self.server_tick, local_tick = ?self.local_tick, kind = ?command.command);
-                                result.push(ServerEvent::Authoritative(command));
-                            }
-                            Message::CommandRejected(rejection) => {
-                                tracing::warn!(event = "command_rejection_received", local_tick = ?self.local_tick, sequence = rejection.sequence, reason = ?rejection.reason);
-                                result.push(ServerEvent::Rejected(rejection));
-                            }
-                            _ => {}
+                        if let Message::AuthoritativeCommand(command) = message {
+                            tracing::info!(
+                                event = "authoritative_received",
+                                execute_tick = ?command.execute_tick,
+                                server_tick = ?self.server_tick,
+                                local_tick = ?self.local_tick,
+                                kind = ?command.command
+                            );
+                            result.push(command);
                         }
                     }
                 }
@@ -140,12 +149,6 @@ impl NetworkSession {
             }
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServerEvent {
-    Authoritative(AuthoritativeCommand),
-    Rejected(CommandRejected),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -247,7 +250,7 @@ mod tests {
     fn poll_commands_non_blocking_when_empty() {
         let address = synthetic_server(Message::ServerHello(server_hello()), false);
         let mut session = NetworkSession::connect(&address).unwrap();
-        assert!(session.poll_events().unwrap().is_empty());
+        assert!(session.poll_commands().unwrap().is_empty());
     }
 
     #[test]
@@ -264,7 +267,7 @@ mod tests {
         let address = synthetic_server(Message::ServerHello(server_hello()), true);
         let mut session = NetworkSession::connect(&address).unwrap();
         thread::sleep(std::time::Duration::from_millis(20));
-        let error = session.poll_events().unwrap_err();
+        let error = session.poll_commands().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
 
@@ -306,6 +309,7 @@ mod tests {
             player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
+                unit_id: 1,
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
             },
         };
@@ -326,6 +330,7 @@ mod tests {
             player_slot: 7,
             sequence: 1,
             command: CommandData::SetDestination {
+                unit_id: 1,
                 destination: [0.0f32.to_bits(), 100.0f32.to_bits()],
             },
         };
@@ -339,7 +344,7 @@ mod tests {
         simulation.set_tick(Tick::from(1));
         let mut commands = Vec::new();
         for _ in 0..20 {
-            commands = session.poll_events().unwrap();
+            commands = session.poll_commands().unwrap();
             if !commands.is_empty() {
                 break;
             }
@@ -347,10 +352,7 @@ mod tests {
         }
         assert_eq!(commands.len(), 1);
         let mut scheduled: BTreeMap<Tick, Vec<AuthoritativeCommand>> = BTreeMap::new();
-        for event in commands {
-            let ServerEvent::Authoritative(command) = event else {
-                continue;
-            };
+        for command in commands {
             scheduled
                 .entry(command.execute_tick)
                 .or_default()
