@@ -16,11 +16,11 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
-use spacegame2d_protocol::Tick;
+use spacegame2d_protocol::{CommandRejected, CommandRejectionReason, Tick};
 use spacegame2d_simulation::{
     command::PlayerId,
     command::Unit,
-    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent, WORLD_RADIUS_M},
+    simulation::{SIMULATION_HZ, ShipState, Simulation, SimulationEvent},
 };
 use wgpu::util::DeviceExt;
 use winit::{
@@ -32,10 +32,15 @@ use winit::{
 };
 
 use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
+use crate::network::ServerEvent;
+#[cfg(test)]
+use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
 const VIEW_HEIGHT_METERS: f32 = 40.0;
 const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
 const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
+const PENDING_MARKER_COLOR: [f32; 4] = [1.0, 0.85, 0.0, 1.0];
+const CONFIRMED_MARKER_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 
 #[repr(C)]
@@ -45,6 +50,115 @@ struct SceneUniform {
     ship: [f32; 4],
     marker: [f32; 4],
     ship_color: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MarkerStatus {
+    Pending,
+    Confirmed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DestinationMarker {
+    position: Vec2,
+    status: MarkerStatus,
+}
+
+#[derive(Debug, Default)]
+struct DestinationPresentation {
+    pending: Option<(u32, Vec2)>,
+    confirmed: Option<Vec2>,
+    rejection: Option<(String, Instant)>,
+}
+
+impl DestinationPresentation {
+    fn begin(&mut self, sequence: u32, destination: Vec2) {
+        self.pending = Some((sequence, destination));
+        self.rejection = None;
+    }
+
+    fn authoritative(
+        &mut self,
+        local_slot: u32,
+        command: &spacegame2d_protocol::AuthoritativeCommand,
+    ) {
+        if command.command == spacegame2d_protocol::CommandData::ResetSimulation {
+            self.clear();
+            return;
+        }
+        if command.player_slot != local_slot {
+            return;
+        }
+        let spacegame2d_protocol::CommandData::SetDestination { destination } = &command.command
+        else {
+            return;
+        };
+        let point = Vec2::new(
+            f32::from_bits(destination[0]),
+            f32::from_bits(destination[1]),
+        );
+        self.confirmed = Some(point);
+        if self
+            .pending
+            .is_some_and(|(sequence, _)| sequence == command.sequence)
+        {
+            self.pending = None;
+        }
+    }
+
+    fn rejected(&mut self, rejection: &CommandRejected, now: Instant) {
+        if self
+            .pending
+            .is_some_and(|(sequence, _)| sequence == rejection.sequence)
+        {
+            self.pending = None;
+        }
+        self.rejection = Some((
+            rejection_message(rejection.reason).to_owned(),
+            now + Duration::from_secs(2),
+        ));
+    }
+
+    fn clear(&mut self) {
+        self.pending = None;
+        self.confirmed = None;
+        self.rejection = None;
+    }
+
+    fn marker(&self) -> Option<DestinationMarker> {
+        self.pending
+            .map(|(_, position)| DestinationMarker {
+                position,
+                status: MarkerStatus::Pending,
+            })
+            .or_else(|| {
+                self.confirmed.map(|position| DestinationMarker {
+                    position,
+                    status: MarkerStatus::Confirmed,
+                })
+            })
+    }
+
+    fn rejection_text(&mut self, now: Instant) -> Option<&str> {
+        if self
+            .rejection
+            .as_ref()
+            .is_some_and(|(_, deadline)| *deadline <= now)
+        {
+            self.rejection = None;
+        }
+        self.rejection.as_ref().map(|(message, _)| message.as_str())
+    }
+}
+
+fn rejection_message(reason: CommandRejectionReason) -> &'static str {
+    match reason {
+        CommandRejectionReason::InvalidPlayer => "Command rejected: invalid player",
+        CommandRejectionReason::UnauthorizedFleet => "Command rejected: unauthorized fleet",
+        CommandRejectionReason::NonFiniteDestination => "Command rejected: invalid destination",
+        CommandRejectionReason::DestinationOutsideArena => "Command rejected: outside arena",
+        CommandRejectionReason::InvalidCommand => "Command rejected: invalid command",
+    }
 }
 
 fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
@@ -62,14 +176,6 @@ fn render_unit_data(units: &[Unit]) -> Vec<(ShipState, [f32; 4])> {
     units
         .iter()
         .map(|unit| (unit.state, fleet_color(unit.owner)))
-        .collect()
-}
-
-fn owned_unit_ids(units: &[Unit], player: Option<PlayerId>) -> Vec<u32> {
-    units
-        .iter()
-        .filter(|unit| unit.owner == player)
-        .map(|unit| unit.id.0)
         .collect()
 }
 
@@ -108,6 +214,8 @@ struct Renderer {
     ring_vertex_count: u32,
     ring_scene_buffer: wgpu::Buffer,
     ring_bind_group: wgpu::BindGroup,
+    marker_scene_buffer: wgpu::Buffer,
+    marker_bind_group: wgpu::BindGroup,
     scene_buffers: Vec<wgpu::Buffer>,
     scene_bind_groups: Vec<wgpu::BindGroup>,
 }
@@ -252,6 +360,25 @@ impl Renderer {
                 resource: ring_scene_buffer.as_entire_binding(),
             }],
         });
+        let marker_scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("destination marker scene uniform"),
+            contents: bytemuck::bytes_of(&scene_uniform(
+                config.width,
+                config.height,
+                &ShipState::default(),
+                Some(Vec2::ZERO),
+                PENDING_MARKER_COLOR,
+            )),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let marker_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("destination marker bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: marker_scene_buffer.as_entire_binding(),
+            }],
+        });
         let scene_uniforms = render_unit_data(units)
             .into_iter()
             .map(|(ship, color)| {
@@ -293,6 +420,8 @@ impl Renderer {
             ring_vertex_count,
             ring_scene_buffer,
             ring_bind_group,
+            marker_scene_buffer,
+            marker_bind_group,
             scene_buffers: scene_uniforms,
             scene_bind_groups,
         })
@@ -309,7 +438,7 @@ impl Renderer {
         &mut self,
         units: &[Unit],
         _ship: Option<&ShipState>,
-        _marker: Option<Vec2>,
+        marker: Option<DestinationMarker>,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -372,6 +501,26 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.ring_vertex_buffer.slice(..));
             pass.set_bind_group(0, &self.ring_bind_group, &[]);
             pass.draw(0..self.ring_vertex_count, 0..1);
+            if let Some(marker) = marker {
+                let color = match marker.status {
+                    MarkerStatus::Pending => PENDING_MARKER_COLOR,
+                    MarkerStatus::Confirmed => CONFIRMED_MARKER_COLOR,
+                };
+                self.queue.write_buffer(
+                    &self.marker_scene_buffer,
+                    0,
+                    bytemuck::bytes_of(&scene_uniform(
+                        self.config.width,
+                        self.config.height,
+                        &ShipState::default(),
+                        Some(marker.position),
+                        color,
+                    )),
+                );
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_bind_group(0, &self.marker_bind_group, &[]);
+                pass.draw(24..30, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
@@ -382,7 +531,7 @@ impl Renderer {
 struct App {
     renderer: Option<Renderer>,
     simulation: Simulation,
-    pending_destination: Option<Vec2>,
+    presentation: DestinationPresentation,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
     network: Option<network::NetworkSession>,
@@ -407,6 +556,7 @@ impl PresentationEventLog {
         self.events.extend(events);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.events.clear();
     }
@@ -417,7 +567,7 @@ impl Default for App {
         Self {
             renderer: None,
             simulation: Simulation::default(),
-            pending_destination: None,
+            presentation: DestinationPresentation::default(),
             cursor_position: None,
             next_tick: Instant::now(),
             network: None,
@@ -434,7 +584,7 @@ fn screen_to_world(cursor: winit::dpi::PhysicalPosition<f64>, width: u32, height
     let half_width = half_height * aspect;
     let x = (cursor.x as f32 / width.max(1) as f32 * 2.0 - 1.0) * half_width;
     let y = (1.0 - cursor.y as f32 / height.max(1) as f32 * 2.0) * half_height;
-    Vec2::new(x, y).clamp_length_max(WORLD_RADIUS_M)
+    Vec2::new(x, y)
 }
 
 impl ApplicationHandler for App {
@@ -490,13 +640,24 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(session) = self.network.as_mut() {
             session.set_local_tick(self.simulation.tick());
-            match session.poll_commands() {
-                Ok(commands) => {
-                    for command in commands {
-                        self.scheduled
-                            .entry(command.execute_tick)
-                            .or_default()
-                            .push(command);
+            match session.poll_events() {
+                Ok(events) => {
+                    for event in events {
+                        match event {
+                            ServerEvent::Authoritative(command) => {
+                                self.presentation.authoritative(
+                                    self.network.as_ref().map_or(0, |s| s.player_slot),
+                                    &command,
+                                );
+                                self.scheduled
+                                    .entry(command.execute_tick)
+                                    .or_default()
+                                    .push(command);
+                            }
+                            ServerEvent::Rejected(rejection) => {
+                                self.presentation.rejected(&rejection, Instant::now());
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -507,6 +668,29 @@ impl ApplicationHandler for App {
             }
         }
         let now = Instant::now();
+        if let Some(renderer) = self.renderer.as_ref() {
+            let title = self.presentation.rejection_text(now).map_or_else(
+                || {
+                    window_title(
+                        self.network
+                            .as_ref()
+                            .map_or(0, |session| session.player_slot),
+                    )
+                },
+                |message| {
+                    format!(
+                        "{} — {}",
+                        window_title(
+                            self.network
+                                .as_ref()
+                                .map_or(0, |session| session.player_slot)
+                        ),
+                        message
+                    )
+                },
+            );
+            renderer.window.set_title(&title);
+        }
         while now >= self.next_tick {
             self.simulation.apply_due_commands(&mut self.scheduled);
             let events = self.simulation.step().unwrap_or_default();
@@ -543,29 +727,19 @@ impl ApplicationHandler for App {
                 if let (Some(cursor), Some(renderer)) =
                     (self.cursor_position, self.renderer.as_ref())
                 {
-                    self.pending_destination = Some(screen_to_world(
-                        cursor,
-                        renderer.config.width,
-                        renderer.config.height,
-                    ));
-                    if let Some(session) = self.network.as_mut() {
-                        let destination = self.pending_destination.expect("destination was set");
-                        let player_id = u8::try_from(session.player_slot)
-                            .ok()
-                            .and_then(spacegame2d_simulation::command::PlayerId::new);
-                        for unit_id in owned_unit_ids(&self.simulation.world.units, player_id) {
-                            if let Err(error) = session.send_set_destination(
-                                self.next_sequence,
-                                unit_id,
-                                [destination.x.to_bits(), destination.y.to_bits()],
-                            ) {
-                                eprintln!("failed to send destination: {error}");
-                                event_loop.exit();
-                                break;
-                            }
-                            self.next_sequence = self.next_sequence.saturating_add(1);
-                        }
+                    let destination =
+                        screen_to_world(cursor, renderer.config.width, renderer.config.height);
+                    self.presentation.begin(self.next_sequence, destination);
+                    if let Some(session) = self.network.as_mut()
+                        && let Err(error) = session.send_set_destination(
+                            self.next_sequence,
+                            [destination.x.to_bits(), destination.y.to_bits()],
+                        )
+                    {
+                        eprintln!("failed to send destination: {error}");
+                        event_loop.exit();
                     }
+                    self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -582,13 +756,16 @@ impl ApplicationHandler for App {
                         eprintln!("failed to send reset: {error}");
                         event_loop.exit();
                     }
-                    self.presentation_events.clear();
                     self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render(&self.simulation.world.units, None, None) {
+                    match renderer.render(
+                        &self.simulation.world.units,
+                        None,
+                        self.presentation.marker(),
+                    ) {
                         Ok(()) => {}
                         Err(
                             wgpu::CurrentSurfaceTexture::Lost
@@ -654,20 +831,54 @@ mod tests {
     }
 
     #[test]
-    fn owned_unit_ids_contains_one_command_target_per_fleet_unit() {
-        let mut world = spacegame2d_simulation::World::demo();
-        world.assign_mirror_owners();
-        let first = owned_unit_ids(&world.units, Some(PlayerId(1)));
-        let second = owned_unit_ids(&world.units, Some(PlayerId(2)));
-        assert_eq!(first.len(), 30);
-        assert_eq!(second.len(), 30);
-        assert!(first.iter().all(|id| !second.contains(id)));
+    fn destination_presentation_tracks_confirmation_rejection_and_reset() {
+        let now = Instant::now();
+        let mut presentation = DestinationPresentation::default();
+        presentation.begin(4, Vec2::new(2.0, 3.0));
+        assert_eq!(presentation.marker().unwrap().status, MarkerStatus::Pending);
+        let command = spacegame2d_protocol::AuthoritativeCommand {
+            execute_tick: Tick::new(2),
+            player_slot: 1,
+            sequence: 4,
+            command: spacegame2d_protocol::CommandData::SetDestination {
+                destination: [2.0f32.to_bits(), 3.0f32.to_bits()],
+            },
+        };
+        presentation.authoritative(1, &command);
+        assert_eq!(
+            presentation.marker().unwrap().status,
+            MarkerStatus::Confirmed
+        );
+        presentation.begin(5, Vec2::new(40.0, 0.0));
+        presentation.rejected(
+            &CommandRejected {
+                sequence: 5,
+                reason: CommandRejectionReason::DestinationOutsideArena,
+            },
+            now,
+        );
+        assert_eq!(
+            presentation.marker().unwrap().status,
+            MarkerStatus::Confirmed
+        );
+        assert!(presentation.rejection_text(now).is_some());
+        presentation.authoritative(
+            1,
+            &spacegame2d_protocol::AuthoritativeCommand {
+                execute_tick: Tick::new(3),
+                player_slot: 1,
+                sequence: 6,
+                command: spacegame2d_protocol::CommandData::ResetSimulation,
+            },
+        );
+        assert!(presentation.marker().is_none());
+        assert!(presentation.rejection_text(now).is_none());
     }
 
     #[test]
-    fn screen_to_world_clamps_outside_arena() {
+    fn screen_to_world_preserves_outside_arena_coordinates() {
         let point = screen_to_world(winit::dpi::PhysicalPosition::new(-1000.0, 5000.0), 800, 600);
-        assert!((point.length() - WORLD_RADIUS_M).abs() < 0.0001);
+        assert!(point.length() > WORLD_RADIUS_M);
         assert!(point.x < 0.0 && point.y < 0.0);
     }
 
