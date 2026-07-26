@@ -4,7 +4,9 @@ use crate::command::UnitId;
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::config::{DEFAULT_FLEET_SIZE, SimulationConfig};
-use crate::flight_control::{ArrivalController, NeighborObservation, NeighborRelationship};
+use crate::flight_control::{
+    ArrivalController, AvoidanceEntityId, NeighborObservation, NeighborRelationship,
+};
 use crate::hitbox::{Hitbox, PositionedHitbox};
 use crate::simulation::{ShipState, is_out_of_bounds, step_ship};
 
@@ -108,7 +110,7 @@ impl Fleet {
             .iter()
             .enumerate()
             .map(|(index, u)| NeighborObservation {
-                unit_id: UnitId((index + 1) as u32),
+                entity_id: AvoidanceEntityId::Unit(UnitId((index + 1) as u32)),
                 position: u.state.position,
                 velocity: u.state.velocity,
                 hitbox: u.hitbox(),
@@ -175,7 +177,7 @@ pub fn initial_drone_positions_for_size(fleet_size: usize) -> Vec<ShipState> {
     initial_fleet_positions(0x5EED_1234, -4.0, fleet_size)
 }
 
-pub fn initial_world_positions(config: SimulationConfig) -> Vec<ShipState> {
+pub fn initial_world_positions(config: &SimulationConfig) -> Vec<ShipState> {
     let fleet_size = config.fleet_size() as usize;
     let mut positions = initial_fleet_positions(0x5EED_1234, -12.0, fleet_size);
     positions.extend(initial_fleet_positions(0xC0FF_EE42, 12.0, fleet_size));
@@ -216,7 +218,7 @@ mod tests {
 
     #[test]
     fn world_fleets_start_far_apart_and_inside_the_larger_arena() {
-        let positions = initial_world_positions(SimulationConfig::default());
+        let positions = initial_world_positions(&SimulationConfig::default());
         let split = DEFAULT_FLEET_SIZE as usize;
         assert!(
             positions[..split]

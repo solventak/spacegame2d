@@ -1,9 +1,12 @@
 //! Canonical deterministic simulation snapshots and state hashes.
 
-use crate::{autopilot::AutopilotConfig, command::Unit, simulation::Simulation};
+use crate::{
+    autopilot::AutopilotConfig, command::Unit, hitbox::HitboxShape, simulation::Simulation,
+    structure::StaticStructure,
+};
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 3;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 4;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -15,7 +18,18 @@ pub struct SimulationSnapshot {
     pub world_radius_bits: u32,
     pub next_unit_id: u32,
     pub unit_id_exhausted: bool,
+    pub structures: Vec<StaticStructureSnapshot>,
     pub units: Vec<UnitSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaticStructureSnapshot {
+    pub id: u32,
+    pub kind_tag: u8,
+    pub position_bits: [u32; 2],
+    pub visual_radius_bits: u32,
+    pub hitbox_shape_tag: u8,
+    pub hitbox_radius_bits: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +62,13 @@ impl Simulation {
             .map(UnitSnapshot::from)
             .collect::<Vec<_>>();
         units.sort_unstable_by_key(|unit| unit.id);
+        let mut structures = self
+            .world
+            .structures()
+            .iter()
+            .map(StaticStructureSnapshot::from)
+            .collect::<Vec<_>>();
+        structures.sort_unstable_by_key(|structure| structure.id);
         SimulationSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
             simulation_version: spacegame2d_protocol::SIMULATION_VERSION,
@@ -55,6 +76,7 @@ impl Simulation {
             world_radius_bits: self.world_radius().to_bits(),
             next_unit_id,
             unit_id_exhausted,
+            structures,
             units,
         }
     }
@@ -68,6 +90,10 @@ impl SimulationSnapshot {
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         put_u64(&mut bytes, self.tick.0);
+        put_u32(&mut bytes, self.structures.len() as u32);
+        for structure in &self.structures {
+            structure.encode(&mut bytes);
+        }
         put_u32(&mut bytes, self.units.len() as u32);
         for unit in &self.units {
             unit.encode(&mut bytes);
@@ -77,6 +103,36 @@ impl SimulationSnapshot {
 
     pub fn state_hash(&self) -> StateHash {
         *blake3::hash(&self.encode_canonical()).as_bytes()
+    }
+}
+
+impl From<&StaticStructure> for StaticStructureSnapshot {
+    fn from(structure: &StaticStructure) -> Self {
+        let HitboxShape::Circle(circle) = structure.hitbox().shape();
+        Self {
+            id: structure.id().0,
+            kind_tag: structure.kind().canonical_tag(),
+            position_bits: [
+                structure.position().x.to_bits(),
+                structure.position().y.to_bits(),
+            ],
+            visual_radius_bits: structure.visual_radius_meters().to_bits(),
+            hitbox_shape_tag: 1,
+            hitbox_radius_bits: circle.radius_meters().to_bits(),
+        }
+    }
+}
+
+impl StaticStructureSnapshot {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        put_u32(bytes, self.id);
+        bytes.push(self.kind_tag);
+        for value in self.position_bits {
+            put_u32(bytes, value);
+        }
+        put_u32(bytes, self.visual_radius_bits);
+        bytes.push(self.hitbox_shape_tag);
+        put_u32(bytes, self.hitbox_radius_bits);
     }
 }
 
@@ -174,6 +230,48 @@ mod tests {
             Simulation::default().state_hash(),
             Simulation::default().state_hash()
         );
+    }
+
+    #[test]
+    fn structures_are_canonical_snapshot_state() {
+        let snapshot = Simulation::default().snapshot();
+        assert_eq!(snapshot.format_version, SNAPSHOT_FORMAT_VERSION);
+        assert_eq!(snapshot.structures.len(), 2);
+        assert_eq!(snapshot.structures[0].id, 1);
+        assert_eq!(snapshot.structures[0].kind_tag, 1);
+        assert_eq!(
+            snapshot.structures[0].position_bits,
+            [0.0f32.to_bits(), 0.0f32.to_bits()]
+        );
+        assert_eq!(snapshot.structures[0].visual_radius_bits, 3.5f32.to_bits());
+        assert_eq!(snapshot.structures[0].hitbox_shape_tag, 1);
+        assert_eq!(snapshot.structures[0].hitbox_radius_bits, 3.85f32.to_bits());
+        assert_eq!(snapshot.structures[1].id, 2);
+        assert_eq!(snapshot.structures[1].kind_tag, 2);
+        assert_eq!(
+            snapshot.structures[1].position_bits,
+            [0.0f32.to_bits(), 10.0f32.to_bits()]
+        );
+        assert_eq!(snapshot.structures[1].visual_radius_bits, 2.5f32.to_bits());
+        assert_eq!(snapshot.structures[1].hitbox_shape_tag, 1);
+        assert_eq!(snapshot.structures[1].hitbox_radius_bits, 2.75f32.to_bits());
+    }
+
+    #[test]
+    fn every_structure_definition_field_contributes_to_the_hash() {
+        let baseline = Simulation::default().snapshot();
+        for mutate in [
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].id += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].kind_tag += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].position_bits[0] += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].visual_radius_bits += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].hitbox_shape_tag += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].hitbox_radius_bits += 1,
+        ] {
+            let mut changed = baseline.clone();
+            mutate(&mut changed);
+            assert_ne!(changed.state_hash(), baseline.state_hash());
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ use glam::Vec2;
 
 use crate::command::UnitId;
 use crate::hitbox::Hitbox;
+use crate::structure::StaticStructureId;
 
 use crate::simulation::{
     FORWARD_THRUST_NEWTONS, FlightInput, MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, SHIP_MASS_KG,
@@ -17,19 +18,32 @@ use crate::simulation::{
 };
 
 pub mod arrival;
+pub mod avoidance;
 pub use arrival::ArrivalController;
+pub use avoidance::{
+    AvoidanceError, AvoidanceGroup, AvoidanceGroupId, AvoidanceProfile, AvoidanceProfiles,
+    MAX_AVOIDANCE_GROUPS, MOBILE_AVOIDANCE_GROUP, STRUCTURE_AVOIDANCE_GROUP,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NeighborRelationship {
     Friendly,
     Opposing,
+    StaticStructure,
+}
+
+/// Stable identity for an entity contributing to avoidance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AvoidanceEntityId {
+    Unit(UnitId),
+    StaticStructure(StaticStructureId),
 }
 
 /// Snapshot of one neighbor's kinematic state, observed at the start of a tick
 /// so every drone sees a consistent world.
 #[derive(Clone, Copy, Debug)]
 pub struct NeighborObservation {
-    pub unit_id: UnitId,
+    pub entity_id: AvoidanceEntityId,
     /// Neighbor position in arena-space meters.
     pub position: Vec2,
     /// Neighbor velocity in meters per second.

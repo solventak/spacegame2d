@@ -28,6 +28,7 @@ pub mod flight_control;
 pub mod hitbox;
 pub mod simulation;
 pub mod snapshot;
+pub mod structure;
 
 pub use combat::{
     CombatState, FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, HullState, MAX_HULL,
@@ -45,3 +46,4 @@ pub use hitbox::{
     Circle, DEFAULT_SHIP_HITBOX_RADIUS_METERS, Hitbox, HitboxError, HitboxShape, PositionedHitbox,
 };
 pub use simulation::SimulationEvent;
+pub use structure::{StaticStructure, StaticStructureId, StaticStructureKind};

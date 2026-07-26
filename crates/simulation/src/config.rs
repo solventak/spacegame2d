@@ -1,34 +1,11 @@
 use thiserror::Error;
 
+use crate::flight_control::AvoidanceProfiles;
+
 pub const DEFAULT_FLEET_SIZE: u32 = 30;
 pub const MAX_PLAYERS: usize = 2;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AvoidanceConfig {
-    /// Desired hull-to-hull clearance for friendly units.
-    pub friendly_comfort_clearance_meters: f32,
-    /// Desired hull-to-hull clearance for opposing units.
-    pub opposing_comfort_clearance_meters: f32,
-    pub friendly_strength: f32,
-    pub opposing_strength: f32,
-    pub prediction_horizon_seconds: f32,
-    pub max_avoidance_acceleration: f32,
-    pub opposing_speed_squared_scale: f32,
-}
-
-impl Default for AvoidanceConfig {
-    fn default() -> Self {
-        Self {
-            friendly_comfort_clearance_meters: 2.0,
-            opposing_comfort_clearance_meters: 4.0,
-            friendly_strength: 8.0,
-            opposing_strength: 24.0,
-            prediction_horizon_seconds: 0.75,
-            max_avoidance_acceleration: 12.0,
-            opposing_speed_squared_scale: 1.5,
-        }
-    }
-}
+pub type AvoidanceConfig = AvoidanceProfiles;
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum SimulationConfigError {
@@ -36,13 +13,9 @@ pub enum SimulationConfigError {
     ZeroFleetSize,
     #[error("fleet size is too large for the simulation")]
     FleetSizeTooLarge,
-    #[error("avoidance configuration contains an invalid value")]
-    InvalidAvoidanceConfig,
-    #[error("opposing comfort clearance must not be smaller than friendly comfort clearance")]
-    OpposingClearanceTooSmall,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SimulationConfig {
     fleet_size: u32,
     avoidance: AvoidanceConfig,
@@ -65,38 +38,19 @@ impl SimulationConfig {
         })
     }
 
-    pub const fn fleet_size(self) -> u32 {
+    pub const fn fleet_size(&self) -> u32 {
         self.fleet_size
     }
 
-    pub const fn avoidance(self) -> AvoidanceConfig {
-        self.avoidance
+    pub fn avoidance(&self) -> AvoidanceConfig {
+        self.avoidance.clone()
     }
 
-    pub fn with_avoidance(self, avoidance: AvoidanceConfig) -> Result<Self, SimulationConfigError> {
-        let values = [
-            avoidance.friendly_comfort_clearance_meters,
-            avoidance.opposing_comfort_clearance_meters,
-            avoidance.friendly_strength,
-            avoidance.opposing_strength,
-            avoidance.prediction_horizon_seconds,
-            avoidance.max_avoidance_acceleration,
-            avoidance.opposing_speed_squared_scale,
-        ];
-        if values
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err(SimulationConfigError::InvalidAvoidanceConfig);
-        }
-        if avoidance.opposing_comfort_clearance_meters < avoidance.friendly_comfort_clearance_meters
-        {
-            return Err(SimulationConfigError::OpposingClearanceTooSmall);
-        }
-        Ok(Self { avoidance, ..self })
+    pub fn with_avoidance(self, avoidance: AvoidanceConfig) -> Self {
+        Self { avoidance, ..self }
     }
 
-    pub fn total_units(self) -> usize {
+    pub fn total_units(&self) -> usize {
         self.fleet_size as usize * MAX_PLAYERS
     }
 }
