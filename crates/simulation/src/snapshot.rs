@@ -1,12 +1,15 @@
 //! Canonical deterministic simulation snapshots and state hashes.
 
 use crate::{
-    autopilot::AutopilotConfig, command::Unit, hitbox::HitboxShape, simulation::Simulation,
-    structure::StaticStructure,
+    autopilot::AutopilotConfig,
+    command::Unit,
+    hitbox::HitboxShape,
+    simulation::Simulation,
+    structure::{HomeObjectivePair, StaticStructure},
 };
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 4;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 5;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -19,17 +22,26 @@ pub struct SimulationSnapshot {
     pub next_unit_id: u32,
     pub unit_id_exhausted: bool,
     pub structures: Vec<StaticStructureSnapshot>,
+    pub home_objective_pairs: Vec<HomeObjectivePairSnapshot>,
     pub units: Vec<UnitSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaticStructureSnapshot {
     pub id: u32,
+    pub owner: u8,
     pub kind_tag: u8,
     pub position_bits: [u32; 2],
     pub visual_radius_bits: u32,
     pub hitbox_shape_tag: u8,
     pub hitbox_radius_bits: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeObjectivePairSnapshot {
+    pub owner: u8,
+    pub core_id: u32,
+    pub relay_id: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +81,13 @@ impl Simulation {
             .map(StaticStructureSnapshot::from)
             .collect::<Vec<_>>();
         structures.sort_unstable_by_key(|structure| structure.id);
+        let mut home_objective_pairs = self
+            .world
+            .home_objective_pairs()
+            .iter()
+            .map(HomeObjectivePairSnapshot::from)
+            .collect::<Vec<_>>();
+        home_objective_pairs.sort_unstable_by_key(|pair| (pair.owner, pair.core_id, pair.relay_id));
         SimulationSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
             simulation_version: spacegame2d_protocol::SIMULATION_VERSION,
@@ -77,6 +96,7 @@ impl Simulation {
             next_unit_id,
             unit_id_exhausted,
             structures,
+            home_objective_pairs,
             units,
         }
     }
@@ -95,6 +115,10 @@ impl SimulationSnapshot {
         for structure in &self.structures {
             structure.encode(&mut bytes);
         }
+        put_u32(&mut bytes, self.home_objective_pairs.len() as u32);
+        for pair in &self.home_objective_pairs {
+            pair.encode(&mut bytes);
+        }
         put_u32(&mut bytes, self.units.len() as u32);
         for unit in &self.units {
             unit.encode(&mut bytes);
@@ -112,6 +136,7 @@ impl From<&StaticStructure> for StaticStructureSnapshot {
         let HitboxShape::Circle(circle) = structure.hitbox().shape();
         Self {
             id: structure.id().0,
+            owner: structure.owner().0,
             kind_tag: structure.kind().canonical_tag(),
             position_bits: [
                 structure.position().x.to_bits(),
@@ -127,6 +152,7 @@ impl From<&StaticStructure> for StaticStructureSnapshot {
 impl StaticStructureSnapshot {
     fn encode(&self, bytes: &mut Vec<u8>) {
         put_u32(bytes, self.id);
+        bytes.push(self.owner);
         bytes.push(self.kind_tag);
         for value in self.position_bits {
             put_u32(bytes, value);
@@ -134,6 +160,24 @@ impl StaticStructureSnapshot {
         put_u32(bytes, self.visual_radius_bits);
         bytes.push(self.hitbox_shape_tag);
         put_u32(bytes, self.hitbox_radius_bits);
+    }
+}
+
+impl From<&HomeObjectivePair> for HomeObjectivePairSnapshot {
+    fn from(pair: &HomeObjectivePair) -> Self {
+        Self {
+            owner: pair.owner().0,
+            core_id: pair.core_id().0,
+            relay_id: pair.relay_id().0,
+        }
+    }
+}
+
+impl HomeObjectivePairSnapshot {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        bytes.push(self.owner);
+        put_u32(bytes, self.core_id);
+        put_u32(bytes, self.relay_id);
     }
 }
 
@@ -237,25 +281,41 @@ mod tests {
     fn structures_are_canonical_snapshot_state() {
         let snapshot = Simulation::default().snapshot();
         assert_eq!(snapshot.format_version, SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(snapshot.structures.len(), 2);
-        assert_eq!(snapshot.structures[0].id, 1);
-        assert_eq!(snapshot.structures[0].kind_tag, 1);
+        assert_eq!(snapshot.structures.len(), 4);
+        for (structure, (id, owner, kind, position, visual_radius, hitbox_radius)) in
+            snapshot.structures.iter().zip([
+                (1, 1, 1, [-20.0_f32, 0.0], 3.5_f32, 3.85_f32),
+                (2, 1, 2, [-10.0_f32, 0.0], 2.5_f32, 2.75_f32),
+                (3, 2, 1, [20.0_f32, 0.0], 3.5_f32, 3.85_f32),
+                (4, 2, 2, [10.0_f32, 0.0], 2.5_f32, 2.75_f32),
+            ])
+        {
+            assert_eq!(structure.id, id);
+            assert_eq!(structure.owner, owner);
+            assert_eq!(structure.kind_tag, kind);
+            assert_eq!(
+                structure.position_bits,
+                [position[0].to_bits(), position[1].to_bits()]
+            );
+            assert_eq!(structure.visual_radius_bits, visual_radius.to_bits());
+            assert_eq!(structure.hitbox_shape_tag, 1);
+            assert_eq!(structure.hitbox_radius_bits, hitbox_radius.to_bits());
+        }
         assert_eq!(
-            snapshot.structures[0].position_bits,
-            [0.0f32.to_bits(), 0.0f32.to_bits()]
+            snapshot.home_objective_pairs,
+            vec![
+                HomeObjectivePairSnapshot {
+                    owner: 1,
+                    core_id: 1,
+                    relay_id: 2,
+                },
+                HomeObjectivePairSnapshot {
+                    owner: 2,
+                    core_id: 3,
+                    relay_id: 4,
+                },
+            ]
         );
-        assert_eq!(snapshot.structures[0].visual_radius_bits, 3.5f32.to_bits());
-        assert_eq!(snapshot.structures[0].hitbox_shape_tag, 1);
-        assert_eq!(snapshot.structures[0].hitbox_radius_bits, 3.85f32.to_bits());
-        assert_eq!(snapshot.structures[1].id, 2);
-        assert_eq!(snapshot.structures[1].kind_tag, 2);
-        assert_eq!(
-            snapshot.structures[1].position_bits,
-            [0.0f32.to_bits(), 10.0f32.to_bits()]
-        );
-        assert_eq!(snapshot.structures[1].visual_radius_bits, 2.5f32.to_bits());
-        assert_eq!(snapshot.structures[1].hitbox_shape_tag, 1);
-        assert_eq!(snapshot.structures[1].hitbox_radius_bits, 2.75f32.to_bits());
     }
 
     #[test]
@@ -263,11 +323,26 @@ mod tests {
         let baseline = Simulation::default().snapshot();
         for mutate in [
             |snapshot: &mut SimulationSnapshot| snapshot.structures[0].id += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.structures[0].owner += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.structures[0].kind_tag += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.structures[0].position_bits[0] += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.structures[0].visual_radius_bits += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.structures[0].hitbox_shape_tag += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.structures[0].hitbox_radius_bits += 1,
+        ] {
+            let mut changed = baseline.clone();
+            mutate(&mut changed);
+            assert_ne!(changed.state_hash(), baseline.state_hash());
+        }
+    }
+
+    #[test]
+    fn every_home_pair_field_contributes_to_the_hash() {
+        let baseline = Simulation::default().snapshot();
+        for mutate in [
+            |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].owner += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].core_id += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].relay_id += 1,
         ] {
             let mut changed = baseline.clone();
             mutate(&mut changed);

@@ -375,7 +375,7 @@ fn avoidance_observations(world: &World) -> Vec<TickAvoidanceObservation> {
             .iter()
             .map(|structure| TickAvoidanceObservation {
                 entity_id: AvoidanceEntityId::StaticStructure(structure.id()),
-                owner: None,
+                owner: Some(structure.owner()),
                 position: structure.position(),
                 velocity: Vec2::ZERO,
                 hitbox: structure.hitbox(),
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn static_structures_are_stationary_opposing_avoidance_observations() {
+    fn owned_static_structures_remain_stationary_static_avoidance_observations() {
         let mut simulation = Simulation::default();
         simulation.world.units.truncate(1);
         simulation.world.units[0].state.position = Vec2::new(4.0, 0.0);
@@ -605,12 +605,20 @@ mod tests {
                 AvoidanceEntityId::Unit(simulation.world.units[0].id),
                 AvoidanceEntityId::StaticStructure(crate::StaticStructureId(1)),
                 AvoidanceEntityId::StaticStructure(crate::StaticStructureId(2)),
+                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(3)),
+                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(4)),
             ]
         );
-        let structure = observations[1];
-        assert_eq!(structure.position, Vec2::ZERO);
-        assert_eq!(structure.velocity, Vec2::ZERO);
-        assert_eq!(structure.owner, None);
+        for (structure, (position, owner)) in observations[1..].iter().zip([
+            (Vec2::new(-20.0, 0.0), PlayerId(1)),
+            (Vec2::new(-10.0, 0.0), PlayerId(1)),
+            (Vec2::new(20.0, 0.0), PlayerId(2)),
+            (Vec2::new(10.0, 0.0), PlayerId(2)),
+        ]) {
+            assert_eq!(structure.position, position);
+            assert_eq!(structure.velocity, Vec2::ZERO);
+            assert_eq!(structure.owner, Some(owner));
+        }
 
         let unit = &mut simulation.world.units[0];
         let neighbors = observations[1..]
@@ -827,10 +835,7 @@ mod tests {
         assert_eq!(sim.tick(), tick_before + Tick::new(1));
         // The command applied before physics: the destination is set and the
         // unit has moved toward it in the same tick.
-        assert_eq!(
-            sim.world.units[0].autopilot.destination(),
-            Some(Vec2::new(3.85, 0.0))
-        );
+        assert_eq!(sim.world.units[0].autopilot.destination(), Some(Vec2::ZERO));
         assert_ne!(sim.world.units[0].state.position, Vec2::new(10.0, 0.0));
     }
 

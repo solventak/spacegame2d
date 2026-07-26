@@ -47,4 +47,4 @@ pub use hitbox::{
     Circle, DEFAULT_SHIP_HITBOX_RADIUS_METERS, Hitbox, HitboxError, HitboxShape, PositionedHitbox,
 };
 pub use simulation::SimulationEvent;
-pub use structure::{StaticStructure, StaticStructureId, StaticStructureKind};
+pub use structure::{HomeObjectivePair, StaticStructure, StaticStructureId, StaticStructureKind};

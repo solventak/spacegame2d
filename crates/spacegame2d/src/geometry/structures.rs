@@ -1,35 +1,46 @@
 use glam::Vec2;
-use spacegame2d_simulation::{StaticStructure, StaticStructureKind};
+use spacegame2d_simulation::{PlayerId, StaticStructure, StaticStructureKind};
 
 use crate::geometry::Vertex;
 
 const CIRCLE_SEGMENTS: usize = 48;
+const INSET_SCALE: f32 = 0.78;
+const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
+const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
+const INSET_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 pub fn structure_vertices(structures: &[StaticStructure]) -> Vec<Vertex> {
-    let mut vertices = Vec::with_capacity(structures.len() * (CIRCLE_SEGMENTS * 3 + 12));
+    let mut vertices = Vec::with_capacity(structures.len() * (CIRCLE_SEGMENTS * 6 + 12));
     for structure in structures {
-        let (fill, indicator) = match structure.kind() {
-            StaticStructureKind::CommandCore => ([0.12, 0.28, 0.72, 1.0], [0.82, 0.92, 1.0, 1.0]),
-            StaticStructureKind::ShieldRelay => ([0.54, 0.20, 0.76, 1.0], [1.0, 0.78, 0.18, 1.0]),
+        let owner_color = match structure.owner() {
+            PlayerId(1) => PLAYER_ONE_COLOR,
+            PlayerId(2) => PLAYER_TWO_COLOR,
+            _ => PLAYER_ONE_COLOR,
         };
         push_circle(
             &mut vertices,
             structure.position(),
             structure.visual_radius_meters(),
-            fill,
+            owner_color,
+        );
+        push_circle(
+            &mut vertices,
+            structure.position(),
+            structure.visual_radius_meters() * INSET_SCALE,
+            INSET_COLOR,
         );
         match structure.kind() {
             StaticStructureKind::CommandCore => push_cross(
                 &mut vertices,
                 structure.position(),
                 structure.visual_radius_meters() * 0.42,
-                indicator,
+                owner_color,
             ),
             StaticStructureKind::ShieldRelay => push_diamond(
                 &mut vertices,
                 structure.position(),
                 structure.visual_radius_meters() * 0.46,
-                indicator,
+                owner_color,
             ),
         }
     }
@@ -117,7 +128,7 @@ mod tests {
     fn structures_generate_finite_world_geometry_with_distinct_indicators() {
         let world = World::demo();
         let vertices = structure_vertices(world.structures());
-        assert_eq!(vertices.len(), CIRCLE_SEGMENTS * 3 * 2 + 24);
+        assert_eq!(vertices.len(), (CIRCLE_SEGMENTS * 6 + 12) * 4);
         assert!(vertices.iter().all(|vertex| {
             vertex
                 .position
@@ -127,26 +138,28 @@ mod tests {
         assert!(
             vertices
                 .iter()
-                .any(|vertex| vertex.color == [0.82, 0.92, 1.0, 1.0])
+                .any(|vertex| vertex.color == PLAYER_ONE_COLOR)
         );
         assert!(
             vertices
                 .iter()
-                .any(|vertex| vertex.color == [1.0, 0.78, 0.18, 1.0])
+                .any(|vertex| vertex.color == PLAYER_TWO_COLOR)
         );
+        assert!(vertices.iter().any(|vertex| vertex.color == INSET_COLOR));
     }
 
     #[test]
     fn circles_use_simulation_visual_radii_at_simulation_positions() {
         let world = World::demo();
         let vertices = structure_vertices(world.structures());
+        let command_core_center = Vec2::new(-20.0, 0.0);
         let command_core_boundary = Vec2::from_array(vertices[1].position);
-        assert!((command_core_boundary.length() - 3.5).abs() < 0.0001);
+        assert!((command_core_center.distance(command_core_boundary) - 3.5).abs() < 0.0001);
 
-        let relay_start = CIRCLE_SEGMENTS * 3 + 12;
+        let relay_start = CIRCLE_SEGMENTS * 6 + 12;
         let relay_center = Vec2::from_array(vertices[relay_start].position);
         let relay_boundary = Vec2::from_array(vertices[relay_start + 1].position);
-        assert_eq!(relay_center, Vec2::new(0.0, 10.0));
+        assert_eq!(relay_center, Vec2::new(-10.0, 0.0));
         assert!((relay_center.distance(relay_boundary) - 2.5).abs() < 0.0001);
     }
 }
