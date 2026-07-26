@@ -22,6 +22,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
+    StaticStructure,
     command::PlayerId,
     command::Unit,
     simulation::{SIMULATION_HZ, ShipState, Simulation},
@@ -40,7 +41,9 @@ use crate::camera::Camera;
 use crate::camera::VIEW_HEIGHT_METERS;
 use crate::combat_presentation::CombatPresentation;
 use crate::combat_rendering::{CombatFrame, CombatRenderer};
-use crate::geometry::{Vertex, overlay::ring_vertices, units::notched_ship_vertices};
+use crate::geometry::{
+    Vertex, overlay::ring_vertices, structures::structure_vertices, units::notched_ship_vertices,
+};
 use crate::network::ServerEvent;
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 #[cfg(test)]
@@ -114,6 +117,10 @@ struct Renderer {
     ring_vertex_count: u32,
     ring_scene_buffer: wgpu::Buffer,
     ring_bind_group: wgpu::BindGroup,
+    structure_vertex_buffer: wgpu::Buffer,
+    structure_vertex_count: u32,
+    structure_scene_buffer: wgpu::Buffer,
+    structure_bind_group: wgpu::BindGroup,
     marker_scene_buffer: wgpu::Buffer,
     marker_bind_group: wgpu::BindGroup,
     scene_buffers: Vec<wgpu::Buffer>,
@@ -122,7 +129,12 @@ struct Renderer {
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>, units: &[Unit], world_radius: f32) -> Result<Self, String> {
+    async fn new(
+        window: Arc<Window>,
+        units: &[Unit],
+        world_radius: f32,
+        structures: &[StaticStructure],
+    ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -265,6 +277,34 @@ impl Renderer {
                 resource: ring_scene_buffer.as_entire_binding(),
             }],
         });
+        let structure_vertices = structure_vertices(structures);
+        let structure_vertex_count = structure_vertices.len() as u32;
+        let structure_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("static structure vertices"),
+                contents: bytemuck::cast_slice(&structure_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let structure_scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("static structure scene uniform"),
+            contents: bytemuck::bytes_of(&scene_uniform(
+                config.width,
+                config.height,
+                Camera::new(world_radius),
+                &ShipState::default(),
+                None,
+                PLAYER_ONE_COLOR,
+            )),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let structure_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("static structure bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: structure_scene_buffer.as_entire_binding(),
+            }],
+        });
         let marker_scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("destination marker scene uniform"),
             contents: bytemuck::bytes_of(&scene_uniform(
@@ -328,6 +368,10 @@ impl Renderer {
             ring_vertex_count,
             ring_scene_buffer,
             ring_bind_group,
+            structure_vertex_buffer,
+            structure_vertex_count,
+            structure_scene_buffer,
+            structure_bind_group,
             marker_scene_buffer,
             marker_bind_group,
             scene_buffers: scene_uniforms,
@@ -392,6 +436,22 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
+            self.queue.write_buffer(
+                &self.structure_scene_buffer,
+                0,
+                bytemuck::bytes_of(&scene_uniform(
+                    self.config.width,
+                    self.config.height,
+                    camera,
+                    &ShipState::default(),
+                    None,
+                    PLAYER_ONE_COLOR,
+                )),
+            );
+            pass.set_vertex_buffer(0, self.structure_vertex_buffer.slice(..));
+            pass.set_bind_group(0, &self.structure_bind_group, &[]);
+            pass.draw(0..self.structure_vertex_count, 0..1);
+
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             for (index, unit) in units.iter().enumerate() {
                 self.queue.write_buffer(
@@ -529,6 +589,7 @@ impl ApplicationHandler for App {
             window.clone(),
             &self.simulation.world.units,
             self.simulation.world_radius(),
+            self.simulation.world.structures(),
         )) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
@@ -706,7 +767,7 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     match renderer.render(
                         &self.simulation.world.units,
-                        self.presentation.marker(),
+                        self.presentation.marker(self.simulation.world()),
                         &self.combat_presentation,
                         self.camera,
                         Instant::now(),
@@ -779,9 +840,13 @@ mod tests {
     #[test]
     fn destination_presentation_tracks_confirmation_rejection_and_reset() {
         let now = Instant::now();
+        let world = spacegame2d_simulation::World::demo();
         let mut presentation = DestinationPresentation::default();
         presentation.begin(4, Vec2::new(2.0, 3.0));
-        assert_eq!(presentation.marker().unwrap().status, MarkerStatus::Pending);
+        assert_eq!(
+            presentation.marker(&world).unwrap().status,
+            MarkerStatus::Pending
+        );
         let command = spacegame2d_protocol::AuthoritativeCommand {
             execute_tick: Tick::new(2),
             player_slot: 1,
@@ -792,7 +857,7 @@ mod tests {
         };
         presentation.authoritative(1, &command);
         assert_eq!(
-            presentation.marker().unwrap().status,
+            presentation.marker(&world).unwrap().status,
             MarkerStatus::Confirmed
         );
         presentation.begin(5, Vec2::new(40.0, 0.0));
@@ -804,7 +869,7 @@ mod tests {
             now,
         );
         assert_eq!(
-            presentation.marker().unwrap().status,
+            presentation.marker(&world).unwrap().status,
             MarkerStatus::Confirmed
         );
         assert!(presentation.rejection_text(now).is_some());
@@ -817,8 +882,41 @@ mod tests {
                 command: spacegame2d_protocol::CommandData::ResetSimulation,
             },
         );
-        assert!(presentation.marker().is_none());
+        assert!(presentation.marker(&world).is_none());
         assert!(presentation.rejection_text(now).is_none());
+    }
+
+    #[test]
+    fn destination_markers_project_pending_and_confirmed_points() {
+        let world = spacegame2d_simulation::World::demo();
+        let mut presentation = DestinationPresentation::default();
+        presentation.begin(4, Vec2::ZERO);
+        assert_eq!(
+            presentation.marker(&world),
+            Some(DestinationMarker {
+                position: Vec2::new(3.85, 0.0),
+                status: MarkerStatus::Pending,
+            })
+        );
+
+        presentation.authoritative(
+            1,
+            &spacegame2d_protocol::AuthoritativeCommand {
+                execute_tick: Tick::new(2),
+                player_slot: 1,
+                sequence: 4,
+                command: spacegame2d_protocol::CommandData::SetDestination {
+                    destination: [0.0f32.to_bits(), 10.0f32.to_bits()],
+                },
+            },
+        );
+        assert_eq!(
+            presentation.marker(&world),
+            Some(DestinationMarker {
+                position: Vec2::new(2.75, 10.0),
+                status: MarkerStatus::Confirmed,
+            })
+        );
     }
 
     #[test]

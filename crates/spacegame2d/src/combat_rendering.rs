@@ -391,10 +391,15 @@ impl CombatRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ShipState;
     use crate::combat_presentation::CombatPresentation;
     use spacegame2d_protocol::Tick;
     use spacegame2d_simulation::{SimulationEvent, UnitId};
     use std::time::Instant;
+
+    fn unit(owner: Option<PlayerId>) -> Unit {
+        Unit::new(UnitId(1), owner, ShipState::default())
+    }
 
     #[test]
     fn tracer_uses_authoritative_impact_range_and_has_two_nonzero_quads() {
@@ -425,5 +430,96 @@ mod tests {
     fn empty_mesh_has_contiguous_empty_ranges() {
         let mesh = build_mesh(&[], &CombatPresentation::default(), Instant::now());
         assert!(mesh.turrets.is_empty() && mesh.tracers.is_empty() && mesh.flashes.is_empty());
+    }
+
+    #[test]
+    fn turret_mesh_contains_mount_barrel_and_team_color() {
+        let mesh = build_mesh(
+            &[unit(Some(PlayerId(2)))],
+            &CombatPresentation::default(),
+            Instant::now(),
+        );
+        assert_eq!(mesh.turrets, 0..84);
+        assert!(mesh.tracers.is_empty());
+        assert!(mesh.flashes.is_empty());
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|vertex| vertex.color == PLAYER_TWO_COLOR)
+        );
+        assert!(mesh.vertices.iter().all(|vertex| {
+            Vec2::from_array(vertex.position).is_finite()
+                && vertex.color.iter().all(|component| component.is_finite())
+        }));
+    }
+
+    #[test]
+    fn tracer_rejects_degenerate_and_non_finite_segments() {
+        let mut vertices = Vec::new();
+        append_tracer(&mut vertices, Vec2::ZERO, Vec2::ZERO, 1.0);
+        append_tracer(&mut vertices, Vec2::NAN, Vec2::X, 1.0);
+        assert!(vertices.is_empty());
+        append_tracer(&mut vertices, Vec2::ZERO, Vec2::Y, 2.0);
+        assert_eq!(vertices.len(), 12);
+        assert!(vertices.iter().all(|vertex| vertex.color[3] <= 1.0));
+    }
+
+    #[test]
+    fn flash_rejects_invalid_input_and_builds_cross_and_disc() {
+        let mut vertices = Vec::new();
+        append_flash(&mut vertices, Vec2::NAN, 1.0, 1.0);
+        append_flash(&mut vertices, Vec2::ZERO, 1.0, 0.0);
+        assert!(vertices.is_empty());
+        append_flash(&mut vertices, Vec2::ZERO, 2.0, 0.5);
+        assert_eq!(vertices.len(), 24);
+        assert!(vertices.iter().any(|vertex| vertex.color[3] == 0.45));
+        assert!(vertices.iter().any(|vertex| vertex.color[3] == 0.225));
+    }
+
+    #[test]
+    fn primitive_builders_handle_degenerate_quads_and_disc_segments() {
+        let mut vertices = Vec::new();
+        append_quad(&mut vertices, Vec2::ZERO, Vec2::ZERO, 1.0, OUTLINE_COLOR);
+        assert!(vertices.is_empty());
+        append_disc(&mut vertices, Vec2::ZERO, 1.0, OUTLINE_COLOR, 5);
+        assert_eq!(vertices.len(), 15);
+        assert!(vertices.iter().all(|vertex| vertex.color == OUTLINE_COLOR));
+    }
+
+    #[test]
+    fn alpha_is_clamped_and_vertex_layout_matches_vertex_type() {
+        assert_eq!(with_alpha([1.0, 0.5, 0.25, 0.5], -1.0)[3], 0.0);
+        assert_eq!(with_alpha([1.0, 0.5, 0.25, 0.5], 2.0)[3], 0.5);
+        let layout = CombatVertex::layout();
+        assert_eq!(
+            layout.array_stride,
+            std::mem::size_of::<CombatVertex>() as u64
+        );
+        assert_eq!(layout.attributes.len(), 2);
+    }
+
+    #[test]
+    fn mesh_ranges_are_contiguous_when_tracer_and_flash_are_present() {
+        let now = Instant::now();
+        let mut presentation = CombatPresentation::default();
+        let target = unit(Some(PlayerId(1)));
+        presentation.ingest(
+            now,
+            &[SimulationEvent::ShotFired {
+                tick: Tick::new(0),
+                shooter_id: UnitId(1),
+                muzzle_origin: Vec2::ZERO,
+                ray_endpoint: Vec2::Y * 12.0,
+                impact_position: Vec2::Y * 4.0,
+                hit_unit_id: Some(target.id),
+            }],
+            &[target],
+        );
+        let mesh = build_mesh(&[unit(None)], &presentation, now);
+        assert_eq!(mesh.turrets.end, mesh.tracers.start);
+        assert_eq!(mesh.tracers.end, mesh.flashes.start);
+        assert_eq!(mesh.flashes.end, mesh.vertices.len() as u32);
+        assert!(!mesh.tracers.is_empty());
+        assert!(!mesh.flashes.is_empty());
     }
 }

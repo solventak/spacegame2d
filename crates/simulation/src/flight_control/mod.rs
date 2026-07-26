@@ -9,6 +9,8 @@
 use glam::Vec2;
 
 use crate::command::UnitId;
+use crate::hitbox::Hitbox;
+use crate::structure::StaticStructureId;
 
 use crate::simulation::{
     FORWARD_THRUST_NEWTONS, FlightInput, MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, SHIP_MASS_KG,
@@ -16,23 +18,38 @@ use crate::simulation::{
 };
 
 pub mod arrival;
+pub mod avoidance;
 pub use arrival::ArrivalController;
+pub use avoidance::{
+    AvoidanceError, AvoidanceGroup, AvoidanceGroupId, AvoidanceProfile, AvoidanceProfiles,
+    MAX_AVOIDANCE_GROUPS, MOBILE_AVOIDANCE_GROUP, STRUCTURE_AVOIDANCE_GROUP,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NeighborRelationship {
     Friendly,
     Opposing,
+    StaticStructure,
+}
+
+/// Stable identity for an entity contributing to avoidance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AvoidanceEntityId {
+    Unit(UnitId),
+    StaticStructure(StaticStructureId),
 }
 
 /// Snapshot of one neighbor's kinematic state, observed at the start of a tick
 /// so every drone sees a consistent world.
 #[derive(Clone, Copy, Debug)]
 pub struct NeighborObservation {
-    pub unit_id: UnitId,
+    pub entity_id: AvoidanceEntityId,
     /// Neighbor position in arena-space meters.
     pub position: Vec2,
     /// Neighbor velocity in meters per second.
     pub velocity: Vec2,
+    /// Neighbor physical geometry, centered at [`Self::position`].
+    pub hitbox: Hitbox,
     pub relationship: NeighborRelationship,
 }
 
@@ -48,6 +65,8 @@ pub struct FlightObservation<'a> {
     pub heading_radians: f32,
     /// Ship angular velocity in radians per second.
     pub angular_velocity_radians_per_second: f32,
+    /// Ship physical geometry, centered at [`Self::position`].
+    pub hitbox: Hitbox,
     /// Target destination in arena-space meters.
     pub destination: Vec2,
     /// Neighbors visible to this ship this tick.
@@ -60,11 +79,21 @@ impl<'a> FlightObservation<'a> {
         destination: Vec2,
         neighbors: &'a [NeighborObservation],
     ) -> FlightObservation<'a> {
+        Self::from_ship_with_hitbox(ship, Hitbox::default_ship(), destination, neighbors)
+    }
+
+    pub fn from_ship_with_hitbox(
+        ship: &ShipState,
+        hitbox: Hitbox,
+        destination: Vec2,
+        neighbors: &'a [NeighborObservation],
+    ) -> FlightObservation<'a> {
         Self {
             position: ship.position,
             velocity: ship.velocity,
             heading_radians: ship.heading_radians,
             angular_velocity_radians_per_second: ship.angular_velocity_radians_per_second,
+            hitbox,
             destination,
             neighbors,
         }
