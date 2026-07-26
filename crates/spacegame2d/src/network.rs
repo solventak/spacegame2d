@@ -221,9 +221,10 @@ mod tests {
         address
     }
 
-    fn synthetic_server_with_messages(messages: Vec<Message>) -> String {
+    fn synthetic_server_with_messages(messages: Vec<Message>) -> (String, mpsc::Sender<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
+        let (shutdown_sender, shutdown_receiver) = mpsc::channel();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = Message::read(&mut stream).unwrap();
@@ -233,9 +234,9 @@ mod tests {
             for message in messages {
                 message.write(&mut stream).unwrap();
             }
-            thread::sleep(std::time::Duration::from_millis(100));
+            let _ = shutdown_receiver.recv();
         });
-        address
+        (address, shutdown_sender)
     }
 
     fn synthetic_server_collecting(count: usize) -> (String, mpsc::Receiver<Vec<Message>>) {
@@ -442,7 +443,7 @@ mod tests {
             sequence: 4,
             reason: spacegame2d_protocol::CommandRejectionReason::InvalidCommand,
         };
-        let address = synthetic_server_with_messages(vec![
+        let (address, _server_shutdown) = synthetic_server_with_messages(vec![
             Message::StateChecksum(StateChecksum {
                 tick: Tick::from(9),
                 hash: vec![1],
@@ -453,7 +454,7 @@ mod tests {
         let mut session = NetworkSession::connect(&address).unwrap();
         let mut events = Vec::new();
         for _ in 0..20 {
-            events = session.poll_events().unwrap();
+            events.extend(session.poll_events().unwrap());
             if events.len() == 2 {
                 break;
             }
