@@ -6,6 +6,7 @@
 
 use glam::Vec2;
 
+use crate::combat::MAX_CORE_HEALTH;
 use crate::command::PlayerId;
 use crate::hitbox::{Hitbox, PositionedHitbox};
 use crate::objective::ObjectiveState;
@@ -105,6 +106,8 @@ pub struct HomeObjectivePair {
     state: ObjectiveState,
     breach_progress_ticks: u32,
     exposure_ticks_remaining: u32,
+    core_health_current: u32,
+    core_health_maximum: u32,
 }
 
 impl HomeObjectivePair {
@@ -134,6 +137,25 @@ impl HomeObjectivePair {
 
     pub const fn is_core_exposed(self) -> bool {
         matches!(self.state, ObjectiveState::Exposed)
+    }
+
+    pub const fn core_health_current(self) -> u32 {
+        self.core_health_current
+    }
+    pub const fn core_health_maximum(self) -> u32 {
+        self.core_health_maximum
+    }
+    pub const fn is_core_targetable(self) -> bool {
+        self.is_core_exposed()
+    }
+
+    pub(crate) fn apply_core_damage(&mut self, amount: u32) {
+        self.core_health_current = self.core_health_current.saturating_sub(amount);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_core_health_current(&mut self, value: u32) {
+        self.core_health_current = value.min(self.core_health_maximum);
     }
 
     pub(crate) fn set_objective_state(
@@ -206,6 +228,8 @@ pub(crate) fn initial_home_objectives() -> (Vec<StaticStructure>, Vec<HomeObject
             state: ObjectiveState::Protected,
             breach_progress_ticks: 0,
             exposure_ticks_remaining: 0,
+            core_health_current: MAX_CORE_HEALTH,
+            core_health_maximum: MAX_CORE_HEALTH,
         });
     }
     (structures, pairs)
@@ -254,6 +278,8 @@ mod tests {
                     state: ObjectiveState::Protected,
                     breach_progress_ticks: 0,
                     exposure_ticks_remaining: 0,
+                    core_health_current: MAX_CORE_HEALTH,
+                    core_health_maximum: MAX_CORE_HEALTH,
                 },
                 HomeObjectivePair {
                     owner: PlayerId(2),
@@ -262,6 +288,8 @@ mod tests {
                     state: ObjectiveState::Protected,
                     breach_progress_ticks: 0,
                     exposure_ticks_remaining: 0,
+                    core_health_current: MAX_CORE_HEALTH,
+                    core_health_maximum: MAX_CORE_HEALTH,
                 },
             ]
         );

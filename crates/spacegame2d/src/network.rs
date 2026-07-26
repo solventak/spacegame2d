@@ -451,9 +451,10 @@ mod tests {
             Message::CommandRejected(rejected.clone()),
         ]);
         let mut session = NetworkSession::connect(&address).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut events = Vec::new();
-        for _ in 0..20 {
-            events = session.poll_events().unwrap();
+        while std::time::Instant::now() < deadline {
+            events.extend(session.poll_events().unwrap());
             if events.len() == 2 {
                 break;
             }

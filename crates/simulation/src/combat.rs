@@ -11,6 +11,18 @@ pub const FIRE_INTERVAL_TICKS: u32 = 15;
 /// ships enough time to maneuver and retarget during an engagement.
 pub const WEAPON_DAMAGE: u32 = 6;
 pub const MUZZLE_OFFSET_METERS: f32 = 0.5;
+/// Prototype durability shared by every Command Core.
+pub const MAX_CORE_HEALTH: u32 = 1_000;
+
+/// Stable identity of an entity which can be selected by a turret.
+///
+/// This is intentionally distinct from [`ImpactEntityId`]: a protected Core
+/// may intercept a shot without being targetable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CombatTargetId {
+    Unit(UnitId),
+    CommandCore(StaticStructureId),
+}
 
 /// Stable identity of an entity a shot physically impacts.
 ///
@@ -41,7 +53,7 @@ pub struct TurretState {
     /// Barrel angle in the hull's local frame. The world barrel direction is
     /// this angle plus the ship heading.
     pub local_heading_radians: f32,
-    pub target: Option<UnitId>,
+    pub target: Option<CombatTargetId>,
     pub cooldown_ticks_remaining: u32,
 }
 
