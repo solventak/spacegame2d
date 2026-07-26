@@ -9,6 +9,7 @@ use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::combat::CombatState;
 use crate::config::{AvoidanceConfig, MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
+use crate::hitbox::{Hitbox, PositionedHitbox};
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -73,6 +74,7 @@ pub struct Unit {
     pub state: ShipState,
     pub autopilot: Autopilot,
     pub combat: CombatState,
+    hitbox: Hitbox,
 }
 
 impl Unit {
@@ -86,8 +88,18 @@ impl Unit {
                 AutopilotConfig::default(),
             ),
             combat: CombatState::new(),
+            hitbox: Hitbox::default_ship(),
         }
     }
+
+    pub const fn hitbox(&self) -> Hitbox {
+        self.hitbox
+    }
+
+    pub fn positioned_hitbox(&self) -> PositionedHitbox {
+        self.hitbox.positioned_at(self.state.position)
+    }
+
     pub fn with_avoidance(
         id: UnitId,
         owner: Option<PlayerId>,
@@ -96,8 +108,8 @@ impl Unit {
     ) -> Self {
         let controller = ArrivalController {
             config: crate::flight_control::arrival::ArrivalControllerConfig {
-                comfort_radius_meters: avoidance.friendly_comfort_radius_meters,
-                opposing_comfort_radius_meters: avoidance.opposing_comfort_radius_meters,
+                comfort_clearance_meters: avoidance.friendly_comfort_clearance_meters,
+                opposing_comfort_clearance_meters: avoidance.opposing_comfort_clearance_meters,
                 avoidance_strength: avoidance.friendly_strength,
                 opposing_avoidance_strength: avoidance.opposing_strength,
                 prediction_horizon_seconds: avoidance.prediction_horizon_seconds,
@@ -112,6 +124,7 @@ impl Unit {
             state,
             autopilot: Autopilot::new(Box::new(controller), AutopilotConfig::default()),
             combat: CombatState::new(),
+            hitbox: Hitbox::default_ship(),
         }
     }
 }
@@ -494,6 +507,15 @@ impl From<&RecordedCommand> for Box<dyn Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_hitbox_center_follows_ship_position() {
+        let mut unit = Unit::new(UnitId(1), None, ShipState::default());
+        assert_eq!(unit.positioned_hitbox().center(), Vec2::ZERO);
+        unit.state.position = Vec2::new(3.0, -2.0);
+        assert_eq!(unit.positioned_hitbox().center(), unit.state.position);
+        assert_eq!(unit.hitbox(), Hitbox::default_ship());
+    }
 
     fn destination(slot: u32, _unit_id: u32, execute_tick: u64) -> AuthoritativeCommand {
         AuthoritativeCommand {

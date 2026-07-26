@@ -5,6 +5,7 @@ use crate::command::UnitId;
 use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::config::{DEFAULT_FLEET_SIZE, SimulationConfig};
 use crate::flight_control::{ArrivalController, NeighborObservation, NeighborRelationship};
+use crate::hitbox::{Hitbox, PositionedHitbox};
 use crate::simulation::{ShipState, is_out_of_bounds, step_ship};
 
 /// Number of drones spawned by [`Fleet::new`] and [`Fleet::reset`].
@@ -19,6 +20,7 @@ pub const DRONE_COUNT: usize = DEFAULT_FLEET_SIZE as usize;
 pub struct Unit {
     pub state: ShipState,
     pub autopilot: Autopilot,
+    hitbox: Hitbox,
 }
 
 impl Unit {
@@ -29,7 +31,16 @@ impl Unit {
                 Box::new(ArrivalController::default()),
                 AutopilotConfig::default(),
             ),
+            hitbox: Hitbox::default_ship(),
         }
+    }
+
+    pub const fn hitbox(&self) -> Hitbox {
+        self.hitbox
+    }
+
+    pub fn positioned_hitbox(&self) -> PositionedHitbox {
+        self.hitbox.positioned_at(self.state.position)
     }
 }
 
@@ -100,6 +111,7 @@ impl Fleet {
                 unit_id: UnitId((index + 1) as u32),
                 position: u.state.position,
                 velocity: u.state.velocity,
+                hitbox: u.hitbox(),
                 relationship: NeighborRelationship::Friendly,
             })
             .collect();
@@ -110,7 +122,11 @@ impl Fleet {
                 .filter(|(i, _)| *i != index)
                 .map(|(_, n)| *n)
                 .collect();
-            let controls = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
+            let controls = unit.autopilot.controls_for_tick_with_hitbox(
+                &unit.state,
+                unit.hitbox(),
+                &neighbors,
+            );
             step_ship(&mut unit.state, controls);
         }
     }

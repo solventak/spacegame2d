@@ -5,6 +5,7 @@ use crate::combat::{
 use crate::command::{CommandScheduler, UnitId, World};
 use crate::config::SimulationConfig;
 use crate::flight_control::{NeighborObservation, NeighborRelationship};
+use crate::hitbox::Hitbox;
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,37 +189,41 @@ impl Simulation {
     /// authoritative World units, and deriving transient boundary events.
     pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
         self.commands.execute_pending(self.tick, &mut self.world)?;
-        let mut observations: Vec<(
-            crate::command::UnitId,
-            Option<crate::command::PlayerId>,
-            Vec2,
-            Vec2,
-        )> = self
+        let mut observations: Vec<TickUnitObservation> = self
             .world
             .units
             .iter()
-            .map(|u| (u.id, u.owner, u.state.position, u.state.velocity))
+            .map(|unit| TickUnitObservation {
+                unit_id: unit.id,
+                owner: unit.owner,
+                position: unit.state.position,
+                velocity: unit.state.velocity,
+                hitbox: unit.hitbox(),
+            })
             .collect();
-        observations.sort_unstable_by_key(|(unit_id, ..)| *unit_id);
+        observations.sort_unstable_by_key(|observation| observation.unit_id);
         for unit in self.world.units.iter_mut() {
             let owner = unit.owner;
             let neighbors = observations
                 .iter()
-                .filter(|(neighbor_id, ..)| *neighbor_id != unit.id)
-                .map(
-                    |(neighbor_id, neighbor_owner, position, velocity)| NeighborObservation {
-                        unit_id: *neighbor_id,
-                        position: *position,
-                        velocity: *velocity,
-                        relationship: if owner.is_some() && owner == *neighbor_owner {
-                            NeighborRelationship::Friendly
-                        } else {
-                            NeighborRelationship::Opposing
-                        },
+                .filter(|neighbor| neighbor.unit_id != unit.id)
+                .map(|neighbor| NeighborObservation {
+                    unit_id: neighbor.unit_id,
+                    position: neighbor.position,
+                    velocity: neighbor.velocity,
+                    hitbox: neighbor.hitbox,
+                    relationship: if owner.is_some() && owner == neighbor.owner {
+                        NeighborRelationship::Friendly
+                    } else {
+                        NeighborRelationship::Opposing
                     },
-                )
+                })
                 .collect::<Vec<_>>();
-            let input = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
+            let input = unit.autopilot.controls_for_tick_with_hitbox(
+                &unit.state,
+                unit.hitbox(),
+                &neighbors,
+            );
             step_ship(&mut unit.state, input);
         }
         let observations = combat_observations(&self.world);
@@ -346,6 +351,16 @@ impl Simulation {
         self.tick = self.tick.increment(Tick::new(1));
         Ok(events)
     }
+}
+
+/// Immutable unit state sampled at the start of a simulation tick.
+#[derive(Clone, Copy)]
+struct TickUnitObservation {
+    unit_id: crate::command::UnitId,
+    owner: Option<crate::command::PlayerId>,
+    position: Vec2,
+    velocity: Vec2,
+    hitbox: Hitbox,
 }
 
 #[derive(Clone, Copy)]

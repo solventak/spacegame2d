@@ -68,10 +68,10 @@ pub struct ArrivalControllerConfig {
     pub arrival_radius_meters: f32,
     /// Prediction horizon for neighbor closest-approach guidance.
     pub prediction_horizon_seconds: f32,
-    /// Distance inside which predicted approaches produce guidance.
-    pub comfort_radius_meters: f32,
-    /// Distance inside which opposing predicted approaches produce guidance.
-    pub opposing_comfort_radius_meters: f32,
+    /// Desired hull-to-hull clearance for predicted friendly approaches.
+    pub comfort_clearance_meters: f32,
+    /// Desired hull-to-hull clearance for predicted opposing approaches.
+    pub opposing_comfort_clearance_meters: f32,
     /// Strength of each neighbor guidance contribution.
     pub avoidance_strength: f32,
     /// Maximum total neighbor guidance magnitude.
@@ -91,8 +91,8 @@ impl Default for ArrivalControllerConfig {
             angular_deadband: 0.08,
             arrival_radius_meters: 0.6,
             prediction_horizon_seconds: 0.75,
-            comfort_radius_meters: 2.,
-            opposing_comfort_radius_meters: 4.0,
+            comfort_clearance_meters: 2.,
+            opposing_comfort_clearance_meters: 4.0,
             avoidance_strength: 8.0,
             max_avoidance_acceleration: 12.0,
             opposing_avoidance_strength: 24.0,
@@ -162,8 +162,6 @@ impl FlightController for ArrivalController {
 impl ArrivalController {
     fn avoidance_acceleration(&self, observation: FlightObservation) -> Vec2 {
         if observation.neighbors.is_empty()
-            || (self.config.comfort_radius_meters <= 0.0
-                && self.config.opposing_comfort_radius_meters <= 0.0)
             || (self.config.avoidance_strength <= 0.0
                 && self.config.opposing_avoidance_strength <= 0.0)
         {
@@ -186,11 +184,16 @@ impl ArrivalController {
                 relative_velocity,
                 self.config.prediction_horizon_seconds,
             );
-            let comfort_radius = match neighbor.relationship {
-                NeighborRelationship::Friendly => self.config.comfort_radius_meters,
-                NeighborRelationship::Opposing => self.config.opposing_comfort_radius_meters,
+            let desired_clearance = match neighbor.relationship {
+                NeighborRelationship::Friendly => self.config.comfort_clearance_meters,
+                NeighborRelationship::Opposing => self.config.opposing_comfort_clearance_meters,
             };
-            if comfort_radius <= 0.0 || closest.distance_meters >= comfort_radius {
+            let own_hitbox = observation.hitbox.positioned_at(observation.position);
+            let neighbor_hitbox = neighbor.hitbox.positioned_at(neighbor.position);
+            let contact_distance = own_hitbox.contact_distance_to(neighbor_hitbox);
+            let predicted_clearance = closest.distance_meters - contact_distance;
+            let activation_distance = contact_distance + desired_clearance;
+            if predicted_clearance >= desired_clearance || activation_distance <= 0.0 {
                 continue;
             }
 
@@ -203,7 +206,8 @@ impl ArrivalController {
             } else {
                 Vec2::ZERO
             };
-            let penetration = 1.0 - closest.distance_meters / comfort_radius;
+            let penetration =
+                ((desired_clearance - predicted_clearance) / activation_distance).clamp(0.0, 1.0);
             let contribution = away * penetration * penetration * 0.5;
             match neighbor.relationship {
                 NeighborRelationship::Friendly => {
@@ -224,6 +228,7 @@ impl ArrivalController {
 mod tests {
     use super::*;
     use crate::flight_control::{NeighborObservation, NeighborRelationship};
+    use crate::hitbox::Hitbox;
     use crate::simulation::ShipState;
     use glam::Vec2;
     #[test]
@@ -259,12 +264,13 @@ mod tests {
     }
 
     #[test]
-    fn neighbors_outside_comfort_radius_produce_no_avoidance() {
+    fn neighbors_outside_combined_hulls_and_comfort_clearance_produce_no_avoidance() {
         let controller = ArrivalController::default();
         let neighbor = NeighborObservation {
             unit_id: crate::command::UnitId(1),
-            position: Vec2::X * 2.0,
+            position: Vec2::X * 3.3,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let neighbors = [neighbor];
@@ -273,24 +279,101 @@ mod tests {
     }
 
     #[test]
-    fn opposing_neighbors_use_the_larger_soft_radius() {
+    fn equal_center_distances_produce_more_avoidance_for_larger_hulls() {
+        let controller = ArrivalController::default();
+        let small_neighbor = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
+            position: Vec2::X * 2.5,
+            velocity: Vec2::ZERO,
+            hitbox: Hitbox::circle(0.2).unwrap(),
+            relationship: NeighborRelationship::Friendly,
+        };
+        let large_neighbor = NeighborObservation {
+            hitbox: Hitbox::circle(1.0).unwrap(),
+            ..small_neighbor
+        };
+        let own_hitbox = Hitbox::circle(0.6).unwrap();
+        let small = controller.avoidance_acceleration(FlightObservation::from_ship_with_hitbox(
+            &ShipState::default(),
+            own_hitbox,
+            Vec2::Y,
+            &[small_neighbor],
+        ));
+        let large = controller.avoidance_acceleration(FlightObservation::from_ship_with_hitbox(
+            &ShipState::default(),
+            own_hitbox,
+            Vec2::Y,
+            &[large_neighbor],
+        ));
+
+        assert!(large.length() > small.length());
+    }
+
+    #[test]
+    fn zero_clearance_allows_tangency_but_responds_to_overlap() {
         let controller = ArrivalController {
             config: ArrivalControllerConfig {
-                comfort_radius_meters: 1.2,
-                opposing_comfort_radius_meters: 2.0,
+                comfort_clearance_meters: 0.0,
+                opposing_comfort_clearance_meters: 0.0,
+                ..ArrivalControllerConfig::default()
+            },
+        };
+        let hitbox = Hitbox::circle(0.6).unwrap();
+        let tangent = NeighborObservation {
+            unit_id: crate::command::UnitId(1),
+            position: Vec2::X * 1.2,
+            velocity: Vec2::ZERO,
+            hitbox,
+            relationship: NeighborRelationship::Friendly,
+        };
+        let overlapping = NeighborObservation {
+            position: Vec2::X,
+            ..tangent
+        };
+
+        assert_eq!(
+            controller.avoidance_acceleration(FlightObservation::from_ship_with_hitbox(
+                &ShipState::default(),
+                hitbox,
+                Vec2::Y,
+                &[tangent],
+            )),
+            Vec2::ZERO
+        );
+        assert!(
+            controller
+                .avoidance_acceleration(FlightObservation::from_ship_with_hitbox(
+                    &ShipState::default(),
+                    hitbox,
+                    Vec2::Y,
+                    &[overlapping],
+                ))
+                .length()
+                > 0.0
+        );
+    }
+
+    #[test]
+    fn opposing_neighbors_use_the_larger_comfort_clearance() {
+        let controller = ArrivalController {
+            config: ArrivalControllerConfig {
+                comfort_clearance_meters: 1.2,
+                opposing_comfort_clearance_meters: 2.0,
                 ..ArrivalControllerConfig::default()
             },
         };
         let friendly = NeighborObservation {
             unit_id: crate::command::UnitId(1),
-            position: Vec2::X * 1.5,
+            position: Vec2::X * 2.8,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let opposing = NeighborObservation {
             unit_id: crate::command::UnitId(1),
-            position: Vec2::X * 1.5,
+            position: Vec2::X * 2.8,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Opposing,
         };
         let friendly_result = controller.avoidance_acceleration(FlightObservation::from_ship(
@@ -314,12 +397,14 @@ mod tests {
             unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let marginal = NeighborObservation {
             unit_id: crate::command::UnitId(1),
             position: Vec2::X,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let near_neighbors = [near];
@@ -344,6 +429,7 @@ mod tests {
                 unit_id: crate::command::UnitId(1),
                 position: Vec2::X * 0.2,
                 velocity: Vec2::ZERO,
+                hitbox: Hitbox::default_ship(),
                 relationship: NeighborRelationship::Friendly,
             };
             64
@@ -366,12 +452,14 @@ mod tests {
             unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let opposing = NeighborObservation {
             unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Opposing,
         };
         let friendly_neighbors = [friendly];
@@ -400,6 +488,7 @@ mod tests {
             unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.3,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Opposing,
         };
         let response = |speed: f32| {
@@ -425,6 +514,7 @@ mod tests {
             unit_id: crate::command::UnitId(1),
             position: Vec2::X * 0.5,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let input = controller.desired_input(FlightObservation::from_ship(

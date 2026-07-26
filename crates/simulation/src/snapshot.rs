@@ -82,6 +82,9 @@ impl SimulationSnapshot {
 
 impl From<&Unit> for UnitSnapshot {
     fn from(unit: &Unit) -> Self {
+        // Every movable unit currently uses the shared code-defined ship
+        // hitbox. Once hitboxes become runtime-configurable, their geometry
+        // must be included in this canonical snapshot and state hash.
         let config: AutopilotConfig = unit.autopilot.config();
         Self {
             id: unit.id.0,
