@@ -9,7 +9,7 @@ use crate::{
 };
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 5;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 6;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -42,6 +42,9 @@ pub struct HomeObjectivePairSnapshot {
     pub owner: u8,
     pub core_id: u32,
     pub relay_id: u32,
+    pub state_tag: u8,
+    pub breach_progress_ticks: u32,
+    pub exposure_ticks_remaining: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,6 +172,9 @@ impl From<&HomeObjectivePair> for HomeObjectivePairSnapshot {
             owner: pair.owner().0,
             core_id: pair.core_id().0,
             relay_id: pair.relay_id().0,
+            state_tag: pair.state().canonical_tag(),
+            breach_progress_ticks: pair.breach_progress_ticks(),
+            exposure_ticks_remaining: pair.exposure_ticks_remaining(),
         }
     }
 }
@@ -178,6 +184,9 @@ impl HomeObjectivePairSnapshot {
         bytes.push(self.owner);
         put_u32(bytes, self.core_id);
         put_u32(bytes, self.relay_id);
+        bytes.push(self.state_tag);
+        put_u32(bytes, self.breach_progress_ticks);
+        put_u32(bytes, self.exposure_ticks_remaining);
     }
 }
 
@@ -322,11 +331,17 @@ mod tests {
                     owner: 1,
                     core_id: 1,
                     relay_id: 2,
+                    state_tag: 1,
+                    breach_progress_ticks: 0,
+                    exposure_ticks_remaining: 0,
                 },
                 HomeObjectivePairSnapshot {
                     owner: 2,
                     core_id: 3,
                     relay_id: 4,
+                    state_tag: 1,
+                    breach_progress_ticks: 0,
+                    exposure_ticks_remaining: 0,
                 },
             ]
         );
@@ -357,6 +372,13 @@ mod tests {
             |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].owner += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].core_id += 1,
             |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].relay_id += 1,
+            |snapshot: &mut SimulationSnapshot| snapshot.home_objective_pairs[0].state_tag += 1,
+            |snapshot: &mut SimulationSnapshot| {
+                snapshot.home_objective_pairs[0].breach_progress_ticks += 1
+            },
+            |snapshot: &mut SimulationSnapshot| {
+                snapshot.home_objective_pairs[0].exposure_ticks_remaining += 1
+            },
         ] {
             let mut changed = baseline.clone();
             mutate(&mut changed);

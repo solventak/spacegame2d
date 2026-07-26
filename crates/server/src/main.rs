@@ -364,6 +364,16 @@ pub async fn run_with_config(
                 } => {
                     tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
                 }
+                spacegame2d_simulation::SimulationEvent::ObjectiveTransition {
+                    tick,
+                    owner,
+                    relay_id,
+                    core_id,
+                    previous_state,
+                    next_state,
+                } => {
+                    tracing::info!(event = "objective_transition", tick = ?tick, owner = owner.0, relay_id = relay_id.0, core_id = core_id.0, previous_state = ?previous_state, next_state = ?next_state);
+                }
             }
         }
         let completed_tick = simulation.tick();

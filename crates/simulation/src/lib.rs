@@ -26,6 +26,7 @@ pub mod config;
 pub mod fleet;
 pub mod flight_control;
 pub mod hitbox;
+pub mod objective;
 pub mod simulation;
 pub mod snapshot;
 pub mod structure;
@@ -45,6 +46,10 @@ pub use config::{
 };
 pub use hitbox::{
     Circle, DEFAULT_SHIP_HITBOX_RADIUS_METERS, Hitbox, HitboxError, HitboxShape, PositionedHitbox,
+};
+pub use objective::{
+    BREACH_DURATION_TICKS, CAPTURE_RADIUS_METERS, DECAY_DURATION_TICKS, EXPOSURE_DURATION_TICKS,
+    ObjectiveState,
 };
 pub use simulation::SimulationEvent;
 pub use structure::{HomeObjectivePair, StaticStructure, StaticStructureId, StaticStructureKind};

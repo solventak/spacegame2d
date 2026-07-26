@@ -6,6 +6,9 @@ use crate::command::{CommandScheduler, UnitId, World};
 use crate::config::SimulationConfig;
 use crate::flight_control::{AvoidanceEntityId, NeighborObservation, NeighborRelationship};
 use crate::hitbox::Hitbox;
+use crate::objective::{
+    CAPTURE_RADIUS_SQUARED_METERS, ObjectivePresence, ObjectiveState, advance_pair,
+};
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
 use std::collections::{BTreeMap, BTreeSet};
@@ -325,6 +328,7 @@ impl Simulation {
                 true
             }
         });
+        self.advance_objectives(false, &mut events);
         let live_ids = self
             .world
             .units
@@ -344,6 +348,56 @@ impl Simulation {
         events.sort_by_key(simulation_event_sort_key);
         self.tick = self.tick.increment(Tick::new(1));
         Ok(events)
+    }
+}
+
+impl Simulation {
+    fn advance_objectives(&mut self, frozen: bool, events: &mut Vec<SimulationEvent>) {
+        let samples = self
+            .world
+            .home_objective_pairs()
+            .iter()
+            .map(|pair| {
+                let relay = self
+                    .world
+                    .structures()
+                    .iter()
+                    .find(|structure| structure.id() == pair.relay_id())
+                    .expect("home objective relay must exist");
+                let mut presence = ObjectivePresence::default();
+                for unit in &self.world.units {
+                    let Some(owner) = unit.owner else {
+                        continue;
+                    };
+                    if unit.state.position.distance_squared(relay.position())
+                        > CAPTURE_RADIUS_SQUARED_METERS
+                    {
+                        continue;
+                    }
+                    if owner == pair.owner() {
+                        presence.has_defender = true;
+                    } else {
+                        presence.has_attacker = true;
+                    }
+                }
+                (pair.owner(), pair.relay_id(), pair.core_id(), presence)
+            })
+            .collect::<Vec<_>>();
+        for ((owner, relay_id, core_id, presence), pair) in samples
+            .into_iter()
+            .zip(self.world.home_objective_pairs_mut())
+        {
+            if let Some((previous_state, next_state)) = advance_pair(pair, presence, frozen) {
+                events.push(SimulationEvent::ObjectiveTransition {
+                    tick: self.tick,
+                    owner,
+                    relay_id,
+                    core_id,
+                    previous_state,
+                    next_state,
+                });
+            }
+        }
     }
 }
 
@@ -485,11 +539,14 @@ fn first_hostile_hit(
         .map(|(entry_distance, id)| (id, origin + direction * entry_distance))
 }
 
-fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, UnitId) {
+fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, u32, u32) {
     match event {
-        SimulationEvent::ShotFired { shooter_id, .. } => (0, *shooter_id),
-        SimulationEvent::HullDepleted { unit_id, .. } => (1, *unit_id),
-        SimulationEvent::BoundaryCrossed { unit_id, .. } => (2, *unit_id),
+        SimulationEvent::ShotFired { shooter_id, .. } => (0, shooter_id.0, 0),
+        SimulationEvent::HullDepleted { unit_id, .. } => (1, unit_id.0, 0),
+        SimulationEvent::BoundaryCrossed { unit_id, .. } => (2, unit_id.0, 0),
+        SimulationEvent::ObjectiveTransition { owner, core_id, .. } => {
+            (3, owner.0 as u32, core_id.0)
+        }
     }
 }
 
@@ -512,6 +569,14 @@ pub enum SimulationEvent {
         tick: Tick,
         unit_id: UnitId,
         position: Vec2,
+    },
+    ObjectiveTransition {
+        tick: Tick,
+        owner: crate::command::PlayerId,
+        relay_id: crate::structure::StaticStructureId,
+        core_id: crate::structure::StaticStructureId,
+        previous_state: ObjectiveState,
+        next_state: ObjectiveState,
     },
 }
 
@@ -573,6 +638,7 @@ mod tests {
     use crate::flight_control::{
         ArrivalController, AvoidanceProfile, AvoidanceProfiles, NeighborRelationship,
     };
+    use crate::objective::{BREACH_DURATION_TICKS, EXPOSURE_DURATION_TICKS};
 
     #[test]
     fn starts_without_player_ship() {
@@ -584,6 +650,110 @@ mod tests {
         let mut sim = Simulation::default();
         assert!(sim.step().unwrap().is_empty());
         assert_eq!(sim.tick(), Tick::new(1));
+    }
+
+    fn attacker_at_first_relay() -> Simulation {
+        let mut simulation = Simulation::default();
+        simulation.world.units.truncate(1);
+        simulation.world.units[0].owner = Some(PlayerId(2));
+        simulation.world.units[0].state.position = simulation.world.structures()[1].position();
+        simulation
+    }
+
+    #[test]
+    fn relay_breach_uses_one_attacker_token_and_exact_duration() {
+        let mut simulation = attacker_at_first_relay();
+        for _ in 0..BREACH_DURATION_TICKS - 1 {
+            simulation.step().unwrap();
+        }
+        let pair = simulation.world.home_objective_pairs()[0];
+        assert_eq!(pair.state(), ObjectiveState::Breaching);
+        assert_eq!(pair.breach_progress_ticks(), BREACH_DURATION_TICKS - 1);
+
+        let events = simulation.step().unwrap();
+        let pair = simulation.world.home_objective_pairs()[0];
+        assert_eq!(pair.state(), ObjectiveState::Exposed);
+        assert_eq!(pair.exposure_ticks_remaining(), EXPOSURE_DURATION_TICKS);
+        assert!(matches!(
+            events.as_slice(),
+            [SimulationEvent::ObjectiveTransition {
+                previous_state: ObjectiveState::Breaching,
+                next_state: ObjectiveState::Exposed,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn defender_contests_would_be_completion_tick_and_unowned_units_do_not() {
+        let mut simulation = attacker_at_first_relay();
+        simulation.world.units.push(crate::command::Unit::new(
+            UnitId(99),
+            None,
+            ShipState {
+                position: simulation.world.structures()[1].position(),
+                ..ShipState::default()
+            },
+        ));
+        for _ in 0..BREACH_DURATION_TICKS - 1 {
+            simulation.step().unwrap();
+        }
+        simulation.world.units[1].owner = Some(PlayerId(1));
+        let events = simulation.step().unwrap();
+        let pair = simulation.world.home_objective_pairs()[0];
+        assert_eq!(pair.state(), ObjectiveState::Contested);
+        assert_eq!(pair.breach_progress_ticks(), BREACH_DURATION_TICKS - 1);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SimulationEvent::ObjectiveTransition {
+                previous_state: ObjectiveState::Breaching,
+                next_state: ObjectiveState::Contested,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn breach_decays_recovers_and_then_starts_again_on_following_tick() {
+        let mut simulation = attacker_at_first_relay();
+        for _ in 0..BREACH_DURATION_TICKS {
+            simulation.step().unwrap();
+        }
+        for _ in 0..EXPOSURE_DURATION_TICKS - 1 {
+            simulation.step().unwrap();
+        }
+        assert_eq!(
+            simulation.world.home_objective_pairs()[0].state(),
+            ObjectiveState::Exposed
+        );
+        let recovery = simulation.step().unwrap();
+        let pair = simulation.world.home_objective_pairs()[0];
+        assert_eq!(pair.state(), ObjectiveState::Protected);
+        assert_eq!(pair.breach_progress_ticks(), 0);
+        assert!(matches!(
+            recovery.as_slice(),
+            [SimulationEvent::ObjectiveTransition {
+                previous_state: ObjectiveState::Exposed,
+                next_state: ObjectiveState::Protected,
+                ..
+            }]
+        ));
+        simulation.step().unwrap();
+        let pair = simulation.world.home_objective_pairs()[0];
+        assert_eq!(pair.state(), ObjectiveState::Breaching);
+        assert_eq!(pair.breach_progress_ticks(), 1);
+    }
+
+    #[test]
+    fn frozen_objectives_do_not_change_or_emit_events() {
+        let mut simulation = attacker_at_first_relay();
+        let mut events = Vec::new();
+        simulation.advance_objectives(true, &mut events);
+        assert!(events.is_empty());
+        assert_eq!(
+            simulation.world.home_objective_pairs()[0].state(),
+            ObjectiveState::Protected
+        );
     }
 
     #[test]
@@ -684,6 +854,9 @@ mod tests {
                 SimulationEvent::ShotFired { shooter_id, .. } => *shooter_id,
                 SimulationEvent::HullDepleted { unit_id, .. }
                 | SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
+                SimulationEvent::ObjectiveTransition { .. } => {
+                    unreachable!("this test only produces boundary events")
+                }
             })
             .collect::<Vec<_>>();
 

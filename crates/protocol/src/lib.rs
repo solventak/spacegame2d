@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 13;
+pub const SIMULATION_VERSION: u32 = 14;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,8 +400,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owned_home_objective_pairs_bump_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 13);
+    fn shield_relay_breach_state_bumps_simulation_version() {
+        assert_eq!(SIMULATION_VERSION, 14);
     }
 
     fn destination() -> CommandData {

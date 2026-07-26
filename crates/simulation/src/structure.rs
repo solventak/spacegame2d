@@ -8,6 +8,7 @@ use glam::Vec2;
 
 use crate::command::PlayerId;
 use crate::hitbox::{Hitbox, PositionedHitbox};
+use crate::objective::ObjectiveState;
 
 const COMMAND_CORE_VISUAL_RADIUS_METERS: f32 = 3.5;
 const COMMAND_CORE_HITBOX_RADIUS_METERS: f32 = 3.85;
@@ -101,6 +102,9 @@ pub struct HomeObjectivePair {
     owner: PlayerId,
     core_id: StaticStructureId,
     relay_id: StaticStructureId,
+    state: ObjectiveState,
+    breach_progress_ticks: u32,
+    exposure_ticks_remaining: u32,
 }
 
 impl HomeObjectivePair {
@@ -114,6 +118,33 @@ impl HomeObjectivePair {
 
     pub const fn relay_id(self) -> StaticStructureId {
         self.relay_id
+    }
+
+    pub const fn state(self) -> ObjectiveState {
+        self.state
+    }
+
+    pub const fn breach_progress_ticks(self) -> u32 {
+        self.breach_progress_ticks
+    }
+
+    pub const fn exposure_ticks_remaining(self) -> u32 {
+        self.exposure_ticks_remaining
+    }
+
+    pub const fn is_core_exposed(self) -> bool {
+        matches!(self.state, ObjectiveState::Exposed)
+    }
+
+    pub(crate) fn set_objective_state(
+        &mut self,
+        state: ObjectiveState,
+        breach_progress_ticks: u32,
+        exposure_ticks_remaining: u32,
+    ) {
+        self.state = state;
+        self.breach_progress_ticks = breach_progress_ticks;
+        self.exposure_ticks_remaining = exposure_ticks_remaining;
     }
 }
 
@@ -172,6 +203,9 @@ pub(crate) fn initial_home_objectives() -> (Vec<StaticStructure>, Vec<HomeObject
             owner: home.owner,
             core_id: home.core_id,
             relay_id: home.relay_id,
+            state: ObjectiveState::Protected,
+            breach_progress_ticks: 0,
+            exposure_ticks_remaining: 0,
         });
     }
     (structures, pairs)
@@ -217,11 +251,17 @@ mod tests {
                     owner: PlayerId(1),
                     core_id: StaticStructureId(1),
                     relay_id: StaticStructureId(2),
+                    state: ObjectiveState::Protected,
+                    breach_progress_ticks: 0,
+                    exposure_ticks_remaining: 0,
                 },
                 HomeObjectivePair {
                     owner: PlayerId(2),
                     core_id: StaticStructureId(3),
                     relay_id: StaticStructureId(4),
+                    state: ObjectiveState::Protected,
+                    breach_progress_ticks: 0,
+                    exposure_ticks_remaining: 0,
                 },
             ]
         );

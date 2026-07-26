@@ -172,6 +172,10 @@ impl World {
         &self.home_objective_pairs
     }
 
+    pub(crate) fn home_objective_pairs_mut(&mut self) -> &mut [HomeObjectivePair] {
+        &mut self.home_objective_pairs
+    }
+
     /// Project a requested destination out of a static structure hitbox.
     ///
     /// The first containing structure in stable identity order wins. Built-in

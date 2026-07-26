@@ -64,7 +64,8 @@ impl CombatPresentation {
                 } => {
                     positions.insert(unit_id, position);
                 }
-                SimulationEvent::ShotFired { .. } => {}
+                SimulationEvent::ShotFired { .. } | SimulationEvent::ObjectiveTransition { .. } => {
+                }
             }
         }
         for event in events {
