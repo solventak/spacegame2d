@@ -1,0 +1,11 @@
+:root{
+/* Fleet does not bounce. Motion is instrument motion: short, linear-ish, honest. */
+--dur-instant:80ms; /* @kind other */   /* hover, press */
+--dur-fast:140ms; /* @kind other */     /* panel state change */
+--dur-base:220ms; /* @kind other */     /* selection, panel enter */
+--dur-slow:600ms; /* @kind other */     /* capture ring tick */
+--ease-out:cubic-bezier(.2,.6,.3,1); /* @kind other */
+--ease-inout:cubic-bezier(.4,0,.2,1); /* @kind other */
+--ease-linear:linear; /* @kind other */  /* all progress + drain meters */
+--pulse-commit:1400ms; /* @kind other */ /* the only repeating animation in the system */
+}

@@ -1,0 +1,69 @@
+:root{
+/* --- base: void + graphite --------------------------------------------- */
+--void-0:#04060A;      /* deepest space, outside the playfield */
+--void-1:#070A0F;      /* battlefield ground */
+--void-2:#0B0F15;      /* battlefield, lit region */
+--graphite-1:#101620;  /* panel body (opaque reference) */
+--graphite-2:#161E29;  /* panel raised / row hover */
+--graphite-3:#1E2833;  /* panel pressed / selected row */
+
+/* --- neutral ramp ------------------------------------------------------- */
+--gray-100:#E9EFF4;
+--gray-200:#C2CCD4;
+--gray-300:#98A4AE;
+--gray-400:#6E7A85;
+--gray-500:#4C555E;
+--gray-600:#333B43;
+--gray-700:#232A31;
+
+/* --- signal: friendly (cyan) -------------------------------------------- */
+--cyan-100:#B8F4FF;
+--cyan-300:#5BE6FA;
+--cyan-500:#22CFE8;   /* canonical friendly */
+--cyan-700:#12798A;
+--cyan-900:#0A3A44;
+
+/* --- signal: enemy (coral) ---------------------------------------------- */
+--coral-100:#FFC9BA;
+--coral-300:#FF9174;
+--coral-500:#FF6A47;  /* canonical enemy */
+--coral-700:#993524;
+--coral-900:#4A1810;
+
+/* --- semantic: allegiance ----------------------------------------------- */
+--sig-friendly:var(--cyan-500);
+--sig-friendly-dim:var(--cyan-700);
+--sig-friendly-wash:rgba(34,207,232,.12);
+--sig-friendly-edge:rgba(34,207,232,.42);
+--sig-enemy:var(--coral-500);
+--sig-enemy-dim:var(--coral-700);
+--sig-enemy-wash:rgba(255,106,71,.12);
+--sig-enemy-edge:rgba(255,106,71,.42);
+--sig-neutral:var(--gray-300);
+--sig-neutral-dim:var(--gray-500);
+--sig-neutral-wash:rgba(152,164,174,.10);
+--sig-neutral-edge:rgba(152,164,174,.30);
+
+/* --- semantic: text ------------------------------------------------------ */
+--text-1:var(--gray-100);   /* primary readout */
+--text-2:var(--gray-300);   /* labels */
+--text-3:var(--gray-400);   /* de-emphasised / units */
+--text-stale:var(--gray-500);/* known-outdated information */
+--text-friendly:var(--cyan-300);
+--text-enemy:var(--coral-300);
+
+/* --- semantic: surfaces -------------------------------------------------- */
+--surface-field:var(--void-1);
+--surface-panel:rgba(16,22,32,.82);
+--surface-panel-solid:var(--graphite-1);
+--surface-row:rgba(255,255,255,.02);
+--surface-row-hover:rgba(255,255,255,.05);
+--surface-row-active:rgba(34,207,232,.10);
+--surface-scrim:rgba(4,6,10,.72);
+
+/* --- semantic: lines ----------------------------------------------------- */
+--line-hairline:rgba(160,178,196,.18);
+--line-hairline-strong:rgba(160,178,196,.34);
+--line-grid:rgba(120,140,160,.07);
+--line-bracket:var(--cyan-500);
+}

@@ -1,0 +1,527 @@
+{
+  "plugins": [
+    "react",
+    "import"
+  ],
+  "rules": {
+    "react/forbid-elements": [
+      "warn",
+      {
+        "forbid": []
+      }
+    ],
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": [
+              "components/controls/**",
+              "components/fleet/**",
+              "components/icons/**",
+              "components/signals/**",
+              "components/surfaces/**",
+              "ui_kits/hud/**"
+            ],
+            "message": "Import design-system components from 'index.js', not component internals."
+          }
+        ]
+      }
+    ],
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
+        "message": "Raw hex color — use a design-system color token via var()."
+      },
+      {
+        "selector": "Literal[value=/\\b\\d+px\\b/]",
+        "message": "Raw px value — use a design-system spacing token via var()."
+      },
+      {
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:Barlow Condensed|Barlow|IBM Plex Mono))/i]",
+        "message": "Font not provided by the design system. Available: Barlow Condensed, Barlow, IBM Plex Mono."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='CaptureRing'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|segments|tone|mode|size|label|sub|style|key|ref|className|style|children)$/]",
+        "message": "<CaptureRing> doesn't accept that prop. Declared props: value, segments, tone, mode, size, label, sub, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='CaptureRing'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy|neutral)$/]",
+        "message": "<CaptureRing> tone must be one of 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='CaptureRing'] > JSXAttribute[name.name='mode'] > Literal[value!=/^(?:fill|contested|decay)$/]",
+        "message": "<CaptureRing> mode must be one of 'fill' | 'contested' | 'decay'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='CommandButton'] > JSXAttribute > JSXIdentifier[name!=/^(?:children|variant|size|icon|disabled|onClick|style|key|ref|className|style|children)$/]",
+        "message": "<CommandButton> doesn't accept that prop. Declared props: children, variant, size, icon, disabled, onClick, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='CommandButton'] > JSXAttribute[name.name='variant'] > Literal[value!=/^(?:commit|danger|ghost)$/]",
+        "message": "<CommandButton> variant must be one of 'commit' | 'danger' | 'ghost'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='CommandButton'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md)$/]",
+        "message": "<CommandButton> size must be one of 'sm' | 'md'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ConfidenceTag'] > JSXAttribute > JSXIdentifier[name!=/^(?:level|tone|children|style|key|ref|className|style|children)$/]",
+        "message": "<ConfidenceTag> doesn't accept that prop. Declared props: level, tone, children, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ConfidenceTag'] > JSXAttribute[name.name='level'] > Literal[value!=/^(?:confirmed|estimated|stale|unknown)$/]",
+        "message": "<ConfidenceTag> level must be one of 'confirmed' | 'estimated' | 'stale' | 'unknown'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ConfidenceTag'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy|neutral)$/]",
+        "message": "<ConfidenceTag> tone must be one of 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='DoctrinePill'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|value|glyph|active|mixed|onClick|style|key|ref|className|style|children)$/]",
+        "message": "<DoctrinePill> doesn't accept that prop. Declared props: label, value, glyph, active, mixed, onClick, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FleetChip'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|strength|state|drones|capitals|tone|selected|onClick|style|key|ref|className|style|children)$/]",
+        "message": "<FleetChip> doesn't accept that prop. Declared props: id, strength, state, drones, capitals, tone, selected, onClick, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FleetChip'] > JSXAttribute[name.name='state'] > Literal[value!=/^(?:idle|moving|committed|engaged|planned)$/]",
+        "message": "<FleetChip> state must be one of 'idle' | 'moving' | 'committed' | 'engaged' | 'planned'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FleetChip'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy)$/]",
+        "message": "<FleetChip> tone must be one of 'friendly' | 'enemy'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FrontRow'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|status|urgency|tone|glyph|progress|progressMode|selected|onClick|style|key|ref|className|style|children)$/]",
+        "message": "<FrontRow> doesn't accept that prop. Declared props: name, status, urgency, tone, glyph, progress, progressMode, selected, onClick, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FrontRow'] > JSXAttribute[name.name='urgency'] > Literal[value!=/^(?:critical|active|quiet)$/]",
+        "message": "<FrontRow> urgency must be one of 'critical' | 'active' | 'quiet'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FrontRow'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy|neutral)$/]",
+        "message": "<FrontRow> tone must be one of 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FrontRow'] > JSXAttribute[name.name='progressMode'] > Literal[value!=/^(?:fill|contested|decay)$/]",
+        "message": "<FrontRow> progressMode must be one of 'fill' | 'contested' | 'decay'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Glyph'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|size|tone|strokeWidth|title|style|key|ref|className|style|children)$/]",
+        "message": "<Glyph> doesn't accept that prop. Declared props: name, size, tone, strokeWidth, title, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Glyph'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:inherit|friendly|enemy|neutral)$/]",
+        "message": "<Glyph> tone must be one of 'inherit' | 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Hairline'] > JSXAttribute > JSXIdentifier[name!=/^(?:vertical|inset|strong|style|key|ref|className|style|children)$/]",
+        "message": "<Hairline> doesn't accept that prop. Declared props: vertical, inset, strong, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='HudPanel'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|meta|tone|brackets|dense|style|children|key|ref|className|style|children)$/]",
+        "message": "<HudPanel> doesn't accept that prop. Declared props: title, meta, tone, brackets, dense, style, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='HudPanel'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:neutral|friendly|enemy)$/]",
+        "message": "<HudPanel> tone must be one of 'neutral' | 'friendly' | 'enemy'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Icon'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|size|strokeColor|strokeWidth|title|style|key|ref|className|style|children)$/]",
+        "message": "<Icon> doesn't accept that prop. Declared props: name, size, strokeColor, strokeWidth, title, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='IconButton'] > JSXAttribute > JSXIdentifier[name!=/^(?:icon|active|size|title|onClick|style|key|ref|className|style|children)$/]",
+        "message": "<IconButton> doesn't accept that prop. Declared props: icon, active, size, title, onClick, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Meter'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|tone|mode|height|width|showTrack|style|key|ref|className|style|children)$/]",
+        "message": "<Meter> doesn't accept that prop. Declared props: value, tone, mode, height, width, showTrack, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Meter'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy|neutral)$/]",
+        "message": "<Meter> tone must be one of 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Meter'] > JSXAttribute[name.name='mode'] > Literal[value!=/^(?:fill|contested|decay)$/]",
+        "message": "<Meter> mode must be one of 'fill' | 'contested' | 'decay'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ObjectiveCore'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|tone|shielded|key|ref|className|style|children)$/]",
+        "message": "<ObjectiveCore> doesn't accept that prop. Declared props: label, tone, shielded."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ObjectiveCore'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy)$/]",
+        "message": "<ObjectiveCore> tone must be one of 'friendly' | 'enemy'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='OrderStrip'] > JSXAttribute > JSXIdentifier[name!=/^(?:fleets|destination|state|travel|arrival|onConfirm|onCancel|style|key|ref|className|style|children)$/]",
+        "message": "<OrderStrip> doesn't accept that prop. Declared props: fleets, destination, state, travel, arrival, onConfirm, onCancel, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='OrderStrip'] > JSXAttribute[name.name='state'] > Literal[value!=/^(?:preview|committed)$/]",
+        "message": "<OrderStrip> state must be one of 'preview' | 'committed'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Readout'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|value|unit|tone|size|align|stale|style|key|ref|className|style|children)$/]",
+        "message": "<Readout> doesn't accept that prop. Declared props: label, value, unit, tone, size, align, stale, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Readout'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:default|friendly|enemy|neutral)$/]",
+        "message": "<Readout> tone must be one of 'default' | 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Readout'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
+        "message": "<Readout> size must be one of 'sm' | 'md' | 'lg'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Readout'] > JSXAttribute[name.name='align'] > Literal[value!=/^(?:left|right)$/]",
+        "message": "<Readout> align must be one of 'left' | 'right'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='SelectionBrackets'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|size|inset|children|style|key|ref|className|style|children)$/]",
+        "message": "<SelectionBrackets> doesn't accept that prop. Declared props: tone, size, inset, children, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='SelectionBrackets'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy|neutral)$/]",
+        "message": "<SelectionBrackets> tone must be one of 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='StateDot'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|certainty|size|style|key|ref|className|style|children)$/]",
+        "message": "<StateDot> doesn't accept that prop. Declared props: tone, certainty, size, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='StateDot'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:friendly|enemy|neutral)$/]",
+        "message": "<StateDot> tone must be one of 'friendly' | 'enemy' | 'neutral'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='StateDot'] > JSXAttribute[name.name='certainty'] > Literal[value!=/^(?:confirmed|estimated|stale)$/]",
+        "message": "<StateDot> certainty must be one of 'confirmed' | 'estimated' | 'stale'."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/index.js"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ],
+  "x-omelette": {
+    "components": {
+      "CaptureRing": {
+        "replaces": []
+      },
+      "CommandButton": {
+        "replaces": []
+      },
+      "ConfidenceTag": {
+        "replaces": []
+      },
+      "DoctrinePill": {
+        "replaces": []
+      },
+      "FleetChip": {
+        "replaces": []
+      },
+      "FrontRow": {
+        "replaces": []
+      },
+      "Glyph": {
+        "replaces": []
+      },
+      "Hairline": {
+        "replaces": []
+      },
+      "HudPanel": {
+        "replaces": []
+      },
+      "Icon": {
+        "replaces": []
+      },
+      "IconButton": {
+        "replaces": []
+      },
+      "Meter": {
+        "replaces": []
+      },
+      "ObjectiveCore": {
+        "replaces": []
+      },
+      "OrderStrip": {
+        "replaces": []
+      },
+      "Readout": {
+        "replaces": []
+      },
+      "SelectionBrackets": {
+        "replaces": []
+      },
+      "StateDot": {
+        "replaces": []
+      }
+    },
+    "tokens": [
+      "--blur-panel",
+      "--border-dashed-unknown",
+      "--border-enemy",
+      "--border-friendly",
+      "--border-hair",
+      "--border-hair-strong",
+      "--bracket-len",
+      "--bracket-w",
+      "--coral-100",
+      "--coral-300",
+      "--coral-500",
+      "--coral-700",
+      "--coral-900",
+      "--cyan-100",
+      "--cyan-300",
+      "--cyan-500",
+      "--cyan-700",
+      "--cyan-900",
+      "--dur-base",
+      "--dur-fast",
+      "--dur-instant",
+      "--dur-slow",
+      "--ease-inout",
+      "--ease-linear",
+      "--ease-out",
+      "--font-condensed",
+      "--font-mono",
+      "--font-ui",
+      "--fs-body",
+      "--fs-display",
+      "--fs-hero",
+      "--fs-label",
+      "--fs-micro",
+      "--fs-readout",
+      "--fs-title",
+      "--fw-bold",
+      "--fw-medium",
+      "--fw-regular",
+      "--fw-semi",
+      "--gap-cluster",
+      "--gap-stack",
+      "--graphite-1",
+      "--graphite-2",
+      "--graphite-3",
+      "--gray-100",
+      "--gray-200",
+      "--gray-300",
+      "--gray-400",
+      "--gray-500",
+      "--gray-600",
+      "--gray-700",
+      "--hud-edge",
+      "--hud-order-w",
+      "--hud-panel-w",
+      "--hud-topbar-h",
+      "--lh-body",
+      "--lh-snug",
+      "--lh-tight",
+      "--line-bracket",
+      "--line-grid",
+      "--line-hairline",
+      "--line-hairline-strong",
+      "--pad-chip",
+      "--pad-panel",
+      "--pad-panel-tight",
+      "--pad-row",
+      "--pulse-commit",
+      "--r-0",
+      "--r-1",
+      "--r-2",
+      "--r-full",
+      "--shadow-none",
+      "--shadow-panel",
+      "--sig-enemy",
+      "--sig-enemy-dim",
+      "--sig-enemy-edge",
+      "--sig-enemy-wash",
+      "--sig-friendly",
+      "--sig-friendly-dim",
+      "--sig-friendly-edge",
+      "--sig-friendly-wash",
+      "--sig-neutral",
+      "--sig-neutral-dim",
+      "--sig-neutral-edge",
+      "--sig-neutral-wash",
+      "--sp-0",
+      "--sp-1",
+      "--sp-10",
+      "--sp-12",
+      "--sp-2",
+      "--sp-3",
+      "--sp-4",
+      "--sp-5",
+      "--sp-6",
+      "--sp-8",
+      "--stripe-contested-enemy",
+      "--stripe-contested-friendly",
+      "--stripe-decay",
+      "--surface-field",
+      "--surface-panel",
+      "--surface-panel-solid",
+      "--surface-row",
+      "--surface-row-active",
+      "--surface-row-hover",
+      "--surface-scrim",
+      "--text-1",
+      "--text-2",
+      "--text-3",
+      "--text-enemy",
+      "--text-friendly",
+      "--text-stale",
+      "--tracking-caps",
+      "--tracking-normal",
+      "--tracking-num",
+      "--tracking-wide",
+      "--type-body",
+      "--type-hero",
+      "--type-label",
+      "--type-readout",
+      "--type-title",
+      "--void-0",
+      "--void-1",
+      "--void-2"
+    ],
+    "tokenKinds": {
+      "--void-0": "color",
+      "--void-1": "color",
+      "--void-2": "color",
+      "--graphite-1": "color",
+      "--graphite-2": "color",
+      "--graphite-3": "color",
+      "--gray-100": "color",
+      "--gray-200": "color",
+      "--gray-300": "color",
+      "--gray-400": "color",
+      "--gray-500": "color",
+      "--gray-600": "color",
+      "--gray-700": "color",
+      "--cyan-100": "color",
+      "--cyan-300": "color",
+      "--cyan-500": "color",
+      "--cyan-700": "color",
+      "--cyan-900": "color",
+      "--coral-100": "color",
+      "--coral-300": "color",
+      "--coral-500": "color",
+      "--coral-700": "color",
+      "--coral-900": "color",
+      "--sig-friendly": "color",
+      "--sig-friendly-dim": "color",
+      "--sig-friendly-wash": "color",
+      "--sig-friendly-edge": "color",
+      "--sig-enemy": "color",
+      "--sig-enemy-dim": "color",
+      "--sig-enemy-wash": "color",
+      "--sig-enemy-edge": "color",
+      "--sig-neutral": "color",
+      "--sig-neutral-dim": "color",
+      "--sig-neutral-wash": "color",
+      "--sig-neutral-edge": "color",
+      "--text-1": "font",
+      "--text-2": "font",
+      "--text-3": "font",
+      "--text-stale": "font",
+      "--text-friendly": "font",
+      "--text-enemy": "font",
+      "--surface-field": "color",
+      "--surface-panel": "color",
+      "--surface-panel-solid": "color",
+      "--surface-row": "color",
+      "--surface-row-hover": "color",
+      "--surface-row-active": "color",
+      "--surface-scrim": "color",
+      "--line-hairline": "color",
+      "--line-hairline-strong": "color",
+      "--line-grid": "color",
+      "--line-bracket": "color",
+      "--font-condensed": "font",
+      "--font-ui": "font",
+      "--font-mono": "font",
+      "--fs-micro": "spacing",
+      "--fs-label": "spacing",
+      "--fs-body": "spacing",
+      "--fs-readout": "spacing",
+      "--fs-title": "spacing",
+      "--fs-hero": "spacing",
+      "--fs-display": "spacing",
+      "--lh-tight": "other",
+      "--lh-snug": "other",
+      "--lh-body": "other",
+      "--tracking-caps": "font",
+      "--tracking-wide": "font",
+      "--tracking-normal": "font",
+      "--tracking-num": "font",
+      "--fw-regular": "other",
+      "--fw-medium": "other",
+      "--fw-semi": "other",
+      "--fw-bold": "other",
+      "--type-label": "font",
+      "--type-body": "font",
+      "--type-readout": "font",
+      "--type-title": "font",
+      "--type-hero": "font",
+      "--sp-0": "spacing",
+      "--sp-1": "spacing",
+      "--sp-2": "spacing",
+      "--sp-3": "spacing",
+      "--sp-4": "spacing",
+      "--sp-5": "spacing",
+      "--sp-6": "spacing",
+      "--sp-8": "spacing",
+      "--sp-10": "spacing",
+      "--sp-12": "spacing",
+      "--pad-panel": "spacing",
+      "--pad-panel-tight": "spacing",
+      "--pad-row": "spacing",
+      "--pad-chip": "spacing",
+      "--gap-stack": "spacing",
+      "--gap-cluster": "spacing",
+      "--hud-edge": "spacing",
+      "--hud-topbar-h": "spacing",
+      "--hud-panel-w": "spacing",
+      "--hud-order-w": "spacing",
+      "--r-0": "spacing",
+      "--r-1": "spacing",
+      "--r-2": "spacing",
+      "--r-full": "spacing",
+      "--border-hair": "color",
+      "--border-hair-strong": "color",
+      "--border-friendly": "color",
+      "--border-enemy": "color",
+      "--border-dashed-unknown": "color",
+      "--bracket-len": "spacing",
+      "--bracket-w": "spacing",
+      "--shadow-panel": "shadow",
+      "--shadow-none": "shadow",
+      "--blur-panel": "other",
+      "--stripe-contested-friendly": "other",
+      "--stripe-contested-enemy": "other",
+      "--stripe-decay": "other",
+      "--dur-instant": "other",
+      "--dur-fast": "other",
+      "--dur-base": "other",
+      "--dur-slow": "other",
+      "--ease-out": "other",
+      "--ease-inout": "other",
+      "--ease-linear": "other",
+      "--pulse-commit": "other"
+    },
+    "fontFamilies": [
+      "Barlow",
+      "Barlow Condensed",
+      "IBM Plex Mono"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+:root{
+/* radii — near-square. Nothing in Fleet is friendly-rounded. */
+--r-0:0px;
+--r-1:1px;   /* panels, rows */
+--r-2:2px;   /* chips, pills */
+--r-full:999px; /* strength bar caps and dots only */
+
+--border-hair:1px solid var(--line-hairline);
+--border-hair-strong:1px solid var(--line-hairline-strong);
+--border-friendly:1px solid var(--sig-friendly-edge);
+--border-enemy:1px solid var(--sig-enemy-edge);
+--border-dashed-unknown:1px dashed var(--sig-neutral-edge);
+
+--bracket-len:10px; /* @kind spacing */
+--bracket-w:1px; /* @kind spacing */
+
+/* elevation is done with translucency + hairlines, never drop shadows.
+   The single permitted shadow lifts a panel off the starfield. */
+--shadow-panel:0 0 0 1px rgba(0,0,0,.55);
+--shadow-none:none;
+--blur-panel:blur(10px) saturate(120%); /* @kind other */
+
+/* meaning-bearing fills */
+--stripe-contested-friendly:repeating-linear-gradient(-45deg,var(--cyan-500) 0 3px,transparent 3px 7px); /* @kind other */
+--stripe-contested-enemy:repeating-linear-gradient(-45deg,var(--coral-500) 0 3px,transparent 3px 7px); /* @kind other */
+--stripe-decay:repeating-linear-gradient(-45deg,var(--gray-500) 0 2px,transparent 2px 6px); /* @kind other */
+}

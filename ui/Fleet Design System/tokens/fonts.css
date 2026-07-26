@@ -1,0 +1,5 @@
+/* Fleet webfonts.
+   SUBSTITUTION NOTE: no font binaries were supplied with the brief. These are the
+   nearest Google Fonts matches to the specified "clean, condensed white sans-serif"
+   + technical numeric readout. Replace with licensed binaries when available. */
+@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
