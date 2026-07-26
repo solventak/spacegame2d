@@ -9,6 +9,7 @@
 use glam::Vec2;
 
 use crate::command::UnitId;
+use crate::hitbox::Hitbox;
 
 use crate::simulation::{
     FORWARD_THRUST_NEWTONS, FlightInput, MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, SHIP_MASS_KG,
@@ -33,6 +34,8 @@ pub struct NeighborObservation {
     pub position: Vec2,
     /// Neighbor velocity in meters per second.
     pub velocity: Vec2,
+    /// Neighbor physical geometry, centered at [`Self::position`].
+    pub hitbox: Hitbox,
     pub relationship: NeighborRelationship,
 }
 
@@ -48,6 +51,8 @@ pub struct FlightObservation<'a> {
     pub heading_radians: f32,
     /// Ship angular velocity in radians per second.
     pub angular_velocity_radians_per_second: f32,
+    /// Ship physical geometry, centered at [`Self::position`].
+    pub hitbox: Hitbox,
     /// Target destination in arena-space meters.
     pub destination: Vec2,
     /// Neighbors visible to this ship this tick.
@@ -60,11 +65,21 @@ impl<'a> FlightObservation<'a> {
         destination: Vec2,
         neighbors: &'a [NeighborObservation],
     ) -> FlightObservation<'a> {
+        Self::from_ship_with_hitbox(ship, Hitbox::default_ship(), destination, neighbors)
+    }
+
+    pub fn from_ship_with_hitbox(
+        ship: &ShipState,
+        hitbox: Hitbox,
+        destination: Vec2,
+        neighbors: &'a [NeighborObservation],
+    ) -> FlightObservation<'a> {
         Self {
             position: ship.position,
             velocity: ship.velocity,
             heading_radians: ship.heading_radians,
             angular_velocity_radians_per_second: ship.angular_velocity_radians_per_second,
+            hitbox,
             destination,
             neighbors,
         }

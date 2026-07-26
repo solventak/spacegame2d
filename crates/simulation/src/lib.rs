@@ -25,6 +25,7 @@ pub mod command;
 pub mod config;
 pub mod fleet;
 pub mod flight_control;
+pub mod hitbox;
 pub mod simulation;
 pub mod snapshot;
 
@@ -39,5 +40,8 @@ pub use command::{
 };
 pub use config::{
     AvoidanceConfig, DEFAULT_FLEET_SIZE, MAX_PLAYERS, SimulationConfig, SimulationConfigError,
+};
+pub use hitbox::{
+    Circle, DEFAULT_SHIP_HITBOX_RADIUS_METERS, Hitbox, HitboxError, HitboxShape, PositionedHitbox,
 };
 pub use simulation::SimulationEvent;

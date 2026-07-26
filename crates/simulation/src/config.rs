@@ -5,8 +5,10 @@ pub const MAX_PLAYERS: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AvoidanceConfig {
-    pub friendly_comfort_radius_meters: f32,
-    pub opposing_comfort_radius_meters: f32,
+    /// Desired hull-to-hull clearance for friendly units.
+    pub friendly_comfort_clearance_meters: f32,
+    /// Desired hull-to-hull clearance for opposing units.
+    pub opposing_comfort_clearance_meters: f32,
     pub friendly_strength: f32,
     pub opposing_strength: f32,
     pub prediction_horizon_seconds: f32,
@@ -17,8 +19,8 @@ pub struct AvoidanceConfig {
 impl Default for AvoidanceConfig {
     fn default() -> Self {
         Self {
-            friendly_comfort_radius_meters: 2.0,
-            opposing_comfort_radius_meters: 4.0,
+            friendly_comfort_clearance_meters: 2.0,
+            opposing_comfort_clearance_meters: 4.0,
             friendly_strength: 8.0,
             opposing_strength: 24.0,
             prediction_horizon_seconds: 0.75,
@@ -36,8 +38,8 @@ pub enum SimulationConfigError {
     FleetSizeTooLarge,
     #[error("avoidance configuration contains an invalid value")]
     InvalidAvoidanceConfig,
-    #[error("opposing comfort radius must not be smaller than friendly comfort radius")]
-    OpposingRadiusTooSmall,
+    #[error("opposing comfort clearance must not be smaller than friendly comfort clearance")]
+    OpposingClearanceTooSmall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,8 +75,8 @@ impl SimulationConfig {
 
     pub fn with_avoidance(self, avoidance: AvoidanceConfig) -> Result<Self, SimulationConfigError> {
         let values = [
-            avoidance.friendly_comfort_radius_meters,
-            avoidance.opposing_comfort_radius_meters,
+            avoidance.friendly_comfort_clearance_meters,
+            avoidance.opposing_comfort_clearance_meters,
             avoidance.friendly_strength,
             avoidance.opposing_strength,
             avoidance.prediction_horizon_seconds,
@@ -87,8 +89,9 @@ impl SimulationConfig {
         {
             return Err(SimulationConfigError::InvalidAvoidanceConfig);
         }
-        if avoidance.opposing_comfort_radius_meters < avoidance.friendly_comfort_radius_meters {
-            return Err(SimulationConfigError::OpposingRadiusTooSmall);
+        if avoidance.opposing_comfort_clearance_meters < avoidance.friendly_comfort_clearance_meters
+        {
+            return Err(SimulationConfigError::OpposingClearanceTooSmall);
         }
         Ok(Self { avoidance, ..self })
     }
