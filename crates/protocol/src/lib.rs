@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 11;
+pub const SIMULATION_VERSION: u32 = 12;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +69,7 @@ pub struct ServerHello {
     pub player_slot: u32,
     pub server_tick: Tick,
     pub fleet_size: u32,
+    pub world_radius_bits: u32,
     pub capabilities: Vec<Capability>,
 }
 impl ServerHello {
@@ -84,6 +85,10 @@ impl ServerHello {
         }
         if self.fleet_size == 0 {
             return Err(invalid("server assigned invalid fleet size"));
+        }
+        let world_radius = f32::from_bits(self.world_radius_bits);
+        if !world_radius.is_finite() || world_radius <= 0.0 {
+            return Err(invalid("server assigned invalid world radius"));
         }
         if !self.capabilities.contains(&Capability::StateChecksums) {
             return Err(invalid("server does not support state checksums"));
@@ -208,6 +213,7 @@ impl From<&Message> for wire::Envelope {
                 player_slot: v.player_slot,
                 server_tick: v.server_tick.0,
                 fleet_size: v.fleet_size,
+                world_radius_bits: v.world_radius_bits,
                 enabled_capabilities: v
                     .capabilities
                     .iter()
@@ -272,6 +278,7 @@ impl TryFrom<wire::Envelope> for Message {
                 player_slot: v.player_slot,
                 server_tick: Tick::from(v.server_tick),
                 fleet_size: v.fleet_size,
+                world_radius_bits: v.world_radius_bits,
                 capabilities: caps(&v.enabled_capabilities),
             })),
             wire::envelope::Payload::CommandRequest(v) => {
@@ -393,8 +400,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn static_structure_avoidance_profile_bumps_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 11);
+    fn authoritative_simulation_changes_bump_simulation_version() {
+        assert_eq!(SIMULATION_VERSION, 12);
     }
 
     fn destination() -> CommandData {
@@ -415,6 +422,7 @@ mod tests {
                 player_slot: 2,
                 server_tick: Tick::from(9),
                 fleet_size: 30,
+                world_radius_bits: 64.0_f32.to_bits(),
                 capabilities: vec![],
             }),
             Message::CommandRequest(CommandRequest {

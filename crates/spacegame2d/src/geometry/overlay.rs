@@ -1,13 +1,12 @@
 use glam::Vec2;
 
 use crate::geometry::Vertex;
-use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
-pub fn ring_vertices() -> Vec<Vertex> {
+pub fn ring_vertices(world_radius: f32) -> Vec<Vertex> {
     let color = [0.0, 0.0, 0.15, 1.0];
     let segments = 128;
-    let inner_radius = WORLD_RADIUS_M - 0.5;
-    let outer_radius = WORLD_RADIUS_M + 0.5;
+    let inner_radius = world_radius - 0.5;
+    let outer_radius = world_radius + 0.5;
     let mut vertices = Vec::with_capacity(segments * 6);
     for i in 0..segments {
         let a0 = (i as f32 / segments as f32) * std::f32::consts::TAU;

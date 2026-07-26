@@ -34,10 +34,11 @@ pub const MAX_ANGULAR_SPEED_RADIANS_PER_SECOND: f32 = 3.0;
 /// Angular velocity damping rate per second; rotation decays without active
 /// turn input.
 pub const ANGULAR_DAMPING_PER_SECOND: f32 = 2.5;
-/// Radius of the circular arena in meters. A ship whose position exceeds this
-/// radius is destroyed on the next tick.
-pub const WORLD_RADIUS_M: f32 = 32.0;
 const VELOCITY_EPSILON: f32 = 0.0001;
+/// Default radius kept as a convenience for callers that render the default
+/// prototype configuration. Authoritative simulation code reads the radius
+/// from [`SimulationConfig`].
+pub const WORLD_RADIUS_M: f32 = crate::config::DEFAULT_WORLD_RADIUS_METERS;
 
 /// Per-tick discrete input applied to a ship by the player or an autopilot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,7 +84,6 @@ pub struct AppliedAuthoritativeCommands {
 
 pub struct Simulation {
     tick: Tick,
-    world_radius: f32,
     pub world: World,
     pub commands: CommandScheduler,
 }
@@ -98,7 +98,6 @@ impl Simulation {
     pub fn new(config: SimulationConfig) -> Self {
         Self {
             tick: Tick::default(),
-            world_radius: WORLD_RADIUS_M,
             world: World::new(config),
             commands: CommandScheduler::default(),
         }
@@ -116,14 +115,14 @@ impl Simulation {
     }
 
     pub fn with_world_radius(world_radius: f32) -> Self {
-        Self {
-            world_radius,
-            ..Self::new(SimulationConfig::default())
-        }
+        let config = SimulationConfig::default()
+            .with_world_radius_meters(world_radius)
+            .expect("test world radius must be valid");
+        Self::new(config)
     }
 
     pub fn world_radius(&self) -> f32 {
-        self.world_radius
+        self.config().world_radius_meters()
     }
 
     pub fn config(&self) -> SimulationConfig {
@@ -306,6 +305,7 @@ impl Simulation {
                 unit.combat.hull.current = unit.combat.hull.current.saturating_sub(amount);
             }
         }
+        let world_radius = self.world_radius();
         self.world.units.retain(|unit| {
             if unit.combat.hull.current == 0 {
                 events.push(SimulationEvent::HullDepleted {
@@ -314,7 +314,7 @@ impl Simulation {
                     position: unit.state.position,
                 });
                 false
-            } else if is_out_of_bounds(unit.state.position, self.world_radius) {
+            } else if is_out_of_bounds(unit.state.position, world_radius) {
                 events.push(SimulationEvent::BoundaryCrossed {
                     tick: self.tick,
                     unit_id: unit.id,

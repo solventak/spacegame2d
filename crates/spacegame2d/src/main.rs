@@ -6,6 +6,7 @@
 //!
 //! See the [`spacegame2d_simulation`] crate for the simulation model itself.
 
+mod camera;
 mod combat_presentation;
 mod combat_rendering;
 mod geometry;
@@ -35,6 +36,9 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::camera::Camera;
+#[cfg(test)]
+use crate::camera::VIEW_HEIGHT_METERS;
 use crate::combat_presentation::CombatPresentation;
 use crate::combat_rendering::{CombatFrame, CombatRenderer};
 use crate::geometry::{
@@ -45,7 +49,6 @@ use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStat
 #[cfg(test)]
 use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
-const VIEW_HEIGHT_METERS: f32 = 72.0;
 const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
 const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
 const PENDING_MARKER_COLOR: [f32; 4] = [1.0, 0.85, 0.0, 1.0];
@@ -84,15 +87,13 @@ fn render_unit_data(units: &[Unit]) -> Vec<(ShipState, [f32; 4])> {
 fn scene_uniform(
     width: u32,
     height: u32,
+    camera: Camera,
     ship: &ShipState,
     marker: Option<Vec2>,
     ship_color: [f32; 4],
 ) -> SceneUniform {
-    let aspect = width.max(1) as f32 / height.max(1) as f32;
-    let half_height = VIEW_HEIGHT_METERS * 0.5;
-    let half_width = half_height * aspect;
     SceneUniform {
-        viewport: [1.0 / half_width, 1.0 / half_height, 0.0, 0.0],
+        viewport: camera.viewport(width, height),
         ship: [
             ship.position.x,
             ship.position.y,
@@ -132,6 +133,7 @@ impl Renderer {
         window: Arc<Window>,
         units: &[Unit],
         structures: &[StaticStructure],
+        world_radius: f32,
     ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
@@ -248,7 +250,7 @@ impl Renderer {
             contents: bytemuck::cast_slice(&notched_ship_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let ring_vertices = ring_vertices();
+        let ring_vertices = ring_vertices(world_radius);
         let ring_vertex_count = ring_vertices.len() as u32;
         let ring_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ring vertices"),
@@ -260,6 +262,7 @@ impl Renderer {
             contents: bytemuck::bytes_of(&scene_uniform(
                 config.width,
                 config.height,
+                Camera::new(world_radius),
                 &ShipState::default(),
                 None,
                 PLAYER_ONE_COLOR,
@@ -287,6 +290,7 @@ impl Renderer {
             contents: bytemuck::bytes_of(&scene_uniform(
                 config.width,
                 config.height,
+                Camera::new(world_radius),
                 &ShipState::default(),
                 None,
                 PLAYER_ONE_COLOR,
@@ -306,6 +310,7 @@ impl Renderer {
             contents: bytemuck::bytes_of(&scene_uniform(
                 config.width,
                 config.height,
+                Camera::new(world_radius),
                 &ShipState::default(),
                 Some(Vec2::ZERO),
                 PENDING_MARKER_COLOR,
@@ -328,6 +333,7 @@ impl Renderer {
                     contents: bytemuck::bytes_of(&scene_uniform(
                         config.width,
                         config.height,
+                        Camera::new(world_radius),
                         &ship,
                         None,
                         color,
@@ -386,15 +392,14 @@ impl Renderer {
         units: &[Unit],
         marker: Option<DestinationMarker>,
         combat_presentation: &CombatPresentation,
+        camera: Camera,
         now: Instant,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
         self.combat_renderer.prepare(
             &self.device,
             &self.queue,
             CombatFrame {
-                width: self.config.width,
-                height: self.config.height,
-                view_height: VIEW_HEIGHT_METERS,
+                viewport: camera.viewport(self.config.width, self.config.height),
                 units,
                 presentation: combat_presentation,
                 now,
@@ -437,6 +442,7 @@ impl Renderer {
                 bytemuck::bytes_of(&scene_uniform(
                     self.config.width,
                     self.config.height,
+                    camera,
                     &ShipState::default(),
                     None,
                     PLAYER_ONE_COLOR,
@@ -454,6 +460,7 @@ impl Renderer {
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
                         self.config.height,
+                        camera,
                         &unit.state,
                         None,
                         fleet_color(unit.owner),
@@ -470,6 +477,7 @@ impl Renderer {
                 bytemuck::bytes_of(&scene_uniform(
                     self.config.width,
                     self.config.height,
+                    camera,
                     &ShipState::default(),
                     None,
                     PLAYER_ONE_COLOR,
@@ -491,6 +499,7 @@ impl Renderer {
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
                         self.config.height,
+                        camera,
                         &ShipState::default(),
                         Some(marker.position),
                         color,
@@ -517,6 +526,7 @@ struct App {
     scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
     combat_presentation: CombatPresentation,
+    camera: Camera,
 }
 
 impl Default for App {
@@ -531,17 +541,9 @@ impl Default for App {
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
             combat_presentation: CombatPresentation::default(),
+            camera: Camera::new(spacegame2d_simulation::DEFAULT_WORLD_RADIUS_METERS),
         }
     }
-}
-
-fn screen_to_world(cursor: winit::dpi::PhysicalPosition<f64>, width: u32, height: u32) -> Vec2 {
-    let aspect = width.max(1) as f32 / height.max(1) as f32;
-    let half_height = VIEW_HEIGHT_METERS * 0.5;
-    let half_width = half_height * aspect;
-    let x = (cursor.x as f32 / width.max(1) as f32 * 2.0 - 1.0) * half_width;
-    let y = (1.0 - cursor.y as f32 / height.max(1) as f32 * 2.0) * half_height;
-    Vec2::new(x, y)
 }
 
 impl ApplicationHandler for App {
@@ -555,6 +557,7 @@ impl ApplicationHandler for App {
         match network::NetworkSession::connect(&address) {
             Ok(session) => {
                 self.simulation = Simulation::new(session.simulation_config());
+                self.camera = Camera::new(self.simulation.world_radius());
                 self.simulation.set_tick(session.server_tick);
                 if let Err(error) = session.register_player(&mut self.simulation) {
                     eprintln!("failed to register connected player: {error}");
@@ -586,6 +589,7 @@ impl ApplicationHandler for App {
             window.clone(),
             &self.simulation.world.units,
             self.simulation.world.structures(),
+            self.simulation.world_radius(),
         )) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
@@ -683,14 +687,38 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Focused(false) => {}
+            WindowEvent::Focused(false) => self.camera.end_drag(),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
+                    self.camera.clamp(size.width, size.height);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = Some(position);
+                if let Some(renderer) = self.renderer.as_ref()
+                    && self.camera.drag_to(
+                        Vec2::new(position.x as f32, position.y as f32),
+                        renderer.config.width,
+                        renderer.config.height,
+                    )
+                {
+                    renderer.window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                if state == ElementState::Pressed {
+                    if let Some(cursor) = self.cursor_position {
+                        self.camera
+                            .begin_drag(Vec2::new(cursor.x as f32, cursor.y as f32));
+                    }
+                } else {
+                    self.camera.end_drag();
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -700,8 +728,11 @@ impl ApplicationHandler for App {
                 if let (Some(cursor), Some(renderer)) =
                     (self.cursor_position, self.renderer.as_ref())
                 {
-                    let destination =
-                        screen_to_world(cursor, renderer.config.width, renderer.config.height);
+                    let destination = self.camera.screen_to_world(
+                        Vec2::new(cursor.x as f32, cursor.y as f32),
+                        renderer.config.width,
+                        renderer.config.height,
+                    );
                     self.presentation.begin(self.next_sequence, destination);
                     if let Some(session) = self.network.as_mut()
                         && let Err(error) = session.send_set_destination(
@@ -738,6 +769,7 @@ impl ApplicationHandler for App {
                         &self.simulation.world.units,
                         self.presentation.marker(self.simulation.world()),
                         &self.combat_presentation,
+                        self.camera,
                         Instant::now(),
                     ) {
                         Ok(()) => {}
@@ -889,23 +921,32 @@ mod tests {
 
     #[test]
     fn screen_to_world_preserves_outside_arena_coordinates() {
-        let point = screen_to_world(winit::dpi::PhysicalPosition::new(-1000.0, 5000.0), 800, 600);
+        let point =
+            Camera::new(WORLD_RADIUS_M).screen_to_world(Vec2::new(-1000.0, 5000.0), 800, 600);
         assert!(point.length() > WORLD_RADIUS_M);
         assert!(point.x < 0.0 && point.y < 0.0);
     }
 
     #[test]
     fn screen_to_world_keeps_inside_click_inside_circular_arena() {
-        let point = screen_to_world(winit::dpi::PhysicalPosition::new(400.0, 300.0), 800, 600);
+        let camera = Camera::new(WORLD_RADIUS_M);
+        let point = camera.screen_to_world(Vec2::new(400.0, 300.0), 800, 600);
         assert_eq!(point, Vec2::ZERO);
 
-        let point = screen_to_world(winit::dpi::PhysicalPosition::new(600.0, 300.0), 800, 600);
+        let point = camera.screen_to_world(Vec2::new(600.0, 300.0), 800, 600);
         assert!(point.length() < WORLD_RADIUS_M);
     }
 
     #[test]
     fn scene_uniform_uses_fixed_world_scale() {
-        let u = scene_uniform(1000, 1000, &ShipState::default(), None, PLAYER_ONE_COLOR);
+        let u = scene_uniform(
+            1000,
+            1000,
+            Camera::new(WORLD_RADIUS_M),
+            &ShipState::default(),
+            None,
+            PLAYER_ONE_COLOR,
+        );
         // Square viewport: half_width == half_height == VIEW_HEIGHT_METERS * 0.5.
         let expected = 1.0 / (VIEW_HEIGHT_METERS * 0.5);
         assert!((u.viewport[0] - expected).abs() < 0.0001);
@@ -919,7 +960,7 @@ mod tests {
     }
     #[test]
     fn ring_mesh_has_expected_vertex_count() {
-        let vertices = ring_vertices();
+        let vertices = ring_vertices(WORLD_RADIUS_M);
         assert_eq!(vertices.len(), 128 * 6);
     }
 }

@@ -233,9 +233,7 @@ struct CombatUniform {
 }
 
 pub(crate) struct CombatFrame<'a> {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) view_height: f32,
+    pub(crate) viewport: [f32; 4],
     pub(crate) units: &'a [Unit],
     pub(crate) presentation: &'a CombatPresentation,
     pub(crate) now: Instant,
@@ -350,13 +348,11 @@ impl CombatRenderer {
         frame: CombatFrame<'_>,
     ) {
         self.mesh = build_mesh(frame.units, frame.presentation, frame.now);
-        let aspect = frame.width.max(1) as f32 / frame.height.max(1) as f32;
-        let half_height = frame.view_height * 0.5;
         queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::bytes_of(&CombatUniform {
-                viewport: [1.0 / (half_height * aspect), 1.0 / half_height, 0.0, 0.0],
+                viewport: frame.viewport,
             }),
         );
         let bytes = bytemuck::cast_slice(&self.mesh.vertices);

@@ -208,6 +208,7 @@ pub async fn run_with_config(
                                     player_slot: client.slot,
                                     server_tick: simulation.tick(),
                                     fleet_size: config.fleet_size(),
+                                    world_radius_bits: config.world_radius_meters().to_bits(),
                                     capabilities: vec![Capability::StateChecksums],
                                 },
                             ))?;
@@ -478,16 +479,26 @@ fn compare_pending_checksums(
 }
 
 fn simulation_config_from_env() -> Result<SimulationConfig, String> {
-    let Some(value) = env::var_os("SPACEGAME_FLEET_SIZE") else {
-        return Ok(SimulationConfig::default());
+    let fleet_size = match env::var_os("SPACEGAME_FLEET_SIZE") {
+        Some(value) => value
+            .to_str()
+            .ok_or_else(|| "SPACEGAME_FLEET_SIZE is not valid UTF-8".to_owned())?
+            .parse::<u32>()
+            .map_err(|_| "SPACEGAME_FLEET_SIZE must be a positive integer".to_owned())?,
+        None => spacegame2d_simulation::DEFAULT_FLEET_SIZE,
     };
-    let value = value
+    let config = SimulationConfig::try_from(fleet_size).map_err(|error| error.to_string())?;
+    let Some(value) = env::var_os("SPACEGAME_WORLD_RADIUS_METERS") else {
+        return Ok(config);
+    };
+    let radius = value
         .to_str()
-        .ok_or_else(|| "SPACEGAME_FLEET_SIZE is not valid UTF-8".to_owned())?;
-    let fleet_size = value
-        .parse::<u32>()
-        .map_err(|_| "SPACEGAME_FLEET_SIZE must be a positive integer".to_owned())?;
-    SimulationConfig::try_from(fleet_size).map_err(|error| error.to_string())
+        .ok_or_else(|| "SPACEGAME_WORLD_RADIUS_METERS is not valid UTF-8".to_owned())?
+        .parse::<f32>()
+        .map_err(|_| "SPACEGAME_WORLD_RADIUS_METERS must be a finite positive number".to_owned())?;
+    config
+        .with_world_radius_meters(radius)
+        .map_err(|error| error.to_string())
 }
 
 #[tokio::main]
@@ -761,7 +772,7 @@ mod tests {
                 let rejected_request = Message::CommandRequest(CommandRequest {
                     sequence: 9,
                     command: spacegame2d_protocol::CommandData::SetDestination {
-                        destination: [40.0f32.to_bits(), 0.0f32.to_bits()],
+                        destination: [80.0f32.to_bits(), 0.0f32.to_bits()],
                     },
                 });
                 first
