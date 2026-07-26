@@ -9,7 +9,7 @@ use crate::{
 };
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 6;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 7;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -45,6 +45,10 @@ pub struct HomeObjectivePairSnapshot {
     pub state_tag: u8,
     pub breach_progress_ticks: u32,
     pub exposure_ticks_remaining: u32,
+    pub core_health_current: u32,
+    pub core_health_maximum: u32,
+    /// Derived from objective state; never stored as authoritative world state.
+    pub core_targetable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +67,7 @@ pub struct UnitSnapshot {
     pub hull_current: u32,
     pub hull_maximum: u32,
     pub turret_local_heading_bits: u32,
-    pub turret_target: Option<u32>,
+    pub turret_target: Option<(u8, u32)>,
     pub turret_cooldown_ticks_remaining: u32,
 }
 
@@ -175,6 +179,9 @@ impl From<&HomeObjectivePair> for HomeObjectivePairSnapshot {
             state_tag: pair.state().canonical_tag(),
             breach_progress_ticks: pair.breach_progress_ticks(),
             exposure_ticks_remaining: pair.exposure_ticks_remaining(),
+            core_health_current: pair.core_health_current(),
+            core_health_maximum: pair.core_health_maximum(),
+            core_targetable: pair.is_core_targetable(),
         }
     }
 }
@@ -187,6 +194,8 @@ impl HomeObjectivePairSnapshot {
         bytes.push(self.state_tag);
         put_u32(bytes, self.breach_progress_ticks);
         put_u32(bytes, self.exposure_ticks_remaining);
+        put_u32(bytes, self.core_health_current);
+        put_u32(bytes, self.core_health_maximum);
     }
 }
 
@@ -220,7 +229,10 @@ impl From<&Unit> for UnitSnapshot {
             hull_current: unit.combat.hull.current,
             hull_maximum: unit.combat.hull.maximum,
             turret_local_heading_bits: unit.combat.turret.local_heading_radians.to_bits(),
-            turret_target: unit.combat.turret.target.map(|target| target.0),
+            turret_target: unit.combat.turret.target.map(|target| match target {
+                crate::combat::CombatTargetId::Unit(id) => (1, id.0),
+                crate::combat::CombatTargetId::CommandCore(id) => (2, id.0),
+            }),
             turret_cooldown_ticks_remaining: unit.combat.turret.cooldown_ticks_remaining,
         }
     }
@@ -249,8 +261,9 @@ impl UnitSnapshot {
         put_u32(bytes, self.hull_maximum);
         put_u32(bytes, self.turret_local_heading_bits);
         match self.turret_target {
-            Some(target) => {
+            Some((tag, target)) => {
                 bytes.push(1);
+                bytes.push(tag);
                 put_u32(bytes, target);
             }
             None => bytes.push(0),
@@ -334,6 +347,9 @@ mod tests {
                     state_tag: 1,
                     breach_progress_ticks: 0,
                     exposure_ticks_remaining: 0,
+                    core_health_current: crate::combat::MAX_CORE_HEALTH,
+                    core_health_maximum: crate::combat::MAX_CORE_HEALTH,
+                    core_targetable: false,
                 },
                 HomeObjectivePairSnapshot {
                     owner: 2,
@@ -342,6 +358,9 @@ mod tests {
                     state_tag: 1,
                     breach_progress_ticks: 0,
                     exposure_ticks_remaining: 0,
+                    core_health_current: crate::combat::MAX_CORE_HEALTH,
+                    core_health_maximum: crate::combat::MAX_CORE_HEALTH,
+                    core_targetable: false,
                 },
             ]
         );
@@ -430,7 +449,7 @@ mod tests {
         assert_ne!(heading.state_hash(), baseline);
         let mut target = Simulation::default();
         let id = target.world.units[1].id;
-        target.world.units[0].combat.turret.target = Some(id);
+        target.world.units[0].combat.turret.target = Some(crate::combat::CombatTargetId::Unit(id));
         assert_ne!(target.state_hash(), baseline);
         let mut cooldown = Simulation::default();
         cooldown.world.units[0]

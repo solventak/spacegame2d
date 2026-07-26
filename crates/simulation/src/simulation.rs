@@ -1,8 +1,8 @@
 use crate::combat::{
-    FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, ImpactEntityId, MUZZLE_OFFSET_METERS,
-    TURRET_TRACKING_RADIANS_PER_SECOND, WEAPON_DAMAGE, WEAPON_RANGE_METERS,
+    CombatTargetId, FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, ImpactEntityId,
+    MUZZLE_OFFSET_METERS, TURRET_TRACKING_RADIANS_PER_SECOND, WEAPON_DAMAGE, WEAPON_RANGE_METERS,
 };
-use crate::command::{CommandScheduler, UnitId, World};
+use crate::command::{CommandScheduler, PlayerId, UnitId, World};
 use crate::config::SimulationConfig;
 use crate::flight_control::{AvoidanceEntityId, NeighborObservation, NeighborRelationship};
 use crate::hitbox::{Hitbox, PositionedHitbox};
@@ -225,10 +225,13 @@ impl Simulation {
         let target_observations = target_observations(&self.world);
         let hit_observations = hit_observations(&self.world);
         let mut events = Vec::new();
-        let mut damage = BTreeMap::new();
-        let mut shooters = target_observations
+        let mut unit_damage = BTreeMap::new();
+        let mut core_damage = BTreeMap::new();
+        let mut shooters = self
+            .world
+            .units
             .iter()
-            .map(|observation| observation.id)
+            .map(|unit| unit.id)
             .collect::<Vec<_>>();
         shooters.sort_unstable();
         for shooter_id in shooters {
@@ -293,8 +296,25 @@ impl Simulation {
             );
             let impact_entity = impact.map(|impact| impact.entity_id);
             let impact_position = impact.map_or(ray_endpoint, |impact| impact.position);
-            if let Some(hit_unit_id) = impact.and_then(|impact| impact.damageable_unit_id) {
-                *damage.entry(hit_unit_id).or_insert(0) += WEAPON_DAMAGE;
+            if let Some(impact) = impact {
+                match impact.entity_id {
+                    ImpactEntityId::Unit(hit_unit_id) => {
+                        *unit_damage.entry(hit_unit_id).or_insert(0) += WEAPON_DAMAGE;
+                    }
+                    ImpactEntityId::StaticStructure(core_id)
+                        if impact.command_core_exposed
+                            && is_hostile(shooter.owner, impact.owner) =>
+                    {
+                        *core_damage.entry(core_id).or_insert(0) += WEAPON_DAMAGE;
+                    }
+                    ImpactEntityId::StaticStructure(core_id) if impact.command_core_protected => {
+                        events.push(SimulationEvent::CoreHitProtected {
+                            tick: self.tick,
+                            core_id,
+                        });
+                    }
+                    ImpactEntityId::StaticStructure(_) => {}
+                }
             }
             shooter.combat.turret.cooldown_ticks_remaining = FIRE_INTERVAL_TICKS;
             events.push(SimulationEvent::ShotFired {
@@ -306,9 +326,14 @@ impl Simulation {
                 impact_entity,
             });
         }
-        for (unit_id, amount) in damage {
+        for (unit_id, amount) in unit_damage {
             if let Some(unit) = self.world.unit_mut(unit_id) {
                 unit.combat.hull.current = unit.combat.hull.current.saturating_sub(amount);
+            }
+        }
+        for (core_id, amount) in core_damage {
+            if let Some(pair) = self.world.home_objective_pair_mut(core_id) {
+                pair.apply_core_damage(amount);
             }
         }
         let world_radius = self.world_radius();
@@ -331,7 +356,42 @@ impl Simulation {
                 true
             }
         });
-        self.advance_objectives(false, &mut events);
+        let destroyed_cores = self
+            .world
+            .home_objective_pairs()
+            .iter()
+            .filter(|pair| pair.core_health_current() == 0)
+            .map(|pair| (pair.owner(), pair.core_id()))
+            .collect::<Vec<_>>();
+        if !destroyed_cores.is_empty() {
+            let outcome = if destroyed_cores.len() == 2 {
+                MatchResult::Draw {
+                    destroyed_cores: [destroyed_cores[0].1, destroyed_cores[1].1],
+                }
+            } else {
+                let (loser, destroyed_core) = destroyed_cores[0];
+                let winner = self
+                    .world
+                    .home_objective_pairs()
+                    .iter()
+                    .find(|pair| pair.owner() != loser)
+                    .expect("two-player match has an opposing Core")
+                    .owner();
+                MatchResult::Victory {
+                    winner,
+                    loser,
+                    destroyed_core,
+                }
+            };
+            events.push(SimulationEvent::MatchResult {
+                tick: self.tick,
+                outcome,
+            });
+            self.commands.clear_pending();
+            self.world.reset_match()?;
+        } else {
+            self.advance_objectives(false, &mut events);
+        }
         let live_ids = self
             .world
             .units
@@ -339,12 +399,9 @@ impl Simulation {
             .map(|unit| unit.id)
             .collect::<BTreeSet<_>>();
         for unit in &mut self.world.units {
-            if unit
-                .combat
-                .turret
-                .target
-                .is_some_and(|target| !live_ids.contains(&target))
-            {
+            if unit.combat.turret.target.is_some_and(
+                |target| matches!(target, CombatTargetId::Unit(id) if !live_ids.contains(&id)),
+            ) {
                 unit.combat.turret.target = None;
             }
         }
@@ -444,7 +501,7 @@ fn avoidance_observations(world: &World) -> Vec<TickAvoidanceObservation> {
 
 #[derive(Clone, Copy)]
 struct TargetObservation {
-    id: UnitId,
+    id: CombatTargetId,
     owner: Option<crate::command::PlayerId>,
     position: Vec2,
 }
@@ -454,14 +511,17 @@ struct HitObservation {
     entity_id: ImpactEntityId,
     owner: Option<crate::command::PlayerId>,
     hitbox: PositionedHitbox,
-    damageable_unit_id: Option<UnitId>,
+    command_core_exposed: bool,
+    command_core_protected: bool,
 }
 
 #[derive(Clone, Copy)]
 struct ImpactResolution {
     entity_id: ImpactEntityId,
     position: Vec2,
-    damageable_unit_id: Option<UnitId>,
+    owner: Option<PlayerId>,
+    command_core_exposed: bool,
+    command_core_protected: bool,
 }
 
 fn target_observations(world: &World) -> Vec<TargetObservation> {
@@ -469,11 +529,29 @@ fn target_observations(world: &World) -> Vec<TargetObservation> {
         .units
         .iter()
         .map(|unit| TargetObservation {
-            id: unit.id,
+            id: CombatTargetId::Unit(unit.id),
             owner: unit.owner,
             position: unit.state.position,
         })
         .collect::<Vec<_>>();
+    observations.extend(
+        world
+            .home_objective_pairs()
+            .iter()
+            .filter(|pair| pair.is_core_targetable())
+            .map(|pair| {
+                let core = world
+                    .structures()
+                    .iter()
+                    .find(|structure| structure.id() == pair.core_id())
+                    .expect("home objective Core must exist");
+                TargetObservation {
+                    id: CombatTargetId::CommandCore(core.id()),
+                    owner: Some(core.owner()),
+                    position: core.position(),
+                }
+            }),
+    );
     observations.sort_unstable_by_key(|observation| observation.id);
     observations
 }
@@ -486,13 +564,21 @@ fn hit_observations(world: &World) -> Vec<HitObservation> {
             entity_id: ImpactEntityId::Unit(unit.id),
             owner: unit.owner,
             hitbox: unit.positioned_hitbox(),
-            damageable_unit_id: Some(unit.id),
+            command_core_exposed: false,
+            command_core_protected: false,
         })
-        .chain(world.structures().iter().map(|structure| HitObservation {
-            entity_id: ImpactEntityId::StaticStructure(structure.id()),
-            owner: Some(structure.owner()),
-            hitbox: structure.positioned_hitbox(),
-            damageable_unit_id: None,
+        .chain(world.structures().iter().map(|structure| {
+            let core_pair = world
+                .home_objective_pairs()
+                .iter()
+                .find(|pair| pair.core_id() == structure.id());
+            HitObservation {
+                entity_id: ImpactEntityId::StaticStructure(structure.id()),
+                owner: Some(structure.owner()),
+                hitbox: structure.positioned_hitbox(),
+                command_core_exposed: core_pair.is_some_and(|pair| pair.is_core_exposed()),
+                command_core_protected: core_pair.is_some_and(|pair| !pair.is_core_exposed()),
+            }
         }))
         .collect::<Vec<_>>();
     observations.sort_unstable_by_key(|observation| observation.entity_id);
@@ -507,11 +593,11 @@ fn is_hostile(
 }
 
 fn valid_target(
-    target: Option<UnitId>,
+    target: Option<CombatTargetId>,
     owner: Option<crate::command::PlayerId>,
     position: Vec2,
     observations: &[TargetObservation],
-) -> Option<UnitId> {
+) -> Option<CombatTargetId> {
     let target = target?;
     observations
         .iter()
@@ -528,17 +614,32 @@ fn nearest_hostile(
     owner: Option<crate::command::PlayerId>,
     position: Vec2,
     observations: &[TargetObservation],
-) -> Option<UnitId> {
+) -> Option<CombatTargetId> {
     observations
         .iter()
         .filter(|observation| is_hostile(owner, observation.owner))
         .filter_map(|observation| {
             let distance_squared = (observation.position - position).length_squared();
-            (distance_squared <= WEAPON_RANGE_METERS * WEAPON_RANGE_METERS)
-                .then_some((distance_squared, observation.id))
+            (distance_squared <= WEAPON_RANGE_METERS * WEAPON_RANGE_METERS).then_some((
+                distance_squared,
+                target_rank(observation.id),
+                observation.id,
+            ))
         })
-        .min_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)))
-        .map(|(_, id)| id)
+        .min_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.cmp(&right.2))
+        })
+        .map(|(_, _, id)| id)
+}
+
+fn target_rank(target: CombatTargetId) -> u8 {
+    match target {
+        CombatTargetId::Unit(_) => 0,
+        CombatTargetId::CommandCore(_) => 1,
+    }
 }
 
 fn heading_toward(vector: Vec2) -> f32 {
@@ -578,18 +679,22 @@ fn first_impact(
         .map(|(entry_distance, observation)| ImpactResolution {
             entity_id: observation.entity_id,
             position: origin + direction * entry_distance,
-            damageable_unit_id: observation.damageable_unit_id,
+            owner: observation.owner,
+            command_core_exposed: observation.command_core_exposed,
+            command_core_protected: observation.command_core_protected,
         })
 }
 
 fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, u32, u32) {
     match event {
         SimulationEvent::ShotFired { shooter_id, .. } => (0, shooter_id.0, 0),
-        SimulationEvent::HullDepleted { unit_id, .. } => (1, unit_id.0, 0),
-        SimulationEvent::BoundaryCrossed { unit_id, .. } => (2, unit_id.0, 0),
+        SimulationEvent::CoreHitProtected { core_id, .. } => (1, core_id.0, 0),
+        SimulationEvent::HullDepleted { unit_id, .. } => (2, unit_id.0, 0),
+        SimulationEvent::BoundaryCrossed { unit_id, .. } => (3, unit_id.0, 0),
         SimulationEvent::ObjectiveTransition { owner, core_id, .. } => {
-            (3, owner.0 as u32, core_id.0)
+            (4, owner.0 as u32, core_id.0)
         }
+        SimulationEvent::MatchResult { .. } => (5, 0, 0),
     }
 }
 
@@ -602,6 +707,10 @@ pub enum SimulationEvent {
         ray_endpoint: Vec2,
         impact_position: Vec2,
         impact_entity: Option<ImpactEntityId>,
+    },
+    CoreHitProtected {
+        tick: Tick,
+        core_id: crate::structure::StaticStructureId,
     },
     HullDepleted {
         tick: Tick,
@@ -620,6 +729,22 @@ pub enum SimulationEvent {
         core_id: crate::structure::StaticStructureId,
         previous_state: ObjectiveState,
         next_state: ObjectiveState,
+    },
+    MatchResult {
+        tick: Tick,
+        outcome: MatchResult,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchResult {
+    Victory {
+        winner: PlayerId,
+        loser: PlayerId,
+        destroyed_core: crate::structure::StaticStructureId,
+    },
+    Draw {
+        destroyed_cores: [crate::structure::StaticStructureId; 2],
     },
 }
 
@@ -898,6 +1023,9 @@ mod tests {
                 SimulationEvent::HullDepleted { unit_id, .. }
                 | SimulationEvent::BoundaryCrossed { unit_id, .. } => *unit_id,
                 SimulationEvent::ObjectiveTransition { .. } => {
+                    unreachable!("this test only produces boundary events")
+                }
+                SimulationEvent::CoreHitProtected { .. } | SimulationEvent::MatchResult { .. } => {
                     unreachable!("this test only produces boundary events")
                 }
             })
@@ -1368,7 +1496,7 @@ mod tests {
         let sim = Simulation::with_world_radius(2.0);
         assert_eq!(sim.world_radius(), 2.0);
         assert_eq!(sim.world().units.len(), crate::command::MAX_UNITS);
-        assert_eq!(sim.config().fleet_size(), 30);
+        assert_eq!(sim.config().fleet_size(), crate::DEFAULT_FLEET_SIZE);
         let custom = Simulation::new(crate::SimulationConfig::new(3).unwrap());
         assert_eq!(custom.world().units.len(), 6);
     }
@@ -1474,7 +1602,7 @@ mod tests {
 
         assert_eq!(
             simulation.world.units[0].combat.turret.target,
-            Some(target_id)
+            Some(CombatTargetId::Unit(target_id))
         );
         assert_eq!(
             simulation.world.units[1].combat.hull.current,
@@ -1498,14 +1626,14 @@ mod tests {
         simulation.world.units[0].state.position = Vec2::ZERO;
         simulation.world.units[1].state.position = Vec2::new(0.0, 8.0);
         simulation.world.units[2].state.position = Vec2::new(0.0, 4.0);
-        simulation.world.units[0].combat.turret.target = Some(target_id);
+        simulation.world.units[0].combat.turret.target = Some(CombatTargetId::Unit(target_id));
         simulation.world.units[2].combat.hull.current = WEAPON_DAMAGE;
 
         let events = simulation.step().unwrap();
 
         assert_eq!(
             simulation.world.units[0].combat.turret.target,
-            Some(target_id)
+            Some(CombatTargetId::Unit(target_id))
         );
         assert!(simulation.world.unit(interceptor_id).is_none());
         assert!(
@@ -1533,7 +1661,7 @@ mod tests {
 
         assert_eq!(
             simulation.world.units[0].combat.turret.target,
-            Some(target_id),
+            Some(CombatTargetId::Unit(target_id)),
             "physical interception must not retarget the turret"
         );
         assert_eq!(
@@ -1547,7 +1675,8 @@ mod tests {
                 impact_entity: Some(ImpactEntityId::StaticStructure(id)),
                 impact_position,
                 ..
-            }] if *id == core.id() && *impact_position == Vec2::new(-40.0, -3.85)
+            }, SimulationEvent::CoreHitProtected { core_id, .. }]
+                if *id == core.id() && *core_id == core.id() && *impact_position == Vec2::new(-40.0, -3.85)
         ));
     }
 
@@ -1569,6 +1698,58 @@ mod tests {
                 ..
             }] if *id == target_id
         ));
+    }
+
+    fn exposed_core_target_simulation(core_health: u32) -> Simulation {
+        let mut simulation = combat_simulation(1);
+        simulation.world.units[0].owner = Some(PlayerId(1));
+        simulation.world.units[1].owner = Some(PlayerId(2));
+        simulation.world.units[0].state.position = Vec2::new(40.0, -8.0);
+        simulation.world.units[1].state.position = Vec2::new(100.0, 100.0);
+        let pair = &mut simulation.world.home_objective_pairs_mut()[1];
+        pair.set_objective_state(ObjectiveState::Exposed, BREACH_DURATION_TICKS, 1);
+        pair.set_core_health_current(core_health);
+        simulation
+    }
+
+    #[test]
+    fn exposed_enemy_core_is_targeted_and_damaged() {
+        let mut simulation = exposed_core_target_simulation(crate::MAX_CORE_HEALTH);
+        let core_id = simulation.world.home_objective_pairs()[1].core_id();
+
+        simulation.step().unwrap();
+
+        assert_eq!(
+            simulation.world.units[0].combat.turret.target,
+            Some(CombatTargetId::CommandCore(core_id))
+        );
+        assert_eq!(
+            simulation.world.home_objective_pairs()[1].core_health_current(),
+            crate::MAX_CORE_HEALTH - WEAPON_DAMAGE
+        );
+    }
+
+    #[test]
+    fn core_destruction_emits_result_then_restores_reset_world() {
+        let mut simulation = exposed_core_target_simulation(WEAPON_DAMAGE);
+        let core_id = simulation.world.home_objective_pairs()[1].core_id();
+
+        let events = simulation.step().unwrap();
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SimulationEvent::MatchResult {
+                outcome: MatchResult::Victory { winner: PlayerId(1), loser: PlayerId(2), destroyed_core }, ..
+            } if *destroyed_core == core_id
+        )));
+        assert!(
+            simulation
+                .world
+                .home_objective_pairs()
+                .iter()
+                .all(|pair| pair.state() == ObjectiveState::Protected
+                    && pair.core_health_current() == crate::MAX_CORE_HEALTH)
+        );
     }
 
     #[test]
@@ -1613,13 +1794,15 @@ mod tests {
             entity_id: ImpactEntityId::Unit(UnitId(9)),
             owner: Some(PlayerId(2)),
             hitbox: circle,
-            damageable_unit_id: Some(UnitId(9)),
+            command_core_exposed: false,
+            command_core_protected: false,
         };
         let structure = HitObservation {
             entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(1)),
             owner: Some(PlayerId(1)),
             hitbox: circle,
-            damageable_unit_id: None,
+            command_core_exposed: false,
+            command_core_protected: false,
         };
         let first = first_impact(
             UnitId(1),
@@ -1634,13 +1817,15 @@ mod tests {
             entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(2)),
             owner: Some(PlayerId(1)),
             hitbox: circle,
-            damageable_unit_id: None,
+            command_core_exposed: false,
+            command_core_protected: false,
         };
         let higher_id = HitObservation {
             entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(7)),
             owner: Some(PlayerId(1)),
             hitbox: circle,
-            damageable_unit_id: None,
+            command_core_exposed: false,
+            command_core_protected: false,
         };
         let first = first_impact(
             UnitId(1),
