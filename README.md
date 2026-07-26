@@ -55,6 +55,11 @@ cargo clippy -- -D warnings
 
 See [`AGENTS.md`](./AGENTS.md) for branch, PR, and ticketing conventions. Both human contributors and background automated workers must follow them.
 
+For UI, HUD, visual, and interaction work, start with the
+[`Fleet Design System`](./ui/Fleet%20Design%20System/readme.md). It indexes the design tokens,
+components, visual guidelines, and interactive in-match HUD reference; the task-oriented lookup
+table is also in [`AGENTS.md`](./AGENTS.md#ui-design-system).
+
 ## Layout
 
 ```
@@ -68,6 +73,8 @@ docs/
   plans/                 milestone planning documents
 scripts/
   qa-headless.sh         headless QA script (test gate + server smoke test)
+ui/
+  Fleet Design System/   canonical design tokens, components, guidelines, and HUD kit
 ```
 
 ## Milestones

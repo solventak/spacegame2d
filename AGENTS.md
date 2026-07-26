@@ -45,7 +45,29 @@ crates/
       shader.wgsl         GPU shader
 docs/
   plans/               milestone planning documents (one file per plan, dated slug)
+ui/
+  Fleet Design System/  canonical UI language, tokens, components, and HUD reference
 ```
+
+## UI design system
+
+For any UI, HUD, rendering, interaction, copy, icon, or visual-style work, inspect
+[`ui/Fleet Design System/`](ui/Fleet%20Design%20System/) before making a change. Its
+[`readme.md`](ui/Fleet%20Design%20System/readme.md) is the canonical source of truth;
+do not recreate its guidance elsewhere.
+
+| Need | Start here |
+|---|---|
+| Visual rules, copy, colour, type, spacing, motion, and icon usage | `ui/Fleet Design System/readme.md` |
+| Reusable CSS variables and global styles | `ui/Fleet Design System/styles.css`, then `tokens/` |
+| React component patterns | `ui/Fleet Design System/components/` (`surfaces`, `signals`, `fleet`, `controls`, `icons`) |
+| Foundation visual specimens | `ui/Fleet Design System/guidelines/` |
+| Working in-match HUD reference and interaction states | `ui/Fleet Design System/ui_kits/hud/README.md`, then `App.jsx`, `HudChrome.jsx`, and `Playfield.jsx` |
+| Agent-specific usage instructions | `ui/Fleet Design System/SKILL.md` |
+
+Treat the system as the first proposal for the current HUD, including its documented font,
+icon, logo, and copy substitutions. Preserve its semantic rules: cyan is friendly, coral is
+enemy, gray is neutral/uncertain; tactical `Glyph` and interface `Icon` are distinct systems.
 
 ## Common commands
 

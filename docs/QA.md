@@ -2,6 +2,12 @@
 
 This document describes how to bring the application to an interactive state and exercise it end-to-end. It covers both a **headless path** (no GPU or display required, suitable for CI and autonomous agents) and a **GUI path** (requires a desktop display).
 
+When QA touches the HUD, controls, visual hierarchy, copy, icons, or interaction states, use the
+[`Fleet Design System`](../ui/Fleet%20Design%20System/readme.md) as the visual acceptance reference.
+Its [HUD kit guide](../ui/Fleet%20Design%20System/ui_kits/hud/README.md) indexes the reference
+states and interactions; [`AGENTS.md`](../AGENTS.md#ui-design-system) provides the full agent
+lookup table.
+
 ## Prerequisites
 
 | Requirement | Headless path | GUI path |
