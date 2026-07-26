@@ -16,6 +16,7 @@ fn destination(slot: u32, sequence: u32, point: Vec2) -> AuthoritativeCommand {
 fn run_crossing() -> (Simulation, f32, Vec<Vec<Vec2>>) {
     let mut simulation = Simulation::default();
     simulation.world.assign_mirror_owners();
+    let fleet_size = simulation.config().fleet_size() as usize;
     for unit in &mut simulation.world.units {
         unit.combat.hull.current = u32::MAX;
         unit.combat.hull.maximum = u32::MAX;
@@ -32,8 +33,8 @@ fn run_crossing() -> (Simulation, f32, Vec<Vec<Vec2>>) {
     let mut states = Vec::new();
     for _ in 0..900 {
         simulation.step().unwrap();
-        for left in &simulation.world.units[..30] {
-            for right in &simulation.world.units[30..] {
+        for left in &simulation.world.units[..fleet_size] {
+            for right in &simulation.world.units[fleet_size..] {
                 minimum_cross_owner_distance = minimum_cross_owner_distance
                     .min(left.state.position.distance(right.state.position));
             }
@@ -53,7 +54,7 @@ fn run_crossing() -> (Simulation, f32, Vec<Vec<Vec2>>) {
         .iter()
         .enumerate()
         .all(|(index, unit)| {
-            let target = if index < 30 {
+            let target = if index < fleet_size {
                 Vec2::new(8.0, 0.0)
             } else {
                 Vec2::new(-8.0, 0.0)
@@ -65,9 +66,9 @@ fn run_crossing() -> (Simulation, f32, Vec<Vec<Vec2>>) {
 }
 
 #[test]
-fn canonical_thirty_vs_thirty_crossing_is_finite_progressing_and_repeatable() {
+fn canonical_cross_fleet_crossing_is_finite_progressing_and_repeatable() {
     let (first, first_minimum, first_states) = run_crossing();
-    assert_eq!(first.world.units.len(), 60);
+    assert_eq!(first.world.units.len(), first.config().total_units());
     assert!(first_minimum.is_finite());
     assert!(first.world.units.iter().all(|unit| {
         unit.state.position.is_finite()

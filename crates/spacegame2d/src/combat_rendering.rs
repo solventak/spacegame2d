@@ -413,9 +413,8 @@ mod tests {
                 muzzle_origin: Vec2::ZERO,
                 ray_endpoint: Vec2::new(0.0, 12.0),
                 impact_position: Vec2::new(0.0, 12.0),
-                hit_unit_id: None,
+                impact_entity: None,
             }],
-            &[],
         );
         let mesh = build_mesh(&[], &presentation, now);
         assert_eq!(mesh.tracers.len(), 12);
@@ -502,7 +501,6 @@ mod tests {
     fn mesh_ranges_are_contiguous_when_tracer_and_flash_are_present() {
         let now = Instant::now();
         let mut presentation = CombatPresentation::default();
-        let target = unit(Some(PlayerId(1)));
         presentation.ingest(
             now,
             &[SimulationEvent::ShotFired {
@@ -511,9 +509,8 @@ mod tests {
                 muzzle_origin: Vec2::ZERO,
                 ray_endpoint: Vec2::Y * 12.0,
                 impact_position: Vec2::Y * 4.0,
-                hit_unit_id: Some(target.id),
+                impact_entity: Some(spacegame2d_simulation::ImpactEntityId::Unit(UnitId(1))),
             }],
-            &[target],
         );
         let mesh = build_mesh(&[unit(None)], &presentation, now);
         assert_eq!(mesh.turrets.end, mesh.tracers.start);

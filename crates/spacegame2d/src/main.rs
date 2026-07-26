@@ -526,6 +526,7 @@ struct App {
     scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
     combat_presentation: CombatPresentation,
+    match_result: Option<spacegame2d_simulation::MatchResult>,
     camera: Camera,
 }
 
@@ -541,6 +542,7 @@ impl Default for App {
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
             combat_presentation: CombatPresentation::default(),
+            match_result: None,
             camera: Camera::new(spacegame2d_simulation::DEFAULT_WORLD_RADIUS_METERS),
         }
     }
@@ -663,8 +665,20 @@ impl ApplicationHandler for App {
                 self.combat_presentation.clear();
             }
             let events = self.simulation.step().unwrap_or_default();
-            self.combat_presentation
-                .ingest(now, &events, &self.simulation.world.units);
+            if let Some(spacegame2d_simulation::SimulationEvent::MatchResult { outcome, .. }) =
+                events.iter().find(|event| {
+                    matches!(
+                        event,
+                        spacegame2d_simulation::SimulationEvent::MatchResult { .. }
+                    )
+                })
+            {
+                self.scheduled.clear();
+                self.presentation.clear();
+                self.combat_presentation.clear();
+                self.match_result = Some(*outcome);
+            }
+            self.combat_presentation.ingest(now, &events);
             self.combat_presentation.retain_active(now);
             if let Some(session) = self.network.as_mut()
                 && self.simulation.tick().0 % u64::from(SIMULATION_HZ) == 0
@@ -824,14 +838,15 @@ mod tests {
         let mut world = spacegame2d_simulation::World::demo();
         world.assign_mirror_owners();
         let data = render_unit_data(&world.units);
-        assert_eq!(data.len(), 60);
+        let fleet_size = world.config().fleet_size() as usize;
+        assert_eq!(data.len(), world.units.len());
         assert!(
-            data[..30]
+            data[..fleet_size]
                 .iter()
                 .all(|(_, color)| *color == PLAYER_ONE_COLOR)
         );
         assert!(
-            data[30..]
+            data[fleet_size..]
                 .iter()
                 .all(|(_, color)| *color == PLAYER_TWO_COLOR)
         );
