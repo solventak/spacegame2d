@@ -1,4 +1,5 @@
 pub mod overlay;
+pub mod structures;
 pub mod units;
 
 use bytemuck::{Pod, Zeroable};

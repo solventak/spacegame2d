@@ -242,7 +242,9 @@ mod tests {
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = Message::read(&mut stream).unwrap();
-            Message::ServerHello(server_hello()).write(&mut stream).unwrap();
+            Message::ServerHello(server_hello())
+                .write(&mut stream)
+                .unwrap();
             let mut messages = Vec::with_capacity(count);
             for _ in 0..count {
                 messages.push(Message::read(&mut stream).unwrap());
@@ -388,9 +390,20 @@ mod tests {
         assert_eq!(
             received.recv().unwrap(),
             vec![
-                Message::CommandRequest(CommandRequest { sequence: 4, command: CommandData::SetDestination { destination: [10, 20] } }),
-                Message::CommandRequest(CommandRequest { sequence: 5, command: CommandData::ResetSimulation }),
-                Message::StateChecksum(StateChecksum { tick: Tick::from(200), hash: vec![7; 32] }),
+                Message::CommandRequest(CommandRequest {
+                    sequence: 4,
+                    command: CommandData::SetDestination {
+                        destination: [10, 20]
+                    }
+                }),
+                Message::CommandRequest(CommandRequest {
+                    sequence: 5,
+                    command: CommandData::ResetSimulation
+                }),
+                Message::StateChecksum(StateChecksum {
+                    tick: Tick::from(200),
+                    hash: vec![7; 32]
+                }),
             ]
         );
     }

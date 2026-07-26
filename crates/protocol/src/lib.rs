@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 9;
+pub const SIMULATION_VERSION: u32 = 11;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -393,9 +393,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hitbox_steering_change_bumps_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 9);
+    fn static_structure_avoidance_profile_bumps_simulation_version() {
+        assert_eq!(SIMULATION_VERSION, 11);
     }
+
     fn destination() -> CommandData {
         CommandData::SetDestination {
             destination: [0x8000_0000, 0x0000_0001],

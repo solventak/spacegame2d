@@ -4,7 +4,9 @@ use crate::command::UnitId;
 
 use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::config::{DEFAULT_FLEET_SIZE, SimulationConfig};
-use crate::flight_control::{ArrivalController, NeighborObservation, NeighborRelationship};
+use crate::flight_control::{
+    ArrivalController, AvoidanceEntityId, NeighborObservation, NeighborRelationship,
+};
 use crate::hitbox::{Hitbox, PositionedHitbox};
 use crate::simulation::{ShipState, is_out_of_bounds, step_ship};
 
@@ -108,7 +110,7 @@ impl Fleet {
             .iter()
             .enumerate()
             .map(|(index, u)| NeighborObservation {
-                unit_id: UnitId((index + 1) as u32),
+                entity_id: AvoidanceEntityId::Unit(UnitId((index + 1) as u32)),
                 position: u.state.position,
                 velocity: u.state.velocity,
                 hitbox: u.hitbox(),

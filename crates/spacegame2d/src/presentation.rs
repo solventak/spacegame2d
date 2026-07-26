@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use spacegame2d_protocol::{CommandRejected, CommandRejectionReason};
+use spacegame2d_simulation::World;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MarkerStatus {
@@ -76,15 +77,15 @@ impl DestinationPresentation {
         self.rejection = None;
     }
 
-    pub(crate) fn marker(&self) -> Option<DestinationMarker> {
+    pub(crate) fn marker(&self, world: &World) -> Option<DestinationMarker> {
         self.pending
             .map(|(_, position)| DestinationMarker {
-                position,
+                position: world.project_destination(position),
                 status: MarkerStatus::Pending,
             })
             .or_else(|| {
                 self.confirmed.map(|position| DestinationMarker {
-                    position,
+                    position: world.project_destination(position),
                     status: MarkerStatus::Confirmed,
                 })
             })

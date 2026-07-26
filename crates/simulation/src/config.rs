@@ -9,11 +9,16 @@ pub struct AvoidanceConfig {
     pub friendly_comfort_clearance_meters: f32,
     /// Desired hull-to-hull clearance for opposing units.
     pub opposing_comfort_clearance_meters: f32,
+    /// Desired hull-to-structure clearance for static structures.
+    pub structure_comfort_clearance_meters: f32,
     pub friendly_strength: f32,
     pub opposing_strength: f32,
+    pub structure_strength: f32,
     pub prediction_horizon_seconds: f32,
     pub max_avoidance_acceleration: f32,
+    pub max_structure_avoidance_acceleration: f32,
     pub opposing_speed_squared_scale: f32,
+    pub structure_speed_squared_scale: f32,
 }
 
 impl Default for AvoidanceConfig {
@@ -21,11 +26,15 @@ impl Default for AvoidanceConfig {
         Self {
             friendly_comfort_clearance_meters: 2.0,
             opposing_comfort_clearance_meters: 4.0,
+            structure_comfort_clearance_meters: 6.0,
             friendly_strength: 8.0,
             opposing_strength: 24.0,
+            structure_strength: 48.0,
             prediction_horizon_seconds: 0.75,
             max_avoidance_acceleration: 12.0,
+            max_structure_avoidance_acceleration: 24.0,
             opposing_speed_squared_scale: 1.5,
+            structure_speed_squared_scale: 2.0,
         }
     }
 }
@@ -77,11 +86,15 @@ impl SimulationConfig {
         let values = [
             avoidance.friendly_comfort_clearance_meters,
             avoidance.opposing_comfort_clearance_meters,
+            avoidance.structure_comfort_clearance_meters,
             avoidance.friendly_strength,
             avoidance.opposing_strength,
+            avoidance.structure_strength,
             avoidance.prediction_horizon_seconds,
             avoidance.max_avoidance_acceleration,
+            avoidance.max_structure_avoidance_acceleration,
             avoidance.opposing_speed_squared_scale,
+            avoidance.structure_speed_squared_scale,
         ];
         if values
             .iter()

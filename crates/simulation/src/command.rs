@@ -9,8 +9,9 @@ use crate::autopilot::{Autopilot, AutopilotConfig};
 use crate::combat::CombatState;
 use crate::config::{AvoidanceConfig, MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
-use crate::hitbox::{Hitbox, PositionedHitbox};
+use crate::hitbox::{Hitbox, HitboxShape, PositionedHitbox};
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
+use crate::structure::{StaticStructure, initial_static_structures};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(pub u8);
@@ -110,11 +111,16 @@ impl Unit {
             config: crate::flight_control::arrival::ArrivalControllerConfig {
                 comfort_clearance_meters: avoidance.friendly_comfort_clearance_meters,
                 opposing_comfort_clearance_meters: avoidance.opposing_comfort_clearance_meters,
+                structure_comfort_clearance_meters: avoidance.structure_comfort_clearance_meters,
                 avoidance_strength: avoidance.friendly_strength,
                 opposing_avoidance_strength: avoidance.opposing_strength,
+                structure_avoidance_strength: avoidance.structure_strength,
                 prediction_horizon_seconds: avoidance.prediction_horizon_seconds,
                 max_avoidance_acceleration: avoidance.max_avoidance_acceleration,
+                max_structure_avoidance_acceleration: avoidance
+                    .max_structure_avoidance_acceleration,
                 opposing_speed_squared_scale: avoidance.opposing_speed_squared_scale,
+                structure_speed_squared_scale: avoidance.structure_speed_squared_scale,
                 ..Default::default()
             },
         };
@@ -133,6 +139,7 @@ pub struct World {
     config: SimulationConfig,
     pub next_unit_id: u32,
     pub units: Vec<Unit>,
+    static_structures: Vec<StaticStructure>,
     connected_players: BTreeSet<PlayerId>,
     unit_id_exhausted: bool,
 }
@@ -154,6 +161,7 @@ impl World {
             config,
             next_unit_id: config.total_units() as u32 + 1,
             units,
+            static_structures: initial_static_structures(),
             connected_players: BTreeSet::new(),
             unit_id_exhausted: false,
         }
@@ -161,6 +169,32 @@ impl World {
 
     pub fn config(&self) -> SimulationConfig {
         self.config
+    }
+
+    pub fn structures(&self) -> &[StaticStructure] {
+        &self.static_structures
+    }
+
+    /// Project a requested destination out of a static structure hitbox.
+    ///
+    /// The first containing structure in stable identity order wins. Built-in
+    /// structures do not overlap; the order keeps future definitions
+    /// deterministic if that changes.
+    pub fn project_destination(&self, requested: Vec2) -> Vec2 {
+        for structure in &self.static_structures {
+            let HitboxShape::Circle(circle) = structure.hitbox().shape();
+            let offset = requested - structure.position();
+            let radius = circle.radius_meters();
+            if offset.length_squared() < radius * radius {
+                let direction = if offset == Vec2::ZERO {
+                    Vec2::X
+                } else {
+                    offset.normalize()
+                };
+                return structure.position() + direction * radius;
+            }
+        }
+        requested
     }
 
     pub fn connect_player(&mut self, player: PlayerId) -> bool {
@@ -322,10 +356,11 @@ pub struct SetDestination {
 
 impl Command for SetDestination {
     fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
+        let destination = world.project_destination(self.destination);
         let has_owners = world.units.iter().any(|unit| unit.owner.is_some());
         for unit in &mut world.units {
             if !has_owners || unit.owner == Some(self.player) {
-                unit.autopilot.set_destination(self.destination);
+                unit.autopilot.set_destination(destination);
             }
         }
         Ok(())
@@ -367,6 +402,7 @@ impl Command for ResetSimulation {
             units.push(Unit::with_avoidance(id, owner, state, config.avoidance()));
         }
         world.units = units;
+        world.static_structures = initial_static_structures();
         Ok(())
     }
 
@@ -523,7 +559,7 @@ mod tests {
             player_slot: slot,
             sequence: 1,
             command: CommandData::SetDestination {
-                destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
             },
         }
     }
@@ -574,7 +610,7 @@ mod tests {
         command.execute(&mut world).unwrap();
         assert_eq!(
             world.units[0].autopilot.destination(),
-            Some(Vec2::new(1.0, 2.0))
+            Some(Vec2::new(5.0, 6.0))
         );
 
         let mut replay = Simulation::default();
@@ -582,7 +618,7 @@ mod tests {
         assert_eq!(replay.tick(), Tick::new(1));
         assert_eq!(
             replay.world.units[0].autopilot.destination(),
-            Some(Vec2::new(1.0, 2.0))
+            Some(Vec2::new(5.0, 6.0))
         );
         assert!(events.unwrap().is_empty());
     }
@@ -699,7 +735,7 @@ mod tests {
             player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
-                destination: [0.0f32.to_bits(), 10.0f32.to_bits()],
+                destination: [0.0f32.to_bits(), 15.0f32.to_bits()],
             },
         };
 
@@ -708,7 +744,72 @@ mod tests {
 
         assert_eq!(
             sim.world.units[0].autopilot.destination(),
-            Some(Vec2::new(0.0, 10.0))
+            Some(Vec2::new(0.0, 15.0))
+        );
+    }
+
+    #[test]
+    fn structures_are_recreated_deterministically_on_reset() {
+        let mut world = World::demo();
+        let initial = world.structures().to_vec();
+
+        ResetSimulation.execute(&mut world).unwrap();
+
+        assert_eq!(world.structures(), initial);
+    }
+
+    #[test]
+    fn projection_uses_structure_hitboxes_with_a_positive_x_center_fallback() {
+        let world = World::demo();
+
+        assert_eq!(world.project_destination(Vec2::ZERO), Vec2::new(3.85, 0.0));
+        assert_eq!(
+            world.project_destination(Vec2::new(0.0, 10.0)),
+            Vec2::new(2.75, 10.0)
+        );
+        assert_eq!(
+            world.project_destination(Vec2::new(-1.0, 0.0)),
+            Vec2::new(-3.85, 0.0)
+        );
+        assert_eq!(
+            world.project_destination(Vec2::new(3.85, 0.0)),
+            Vec2::new(3.85, 0.0)
+        );
+        assert_eq!(
+            world.project_destination(Vec2::new(5.0, 6.0)),
+            Vec2::new(5.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn destination_commands_share_one_projected_point_but_record_raw_input() {
+        let mut world = World::demo();
+        world.assign_player_fleet(PlayerId(1));
+        let requested = Vec2::new(0.0, 10.0);
+        let command = SetDestination {
+            player: PlayerId(1),
+            destination: requested,
+        };
+
+        command.execute(&mut world).unwrap();
+
+        assert!(
+            world.units[..FLEET_SIZE]
+                .iter()
+                .all(|unit| unit.autopilot.destination() == Some(Vec2::new(2.75, 10.0)))
+        );
+        assert!(
+            world.units[FLEET_SIZE..]
+                .iter()
+                .all(|unit| unit.autopilot.destination().is_none())
+        );
+        assert_eq!(
+            command.record(Tick::new(7)),
+            RecordedCommand::SetDestination {
+                execute_tick: Tick::new(7),
+                player: PlayerId(1),
+                destination: [requested.x.to_bits(), requested.y.to_bits()],
+            }
         );
     }
 
