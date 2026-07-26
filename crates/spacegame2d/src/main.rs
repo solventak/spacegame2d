@@ -132,6 +132,7 @@ impl Renderer {
     async fn new(
         window: Arc<Window>,
         units: &[Unit],
+        world_radius: f32,
         structures: &[StaticStructure],
         world_radius: f32,
     ) -> Result<Self, String> {
@@ -588,6 +589,7 @@ impl ApplicationHandler for App {
         match pollster::block_on(Renderer::new(
             window.clone(),
             &self.simulation.world.units,
+            self.simulation.world_radius(),
             self.simulation.world.structures(),
             self.simulation.world_radius(),
         )) {
@@ -890,11 +892,11 @@ mod tests {
     fn destination_markers_project_pending_and_confirmed_points() {
         let world = spacegame2d_simulation::World::demo();
         let mut presentation = DestinationPresentation::default();
-        presentation.begin(4, Vec2::ZERO);
+        presentation.begin(4, Vec2::new(-20.0, 0.0));
         assert_eq!(
             presentation.marker(&world),
             Some(DestinationMarker {
-                position: Vec2::new(3.85, 0.0),
+                position: Vec2::new(-16.15, 0.0),
                 status: MarkerStatus::Pending,
             })
         );
@@ -906,14 +908,14 @@ mod tests {
                 player_slot: 1,
                 sequence: 4,
                 command: spacegame2d_protocol::CommandData::SetDestination {
-                    destination: [0.0f32.to_bits(), 10.0f32.to_bits()],
+                    destination: [(-10.0f32).to_bits(), 0.0f32.to_bits()],
                 },
             },
         );
         assert_eq!(
             presentation.marker(&world),
             Some(DestinationMarker {
-                position: Vec2::new(2.75, 10.0),
+                position: Vec2::new(-7.25, 0.0),
                 status: MarkerStatus::Confirmed,
             })
         );

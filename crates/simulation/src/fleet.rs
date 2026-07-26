@@ -179,8 +179,17 @@ pub fn initial_drone_positions_for_size(fleet_size: usize) -> Vec<ShipState> {
 
 pub fn initial_world_positions(config: &SimulationConfig) -> Vec<ShipState> {
     let fleet_size = config.fleet_size() as usize;
-    let mut positions = initial_fleet_positions(0x5EED_1234, -12.0, fleet_size);
-    positions.extend(initial_fleet_positions(0xC0FF_EE42, 12.0, fleet_size));
+    let mut positions = Vec::with_capacity(config.total_units());
+    for (seed, home) in [0x5EED_1234, 0xC0FF_EE42]
+        .into_iter()
+        .zip(crate::structure::HOME_AREA_DEFINITIONS)
+    {
+        positions.extend(initial_fleet_positions(
+            seed,
+            home.fleet_spawn_center.x,
+            fleet_size,
+        ));
+    }
     positions
 }
 
@@ -217,20 +226,40 @@ mod tests {
     }
 
     #[test]
-    fn world_fleets_start_far_apart_and_inside_the_larger_arena() {
+    fn world_fleets_start_beyond_their_cores_and_inside_original_arena() {
         let positions = initial_world_positions(&SimulationConfig::default());
         let split = DEFAULT_FLEET_SIZE as usize;
         assert!(
             positions[..split]
                 .iter()
-                .all(|ship| ship.position.x < -10.0)
+                .all(|ship| ship.position.x < -20.0)
         );
-        assert!(positions[split..].iter().all(|ship| ship.position.x > 10.0));
+        assert!(positions[split..].iter().all(|ship| ship.position.x > 20.0));
+        const ORIGINAL_ARENA_RADIUS_METERS: f32 = 32.0;
+        let crate::hitbox::HitboxShape::Circle(ship_circle) = Hitbox::default_ship().shape();
+        let ship_radius = ship_circle.radius_meters();
         assert!(
-            positions
-                .iter()
-                .all(|ship| ship.position.length() < WORLD_RADIUS_M)
+            positions.iter().all(|ship| {
+                ship.position.length() + ship_radius <= ORIGINAL_ARENA_RADIUS_METERS
+            })
         );
+    }
+
+    #[test]
+    fn world_fleets_do_not_overlap_home_structures() {
+        let positions = initial_world_positions(&SimulationConfig::default());
+        let (structures, _) = crate::structure::initial_home_objectives();
+        let ship_hitbox = Hitbox::default_ship();
+        for ship in positions {
+            for structure in &structures {
+                assert!(
+                    ship_hitbox
+                        .positioned_at(ship.position)
+                        .clearance_to(structure.positioned_hitbox())
+                        > 0.0
+                );
+            }
+        }
     }
 
     #[test]

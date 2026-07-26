@@ -11,7 +11,7 @@ use crate::config::{AvoidanceConfig, MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
 use crate::hitbox::{Hitbox, HitboxShape, PositionedHitbox};
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
-use crate::structure::{StaticStructure, initial_static_structures};
+use crate::structure::{HomeObjectivePair, StaticStructure, initial_home_objectives};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(pub u8);
@@ -129,6 +129,7 @@ pub struct World {
     pub next_unit_id: u32,
     pub units: Vec<Unit>,
     static_structures: Vec<StaticStructure>,
+    home_objective_pairs: Vec<HomeObjectivePair>,
     connected_players: BTreeSet<PlayerId>,
     unit_id_exhausted: bool,
 }
@@ -139,6 +140,7 @@ impl World {
     }
 
     pub fn new(config: SimulationConfig) -> Self {
+        let (static_structures, home_objective_pairs) = initial_home_objectives();
         let units = crate::fleet::initial_world_positions(&config)
             .into_iter()
             .enumerate()
@@ -151,7 +153,8 @@ impl World {
             config,
             next_unit_id,
             units,
-            static_structures: initial_static_structures(),
+            static_structures,
+            home_objective_pairs,
             connected_players: BTreeSet::new(),
             unit_id_exhausted: false,
         }
@@ -163,6 +166,10 @@ impl World {
 
     pub fn structures(&self) -> &[StaticStructure] {
         &self.static_structures
+    }
+
+    pub fn home_objective_pairs(&self) -> &[HomeObjectivePair] {
+        &self.home_objective_pairs
     }
 
     /// Project a requested destination out of a static structure hitbox.
@@ -392,7 +399,9 @@ impl Command for ResetSimulation {
             units.push(Unit::with_avoidance(id, owner, state, config.avoidance()));
         }
         world.units = units;
-        world.static_structures = initial_static_structures();
+        let (structures, pairs) = initial_home_objectives();
+        world.static_structures = structures;
+        world.home_objective_pairs = pairs;
         Ok(())
     }
 
@@ -742,40 +751,38 @@ mod tests {
     fn structures_are_recreated_deterministically_on_reset() {
         let mut world = World::demo();
         let initial = world.structures().to_vec();
+        let initial_pairs = world.home_objective_pairs().to_vec();
 
         ResetSimulation.execute(&mut world).unwrap();
 
         assert_eq!(world.structures(), initial);
+        assert_eq!(world.home_objective_pairs(), initial_pairs);
     }
 
     #[test]
     fn projection_uses_structure_hitboxes_with_a_positive_x_center_fallback() {
         let world = World::demo();
 
-        assert_eq!(world.project_destination(Vec2::ZERO), Vec2::new(3.85, 0.0));
-        assert_eq!(
-            world.project_destination(Vec2::new(0.0, 10.0)),
-            Vec2::new(2.75, 10.0)
-        );
-        assert_eq!(
-            world.project_destination(Vec2::new(-1.0, 0.0)),
-            Vec2::new(-3.85, 0.0)
-        );
-        assert_eq!(
-            world.project_destination(Vec2::new(3.85, 0.0)),
-            Vec2::new(3.85, 0.0)
-        );
-        assert_eq!(
-            world.project_destination(Vec2::new(5.0, 6.0)),
-            Vec2::new(5.0, 6.0)
-        );
+        for (center, radius) in [
+            (Vec2::new(-20.0, 0.0), 3.85),
+            (Vec2::new(-10.0, 0.0), 2.75),
+            (Vec2::new(20.0, 0.0), 3.85),
+            (Vec2::new(10.0, 0.0), 2.75),
+        ] {
+            assert_eq!(world.project_destination(center), center + Vec2::X * radius);
+            assert_eq!(
+                world.project_destination(center + Vec2::X * radius),
+                center + Vec2::X * radius
+            );
+        }
+        assert_eq!(world.project_destination(Vec2::ZERO), Vec2::ZERO);
     }
 
     #[test]
     fn destination_commands_share_one_projected_point_but_record_raw_input() {
         let mut world = World::demo();
         world.assign_player_fleet(PlayerId(1));
-        let requested = Vec2::new(0.0, 10.0);
+        let requested = Vec2::new(-10.0, 0.0);
         let command = SetDestination {
             player: PlayerId(1),
             destination: requested,
@@ -786,7 +793,7 @@ mod tests {
         assert!(
             world.units[..FLEET_SIZE]
                 .iter()
-                .all(|unit| unit.autopilot.destination() == Some(Vec2::new(2.75, 10.0)))
+                .all(|unit| unit.autopilot.destination() == Some(Vec2::new(-7.25, 0.0)))
         );
         assert!(
             world.units[FLEET_SIZE..]
