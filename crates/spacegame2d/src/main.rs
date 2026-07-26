@@ -134,6 +134,7 @@ impl Renderer {
         units: &[Unit],
         world_radius: f32,
         structures: &[StaticStructure],
+        world_radius: f32,
     ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
@@ -590,6 +591,7 @@ impl ApplicationHandler for App {
             &self.simulation.world.units,
             self.simulation.world_radius(),
             self.simulation.world.structures(),
+            self.simulation.world_radius(),
         )) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
