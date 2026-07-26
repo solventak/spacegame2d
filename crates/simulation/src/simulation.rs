@@ -4,7 +4,8 @@ use crate::combat::{
 };
 use crate::command::{CommandScheduler, UnitId, World};
 use crate::config::SimulationConfig;
-use crate::flight_control::{NeighborObservation, NeighborRelationship};
+use crate::flight_control::{AvoidanceEntityId, NeighborObservation, NeighborRelationship};
+use crate::hitbox::Hitbox;
 use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
 use std::collections::{BTreeMap, BTreeSet};
@@ -187,37 +188,35 @@ impl Simulation {
     /// authoritative World units, and deriving transient boundary events.
     pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
         self.commands.execute_pending(self.tick, &mut self.world)?;
-        let mut observations: Vec<(
-            crate::command::UnitId,
-            Option<crate::command::PlayerId>,
-            Vec2,
-            Vec2,
-        )> = self
-            .world
-            .units
-            .iter()
-            .map(|u| (u.id, u.owner, u.state.position, u.state.velocity))
-            .collect();
-        observations.sort_unstable_by_key(|(unit_id, ..)| *unit_id);
+        let observations = avoidance_observations(&self.world);
         for unit in self.world.units.iter_mut() {
             let owner = unit.owner;
             let neighbors = observations
                 .iter()
-                .filter(|(neighbor_id, ..)| *neighbor_id != unit.id)
-                .map(
-                    |(neighbor_id, neighbor_owner, position, velocity)| NeighborObservation {
-                        unit_id: *neighbor_id,
-                        position: *position,
-                        velocity: *velocity,
-                        relationship: if owner.is_some() && owner == *neighbor_owner {
+                .filter(|neighbor| neighbor.entity_id != AvoidanceEntityId::Unit(unit.id))
+                .map(|neighbor| NeighborObservation {
+                    entity_id: neighbor.entity_id,
+                    position: neighbor.position,
+                    velocity: neighbor.velocity,
+                    hitbox: neighbor.hitbox,
+                    relationship: match neighbor.entity_id {
+                        AvoidanceEntityId::StaticStructure(_) => {
+                            NeighborRelationship::StaticStructure
+                        }
+                        AvoidanceEntityId::Unit(_)
+                            if owner.is_some() && owner == neighbor.owner =>
+                        {
                             NeighborRelationship::Friendly
-                        } else {
-                            NeighborRelationship::Opposing
-                        },
+                        }
+                        AvoidanceEntityId::Unit(_) => NeighborRelationship::Opposing,
                     },
-                )
+                })
                 .collect::<Vec<_>>();
-            let input = unit.autopilot.controls_for_tick(&unit.state, &neighbors);
+            let input = unit.autopilot.controls_for_tick_with_hitbox(
+                &unit.state,
+                unit.hitbox(),
+                &neighbors,
+            );
             step_ship(&mut unit.state, input);
         }
         let observations = combat_observations(&self.world);
@@ -346,6 +345,44 @@ impl Simulation {
         self.tick = self.tick.increment(Tick::new(1));
         Ok(events)
     }
+}
+
+/// Immutable unit state sampled at the start of a simulation tick.
+#[derive(Clone, Copy)]
+struct TickAvoidanceObservation {
+    entity_id: AvoidanceEntityId,
+    owner: Option<crate::command::PlayerId>,
+    position: Vec2,
+    velocity: Vec2,
+    hitbox: Hitbox,
+}
+
+fn avoidance_observations(world: &World) -> Vec<TickAvoidanceObservation> {
+    let mut observations: Vec<TickAvoidanceObservation> = world
+        .units
+        .iter()
+        .map(|unit| TickAvoidanceObservation {
+            entity_id: AvoidanceEntityId::Unit(unit.id),
+            owner: unit.owner,
+            position: unit.state.position,
+            velocity: unit.state.velocity,
+            hitbox: unit.hitbox(),
+        })
+        .collect();
+    observations.extend(
+        world
+            .structures()
+            .iter()
+            .map(|structure| TickAvoidanceObservation {
+                entity_id: AvoidanceEntityId::StaticStructure(structure.id()),
+                owner: None,
+                position: structure.position(),
+                velocity: Vec2::ZERO,
+                hitbox: structure.hitbox(),
+            }),
+    );
+    observations.sort_unstable_by_key(|observation| observation.entity_id);
+    observations
 }
 
 #[derive(Clone, Copy)]
@@ -533,7 +570,9 @@ mod tests {
 
     use crate::autopilot::{Autopilot, AutopilotConfig};
     use crate::command::PlayerId;
-    use crate::flight_control::ArrivalController;
+    use crate::flight_control::{
+        ArrivalController, AvoidanceProfile, AvoidanceProfiles, NeighborRelationship,
+    };
 
     #[test]
     fn starts_without_player_ship() {
@@ -545,6 +584,53 @@ mod tests {
         let mut sim = Simulation::default();
         assert!(sim.step().unwrap().is_empty());
         assert_eq!(sim.tick(), Tick::new(1));
+    }
+
+    #[test]
+    fn static_structures_are_stationary_opposing_avoidance_observations() {
+        let mut simulation = Simulation::default();
+        simulation.world.units.truncate(1);
+        simulation.world.units[0].state.position = Vec2::new(4.0, 0.0);
+        simulation.world.units[0]
+            .autopilot
+            .set_destination(Vec2::new(4.0, 10.0));
+
+        let observations = avoidance_observations(&simulation.world);
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.entity_id)
+                .collect::<Vec<_>>(),
+            vec![
+                AvoidanceEntityId::Unit(simulation.world.units[0].id),
+                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(1)),
+                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(2)),
+            ]
+        );
+        let structure = observations[1];
+        assert_eq!(structure.position, Vec2::ZERO);
+        assert_eq!(structure.velocity, Vec2::ZERO);
+        assert_eq!(structure.owner, None);
+
+        let unit = &mut simulation.world.units[0];
+        let neighbors = observations[1..]
+            .iter()
+            .map(|observation| NeighborObservation {
+                entity_id: observation.entity_id,
+                position: observation.position,
+                velocity: observation.velocity,
+                hitbox: observation.hitbox,
+                relationship: NeighborRelationship::StaticStructure,
+            })
+            .collect::<Vec<_>>();
+        let with_structure =
+            unit.autopilot
+                .controls_for_tick_with_hitbox(&unit.state, unit.hitbox(), &neighbors);
+        unit.autopilot.set_destination(Vec2::new(4.0, 10.0));
+        let without_structure =
+            unit.autopilot
+                .controls_for_tick_with_hitbox(&unit.state, unit.hitbox(), &[]);
+        assert_ne!(with_structure, without_structure);
     }
 
     #[test]
@@ -741,7 +827,10 @@ mod tests {
         assert_eq!(sim.tick(), tick_before + Tick::new(1));
         // The command applied before physics: the destination is set and the
         // unit has moved toward it in the same tick.
-        assert_eq!(sim.world.units[0].autopilot.destination(), Some(Vec2::ZERO));
+        assert_eq!(
+            sim.world.units[0].autopilot.destination(),
+            Some(Vec2::new(3.85, 0.0))
+        );
         assert_ne!(sim.world.units[0].state.position, Vec2::new(10.0, 0.0));
     }
 
@@ -946,10 +1035,36 @@ mod tests {
                     ..Default::default()
                 },
             ];
+            let defaults = AvoidanceProfiles::default();
+            let profiles = defaults
+                .profiles()
+                .iter()
+                .map(|profile| {
+                    let strength = match profile.relationship() {
+                        NeighborRelationship::Friendly | NeighborRelationship::Opposing => {
+                            avoidance_strength
+                        }
+                        NeighborRelationship::StaticStructure => profile.strength(),
+                    };
+                    AvoidanceProfile::new(
+                        profile.relationship(),
+                        profile.group(),
+                        profile.comfort_clearance_meters(),
+                        strength,
+                        profile.speed_squared_scale(),
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let avoidance = AvoidanceProfiles::new(
+                defaults.prediction_horizon_seconds(),
+                defaults.groups().to_vec(),
+                profiles,
+            )
+            .unwrap();
             for (unit, state) in simulation.world.units.iter_mut().zip(states) {
                 let mut controller_config = ArrivalController::default().config;
-                controller_config.avoidance_strength = avoidance_strength;
-                controller_config.opposing_avoidance_strength = avoidance_strength;
+                controller_config.avoidance = avoidance.clone();
                 unit.state = state;
                 unit.autopilot = Autopilot::new(
                     Box::new(ArrivalController {

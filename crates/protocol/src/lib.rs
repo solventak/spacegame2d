@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 9;
+pub const SIMULATION_VERSION: u32 = 12;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -398,6 +398,12 @@ impl FrameDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authoritative_simulation_changes_bump_simulation_version() {
+        assert_eq!(SIMULATION_VERSION, 12);
+    }
+
     fn destination() -> CommandData {
         CommandData::SetDestination {
             destination: [0x8000_0000, 0x0000_0001],

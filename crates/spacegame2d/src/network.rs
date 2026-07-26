@@ -55,7 +55,7 @@ impl NetworkSession {
     }
 
     pub fn simulation_config(&self) -> SimulationConfig {
-        self.simulation_config
+        self.simulation_config.clone()
     }
 
     pub fn register_player(
@@ -185,6 +185,7 @@ mod tests {
     use spacegame2d_protocol::ServerHello;
     use std::collections::BTreeMap;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
 
     fn synthetic_server(response: Message, disconnect: bool) -> String {
@@ -218,6 +219,42 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(100));
         });
         address
+    }
+
+    fn synthetic_server_with_messages(messages: Vec<Message>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = Message::read(&mut stream).unwrap();
+            Message::ServerHello(server_hello())
+                .write(&mut stream)
+                .unwrap();
+            for message in messages {
+                message.write(&mut stream).unwrap();
+            }
+            thread::sleep(std::time::Duration::from_millis(100));
+        });
+        address
+    }
+
+    fn synthetic_server_collecting(count: usize) -> (String, mpsc::Receiver<Vec<Message>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = Message::read(&mut stream).unwrap();
+            Message::ServerHello(server_hello())
+                .write(&mut stream)
+                .unwrap();
+            let mut messages = Vec::with_capacity(count);
+            for _ in 0..count {
+                messages.push(Message::read(&mut stream).unwrap());
+            }
+            sender.send(messages).unwrap();
+        });
+        (address, receiver)
     }
 
     fn server_hello() -> ServerHello {
@@ -316,6 +353,12 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         wrong = base.clone();
+        wrong.capabilities.clear();
+        assert_eq!(
+            wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        wrong = base.clone();
         wrong.simulation_hz += 1;
         assert_eq!(
             wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
@@ -343,6 +386,86 @@ mod tests {
             );
             wrong.world_radius_bits = 64.0_f32.to_bits();
         }
+    }
+
+    #[test]
+    fn register_player_rejects_invalid_slot() {
+        let address = synthetic_server(Message::ServerHello(server_hello()), false);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        session.player_slot = u32::from(u8::MAX) + 1;
+        let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
+        let error = session.register_player(&mut simulation).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn outbound_commands_and_checksum_are_encoded_and_flushed() {
+        let (address, received) = synthetic_server_collecting(3);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        session.set_local_tick(Tick::from(200));
+        session.send_set_destination(4, [10, 20]).unwrap();
+        session.send_reset_simulation(5).unwrap();
+        session
+            .send_state_checksum(Tick::from(200), [7; 32])
+            .unwrap();
+        assert!(session.outgoing.is_empty());
+        assert_eq!(
+            received.recv().unwrap(),
+            vec![
+                Message::CommandRequest(CommandRequest {
+                    sequence: 4,
+                    command: CommandData::SetDestination {
+                        destination: [10, 20]
+                    }
+                }),
+                Message::CommandRequest(CommandRequest {
+                    sequence: 5,
+                    command: CommandData::ResetSimulation
+                }),
+                Message::StateChecksum(StateChecksum {
+                    tick: Tick::from(200),
+                    hash: vec![7; 32]
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn poll_events_returns_authoritative_and_rejected_messages_and_ignores_others() {
+        let authoritative = AuthoritativeCommand {
+            execute_tick: Tick::from(9),
+            player_slot: 7,
+            sequence: 3,
+            command: CommandData::ResetSimulation,
+        };
+        let rejected = CommandRejected {
+            sequence: 4,
+            reason: spacegame2d_protocol::CommandRejectionReason::InvalidCommand,
+        };
+        let address = synthetic_server_with_messages(vec![
+            Message::StateChecksum(StateChecksum {
+                tick: Tick::from(9),
+                hash: vec![1],
+            }),
+            Message::AuthoritativeCommand(authoritative.clone()),
+            Message::CommandRejected(rejected.clone()),
+        ]);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        let mut events = Vec::new();
+        for _ in 0..20 {
+            events = session.poll_events().unwrap();
+            if events.len() == 2 {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            events,
+            vec![
+                ServerEvent::Authoritative(authoritative),
+                ServerEvent::Rejected(rejected)
+            ]
+        );
     }
 
     #[test]

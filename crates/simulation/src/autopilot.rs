@@ -1,4 +1,5 @@
 use crate::flight_control::{FlightController, FlightObservation, NeighborObservation};
+use crate::hitbox::Hitbox;
 use crate::simulation::{FlightInput, ShipState};
 use glam::Vec2;
 
@@ -74,14 +75,26 @@ impl Autopilot {
         ship: &ShipState,
         neighbors: &[NeighborObservation],
     ) -> FlightInput {
+        self.controls_for_tick_with_hitbox(ship, Hitbox::default_ship(), neighbors)
+    }
+
+    pub fn controls_for_tick_with_hitbox(
+        &mut self,
+        ship: &ShipState,
+        hitbox: Hitbox,
+        neighbors: &[NeighborObservation],
+    ) -> FlightInput {
         let Some(destination) = self.destination else {
             return FlightInput::default();
         };
-        let desired = self.controller.desired_input(FlightObservation::from_ship(
-            ship,
-            destination,
-            neighbors,
-        ));
+        let desired = self
+            .controller
+            .desired_input(FlightObservation::from_ship_with_hitbox(
+                ship,
+                hitbox,
+                destination,
+                neighbors,
+            ));
         let settled = ship.position.distance(destination) <= self.config.arrival_radius_meters
             && ship.velocity.length() <= self.config.stopped_speed_meters_per_second
             && desired == FlightInput::default();
@@ -155,9 +168,10 @@ mod tests {
         assert!(!autopilot.is_active());
 
         let neighbor = NeighborObservation {
-            unit_id: crate::command::UnitId(1),
+            entity_id: crate::flight_control::AvoidanceEntityId::Unit(crate::command::UnitId(1)),
             position: Vec2::X,
             velocity: Vec2::ZERO,
+            hitbox: Hitbox::default_ship(),
             relationship: NeighborRelationship::Friendly,
         };
         let input = autopilot.controls_for_tick(&ShipState::default(), &[neighbor]);
