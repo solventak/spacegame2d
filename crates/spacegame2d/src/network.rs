@@ -182,6 +182,7 @@ mod tests {
     use spacegame2d_protocol::ServerHello;
     use std::collections::BTreeMap;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
 
     fn synthetic_server(response: Message, disconnect: bool) -> String {
@@ -232,6 +233,23 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(100));
         });
         address
+    }
+
+    fn synthetic_server_collecting(count: usize) -> (String, mpsc::Receiver<Vec<Message>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = Message::read(&mut stream).unwrap();
+            Message::ServerHello(server_hello()).write(&mut stream).unwrap();
+            let mut messages = Vec::with_capacity(count);
+            for _ in 0..count {
+                messages.push(Message::read(&mut stream).unwrap());
+            }
+            sender.send(messages).unwrap();
+        });
+        (address, receiver)
     }
 
     fn server_hello() -> ServerHello {
@@ -358,7 +376,7 @@ mod tests {
 
     #[test]
     fn outbound_commands_and_checksum_are_encoded_and_flushed() {
-        let address = synthetic_server(Message::ServerHello(server_hello()), false);
+        let (address, received) = synthetic_server_collecting(3);
         let mut session = NetworkSession::connect(&address).unwrap();
         session.set_local_tick(Tick::from(200));
         session.send_set_destination(4, [10, 20]).unwrap();
@@ -367,6 +385,14 @@ mod tests {
             .send_state_checksum(Tick::from(200), [7; 32])
             .unwrap();
         assert!(session.outgoing.is_empty());
+        assert_eq!(
+            received.recv().unwrap(),
+            vec![
+                Message::CommandRequest(CommandRequest { sequence: 4, command: CommandData::SetDestination { destination: [10, 20] } }),
+                Message::CommandRequest(CommandRequest { sequence: 5, command: CommandData::ResetSimulation }),
+                Message::StateChecksum(StateChecksum { tick: Tick::from(200), hash: vec![7; 32] }),
+            ]
+        );
     }
 
     #[test]
