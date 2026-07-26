@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 14;
+pub const SIMULATION_VERSION: u32 = 15;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,8 +400,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shield_relay_breach_state_bumps_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 14);
+    fn cross_entity_shot_impacts_bump_simulation_version() {
+        assert_eq!(SIMULATION_VERSION, 15);
     }
 
     fn destination() -> CommandData {

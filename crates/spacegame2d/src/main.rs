@@ -663,8 +663,7 @@ impl ApplicationHandler for App {
                 self.combat_presentation.clear();
             }
             let events = self.simulation.step().unwrap_or_default();
-            self.combat_presentation
-                .ingest(now, &events, &self.simulation.world.units);
+            self.combat_presentation.ingest(now, &events);
             self.combat_presentation.retain_active(now);
             if let Some(session) = self.network.as_mut()
                 && self.simulation.tick().0 % u64::from(SIMULATION_HZ) == 0

@@ -345,10 +345,10 @@ pub async fn run_with_config(
                 spacegame2d_simulation::SimulationEvent::ShotFired {
                     tick,
                     shooter_id,
-                    hit_unit_id,
+                    impact_entity,
                     ..
                 } => {
-                    tracing::info!(event = "shot_fired", tick = ?tick, shooter_id = shooter_id.0, hit_unit_id = ?hit_unit_id.map(|id| id.0));
+                    tracing::info!(event = "shot_fired", tick = ?tick, shooter_id = shooter_id.0, ?impact_entity);
                 }
                 spacegame2d_simulation::SimulationEvent::HullDepleted {
                     tick,

@@ -1,11 +1,11 @@
 use crate::combat::{
-    FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, MUZZLE_OFFSET_METERS, TARGET_HIT_RADIUS_METERS,
+    FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, ImpactEntityId, MUZZLE_OFFSET_METERS,
     TURRET_TRACKING_RADIANS_PER_SECOND, WEAPON_DAMAGE, WEAPON_RANGE_METERS,
 };
 use crate::command::{CommandScheduler, UnitId, World};
 use crate::config::SimulationConfig;
 use crate::flight_control::{AvoidanceEntityId, NeighborObservation, NeighborRelationship};
-use crate::hitbox::Hitbox;
+use crate::hitbox::{Hitbox, PositionedHitbox};
 use crate::objective::{
     CAPTURE_RADIUS_SQUARED_METERS, ObjectivePresence, ObjectiveState, advance_pair,
 };
@@ -222,10 +222,11 @@ impl Simulation {
             );
             step_ship(&mut unit.state, input);
         }
-        let observations = combat_observations(&self.world);
+        let target_observations = target_observations(&self.world);
+        let hit_observations = hit_observations(&self.world);
         let mut events = Vec::new();
         let mut damage = BTreeMap::new();
-        let mut shooters = observations
+        let mut shooters = target_observations
             .iter()
             .map(|observation| observation.id)
             .collect::<Vec<_>>();
@@ -243,9 +244,11 @@ impl Simulation {
                 previous_target,
                 shooter.owner,
                 shooter.state.position,
-                &observations,
+                &target_observations,
             )
-            .or_else(|| nearest_hostile(shooter.owner, shooter.state.position, &observations));
+            .or_else(|| {
+                nearest_hostile(shooter.owner, shooter.state.position, &target_observations)
+            });
             if target != previous_target {
                 shooter.combat.turret.cooldown_ticks_remaining = 0;
             }
@@ -256,7 +259,7 @@ impl Simulation {
             let Some(target_id) = target else {
                 continue;
             };
-            let target_position = observations
+            let target_position = target_observations
                 .iter()
                 .find(|observation| observation.id == target_id)
                 .expect("valid target must be observed")
@@ -281,16 +284,16 @@ impl Simulation {
             let direction = forward_from_heading(world_heading);
             let muzzle_origin = shooter.state.position + direction * MUZZLE_OFFSET_METERS;
             let ray_endpoint = muzzle_origin + direction * WEAPON_RANGE_METERS;
-            let hit = first_hostile_hit(
+            let impact = first_impact(
                 shooter.id,
                 shooter.owner,
                 muzzle_origin,
                 direction,
-                &observations,
+                &hit_observations,
             );
-            let hit_unit_id = hit.map(|(unit_id, _)| unit_id);
-            let impact_position = hit.map_or(ray_endpoint, |(_, position)| position);
-            if let Some(hit_unit_id) = hit_unit_id {
+            let impact_entity = impact.map(|impact| impact.entity_id);
+            let impact_position = impact.map_or(ray_endpoint, |impact| impact.position);
+            if let Some(hit_unit_id) = impact.and_then(|impact| impact.damageable_unit_id) {
                 *damage.entry(hit_unit_id).or_insert(0) += WEAPON_DAMAGE;
             }
             shooter.combat.turret.cooldown_ticks_remaining = FIRE_INTERVAL_TICKS;
@@ -300,7 +303,7 @@ impl Simulation {
                 muzzle_origin,
                 ray_endpoint,
                 impact_position,
-                hit_unit_id,
+                impact_entity,
             });
         }
         for (unit_id, amount) in damage {
@@ -440,23 +443,59 @@ fn avoidance_observations(world: &World) -> Vec<TickAvoidanceObservation> {
 }
 
 #[derive(Clone, Copy)]
-struct CombatObservation {
+struct TargetObservation {
     id: UnitId,
     owner: Option<crate::command::PlayerId>,
     position: Vec2,
 }
 
-fn combat_observations(world: &World) -> Vec<CombatObservation> {
+#[derive(Clone, Copy)]
+struct HitObservation {
+    entity_id: ImpactEntityId,
+    owner: Option<crate::command::PlayerId>,
+    hitbox: PositionedHitbox,
+    damageable_unit_id: Option<UnitId>,
+}
+
+#[derive(Clone, Copy)]
+struct ImpactResolution {
+    entity_id: ImpactEntityId,
+    position: Vec2,
+    damageable_unit_id: Option<UnitId>,
+}
+
+fn target_observations(world: &World) -> Vec<TargetObservation> {
     let mut observations = world
         .units
         .iter()
-        .map(|unit| CombatObservation {
+        .map(|unit| TargetObservation {
             id: unit.id,
             owner: unit.owner,
             position: unit.state.position,
         })
         .collect::<Vec<_>>();
     observations.sort_unstable_by_key(|observation| observation.id);
+    observations
+}
+
+fn hit_observations(world: &World) -> Vec<HitObservation> {
+    let mut observations = world
+        .units
+        .iter()
+        .map(|unit| HitObservation {
+            entity_id: ImpactEntityId::Unit(unit.id),
+            owner: unit.owner,
+            hitbox: unit.positioned_hitbox(),
+            damageable_unit_id: Some(unit.id),
+        })
+        .chain(world.structures().iter().map(|structure| HitObservation {
+            entity_id: ImpactEntityId::StaticStructure(structure.id()),
+            owner: Some(structure.owner()),
+            hitbox: structure.positioned_hitbox(),
+            damageable_unit_id: None,
+        }))
+        .collect::<Vec<_>>();
+    observations.sort_unstable_by_key(|observation| observation.entity_id);
     observations
 }
 
@@ -471,7 +510,7 @@ fn valid_target(
     target: Option<UnitId>,
     owner: Option<crate::command::PlayerId>,
     position: Vec2,
-    observations: &[CombatObservation],
+    observations: &[TargetObservation],
 ) -> Option<UnitId> {
     let target = target?;
     observations
@@ -488,7 +527,7 @@ fn valid_target(
 fn nearest_hostile(
     owner: Option<crate::command::PlayerId>,
     position: Vec2,
-    observations: &[CombatObservation],
+    observations: &[TargetObservation],
 ) -> Option<UnitId> {
     observations
         .iter()
@@ -510,33 +549,37 @@ fn forward_from_heading(heading: f32) -> Vec2 {
     Vec2::new(-heading.sin(), heading.cos())
 }
 
-fn first_hostile_hit(
+fn first_impact(
     shooter_id: UnitId,
     owner: Option<crate::command::PlayerId>,
     origin: Vec2,
     direction: Vec2,
-    observations: &[CombatObservation],
-) -> Option<(UnitId, Vec2)> {
+    observations: &[HitObservation],
+) -> Option<ImpactResolution> {
     observations
         .iter()
-        .filter(|observation| observation.id != shooter_id && is_hostile(owner, observation.owner))
-        .filter_map(|observation| {
-            let offset = observation.position - origin;
-            let projection = offset.dot(direction);
-            if !(0.0..=WEAPON_RANGE_METERS).contains(&projection) {
-                return None;
+        .filter(|observation| match observation.entity_id {
+            ImpactEntityId::Unit(unit_id) => {
+                unit_id != shooter_id && is_hostile(owner, observation.owner)
             }
-            let perpendicular_squared = offset.length_squared() - projection * projection;
-            let radius_squared = TARGET_HIT_RADIUS_METERS * TARGET_HIT_RADIUS_METERS;
-            if perpendicular_squared > radius_squared {
-                return None;
-            }
-            let entry_distance =
-                (projection - (radius_squared - perpendicular_squared).sqrt()).max(0.0);
-            Some((entry_distance, observation.id))
+            ImpactEntityId::StaticStructure(_) => true,
         })
-        .min_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)))
-        .map(|(entry_distance, id)| (id, origin + direction * entry_distance))
+        .filter_map(|observation| {
+            observation
+                .hitbox
+                .ray_entry_distance(origin, direction, WEAPON_RANGE_METERS)
+                .map(|entry_distance| (entry_distance, *observation))
+        })
+        .min_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then(left.1.entity_id.cmp(&right.1.entity_id))
+        })
+        .map(|(entry_distance, observation)| ImpactResolution {
+            entity_id: observation.entity_id,
+            position: origin + direction * entry_distance,
+            damageable_unit_id: observation.damageable_unit_id,
+        })
 }
 
 fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, u32, u32) {
@@ -558,7 +601,7 @@ pub enum SimulationEvent {
         muzzle_origin: Vec2,
         ray_endpoint: Vec2,
         impact_position: Vec2,
-        hit_unit_id: Option<UnitId>,
+        impact_entity: Option<ImpactEntityId>,
     },
     HullDepleted {
         tick: Tick,
@@ -1438,7 +1481,7 @@ mod tests {
             simulation.world.units[1].combat.hull.maximum - WEAPON_DAMAGE
         );
         assert!(
-            matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, hit_unit_id: Some(hit), .. }] if *id == shooter_id && *hit == target_id)
+            matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, impact_entity: Some(ImpactEntityId::Unit(hit)), .. }] if *id == shooter_id && *hit == target_id)
         );
     }
 
@@ -1466,7 +1509,149 @@ mod tests {
         );
         assert!(simulation.world.unit(interceptor_id).is_none());
         assert!(
-            matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, hit_unit_id: Some(hit), .. }, SimulationEvent::HullDepleted { unit_id, .. }] if *id == shooter_id && *hit == interceptor_id && *unit_id == interceptor_id)
+            matches!(events.as_slice(), [SimulationEvent::ShotFired { shooter_id: id, impact_entity: Some(ImpactEntityId::Unit(hit)), .. }, SimulationEvent::HullDepleted { unit_id, .. }] if *id == shooter_id && *hit == interceptor_id && *unit_id == interceptor_id)
+        );
+    }
+
+    fn shot_past_first_core(target_y: f32) -> Simulation {
+        let mut simulation = combat_simulation(1);
+        simulation.world.units[0].owner = Some(PlayerId(1));
+        simulation.world.units[1].owner = Some(PlayerId(2));
+        simulation.world.units[0].state.position = Vec2::new(-40.0, -8.0);
+        simulation.world.units[1].state.position = Vec2::new(-40.0, target_y);
+        simulation
+    }
+
+    #[test]
+    fn structure_between_shooter_and_target_intercepts_without_damage() {
+        let mut simulation = shot_past_first_core(4.0);
+        let target_id = simulation.world.units[1].id;
+        let core = simulation.world.structures()[0];
+        let structures_before = simulation.world.structures().to_vec();
+
+        let events = simulation.step().unwrap();
+
+        assert_eq!(
+            simulation.world.units[0].combat.turret.target,
+            Some(target_id),
+            "physical interception must not retarget the turret"
+        );
+        assert_eq!(
+            simulation.world.units[1].combat.hull.current,
+            simulation.world.units[1].combat.hull.maximum
+        );
+        assert_eq!(simulation.world.structures(), structures_before.as_slice());
+        assert!(matches!(
+            events.as_slice(),
+            [SimulationEvent::ShotFired {
+                impact_entity: Some(ImpactEntityId::StaticStructure(id)),
+                impact_position,
+                ..
+            }] if *id == core.id() && *impact_position == Vec2::new(-40.0, -3.85)
+        ));
+    }
+
+    #[test]
+    fn target_before_structure_receives_normal_damage() {
+        let mut simulation = shot_past_first_core(-4.5);
+        let target_id = simulation.world.units[1].id;
+
+        let events = simulation.step().unwrap();
+
+        assert_eq!(
+            simulation.world.units[1].combat.hull.current,
+            simulation.world.units[1].combat.hull.maximum - WEAPON_DAMAGE
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [SimulationEvent::ShotFired {
+                impact_entity: Some(ImpactEntityId::Unit(id)),
+                ..
+            }] if *id == target_id
+        ));
+    }
+
+    #[test]
+    fn friendly_units_do_not_intercept_hostile_targets() {
+        let mut simulation = combat_simulation(2);
+        simulation.world.units.truncate(3);
+        let target_id = simulation.world.units[1].id;
+        simulation.world.units[0].owner = Some(PlayerId(1));
+        simulation.world.units[1].owner = Some(PlayerId(2));
+        simulation.world.units[2].owner = Some(PlayerId(1));
+        simulation.world.units[0].state.position = Vec2::ZERO;
+        simulation.world.units[1].state.position = Vec2::new(0.0, 8.0);
+        simulation.world.units[2].state.position = Vec2::new(0.0, 4.0);
+
+        let events = simulation.step().unwrap();
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SimulationEvent::ShotFired {
+                shooter_id: UnitId(1),
+                impact_entity: Some(ImpactEntityId::Unit(id)),
+                ..
+            } if *id == target_id
+        )));
+    }
+
+    #[test]
+    fn cross_entity_impacts_repeat_with_identical_events_and_hashes() {
+        let mut left = shot_past_first_core(4.0);
+        let mut right = shot_past_first_core(4.0);
+
+        assert_eq!(left.step().unwrap(), right.step().unwrap());
+        assert_eq!(left.state_hash(), right.state_hash());
+    }
+
+    #[test]
+    fn equal_distance_impacts_use_type_then_numeric_id_tie_breaks() {
+        let circle = Hitbox::circle(1.0)
+            .unwrap()
+            .positioned_at(Vec2::new(0.0, 5.0));
+        let unit = HitObservation {
+            entity_id: ImpactEntityId::Unit(UnitId(9)),
+            owner: Some(PlayerId(2)),
+            hitbox: circle,
+            damageable_unit_id: Some(UnitId(9)),
+        };
+        let structure = HitObservation {
+            entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(1)),
+            owner: Some(PlayerId(1)),
+            hitbox: circle,
+            damageable_unit_id: None,
+        };
+        let first = first_impact(
+            UnitId(1),
+            Some(PlayerId(1)),
+            Vec2::ZERO,
+            Vec2::Y,
+            &[structure, unit],
+        );
+        assert_eq!(first.unwrap().entity_id, ImpactEntityId::Unit(UnitId(9)));
+
+        let lower_id = HitObservation {
+            entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(2)),
+            owner: Some(PlayerId(1)),
+            hitbox: circle,
+            damageable_unit_id: None,
+        };
+        let higher_id = HitObservation {
+            entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(7)),
+            owner: Some(PlayerId(1)),
+            hitbox: circle,
+            damageable_unit_id: None,
+        };
+        let first = first_impact(
+            UnitId(1),
+            Some(PlayerId(1)),
+            Vec2::ZERO,
+            Vec2::Y,
+            &[higher_id, lower_id],
+        );
+        assert_eq!(
+            first.unwrap().entity_id,
+            ImpactEntityId::StaticStructure(crate::StaticStructureId(2))
         );
     }
 }

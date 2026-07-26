@@ -1,6 +1,6 @@
 //! Persistent deterministic combat state and first-pass weapon constants.
 
-use crate::command::UnitId;
+use crate::{command::UnitId, structure::StaticStructureId};
 
 pub const MAX_HULL: u32 = 100;
 pub const WEAPON_RANGE_METERS: f32 = 12.0;
@@ -10,8 +10,17 @@ pub const FIRE_INTERVAL_TICKS: u32 = 15;
 /// Each hit removes roughly one third of the previous hull damage, giving
 /// ships enough time to maneuver and retarget during an engagement.
 pub const WEAPON_DAMAGE: u32 = 6;
-pub const TARGET_HIT_RADIUS_METERS: f32 = 0.35;
 pub const MUZZLE_OFFSET_METERS: f32 = 0.5;
+
+/// Stable identity of an entity a shot physically impacts.
+///
+/// Variant order is intentional: when two ray entries are equally distant, a
+/// unit wins over a static structure, then the numeric ID breaks ties.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ImpactEntityId {
+    Unit(UnitId),
+    StaticStructure(StaticStructureId),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HullState {
