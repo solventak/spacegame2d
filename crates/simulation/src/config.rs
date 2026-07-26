@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::flight_control::AvoidanceProfiles;
 
-pub const DEFAULT_FLEET_SIZE: u32 = 30;
+pub const DEFAULT_FLEET_SIZE: u32 = 100;
 pub const DEFAULT_WORLD_RADIUS_METERS: f32 = 64.0;
 pub const MAX_PLAYERS: usize = 2;
 
@@ -96,10 +96,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_to_two_fleets_of_thirty() {
+    fn defaults_to_two_configured_fleets() {
         let config = SimulationConfig::default();
-        assert_eq!(config.fleet_size(), 30);
-        assert_eq!(config.total_units(), 60);
+        assert_eq!(config.fleet_size(), DEFAULT_FLEET_SIZE);
+        assert_eq!(config.total_units(), (DEFAULT_FLEET_SIZE * 2) as usize);
         assert_eq!(config.world_radius_meters(), 64.0);
     }
 

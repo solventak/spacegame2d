@@ -99,6 +99,44 @@ impl PositionedHitbox {
     pub fn clearance_to(self, other: Self) -> f32 {
         self.center.distance(other.center) - self.contact_distance_to(other)
     }
+
+    /// Returns the first distance at which a normalized ray enters this
+    /// hitbox, limited to `maximum_distance`.
+    pub fn ray_entry_distance(
+        self,
+        origin: Vec2,
+        direction: Vec2,
+        maximum_distance: f32,
+    ) -> Option<f32> {
+        if !origin.is_finite()
+            || !direction.is_finite()
+            || !maximum_distance.is_finite()
+            || maximum_distance < 0.0
+        {
+            return None;
+        }
+        let direction_length_squared = direction.length_squared();
+        if (direction_length_squared - 1.0).abs() > 1.0e-4 {
+            return None;
+        }
+        match self.shape {
+            HitboxShape::Circle(circle) => {
+                let offset = self.center - origin;
+                let projection = offset.dot(direction);
+                let perpendicular_squared = offset.length_squared() - projection * projection;
+                let radius_squared = circle.radius_meters() * circle.radius_meters();
+                if perpendicular_squared > radius_squared {
+                    return None;
+                }
+                if projection < 0.0 && offset.length_squared() > radius_squared {
+                    return None;
+                }
+                let entry_distance =
+                    (projection - (radius_squared - perpendicular_squared).sqrt()).max(0.0);
+                (entry_distance <= maximum_distance).then_some(entry_distance)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -126,5 +164,26 @@ mod tests {
         assert_eq!(left.clearance_to(tangent), 0.0);
         assert_eq!(left.clearance_to(overlapping), -0.5);
         assert_eq!(left.clearance_to(separated), separated.clearance_to(left));
+    }
+
+    #[test]
+    fn ray_entry_uses_the_circle_boundary_and_range() {
+        let hitbox = Hitbox::circle(2.0)
+            .unwrap()
+            .positioned_at(Vec2::new(0.0, 5.0));
+        assert_eq!(
+            hitbox.ray_entry_distance(Vec2::ZERO, Vec2::Y, 10.0),
+            Some(3.0)
+        );
+        assert_eq!(hitbox.ray_entry_distance(Vec2::ZERO, Vec2::Y, 2.99), None);
+        assert_eq!(
+            hitbox.ray_entry_distance(Vec2::new(0.0, 5.0), Vec2::Y, 10.0),
+            Some(0.0)
+        );
+        assert_eq!(hitbox.ray_entry_distance(Vec2::ZERO, Vec2::X, 10.0), None);
+        let behind = Hitbox::circle(1.0)
+            .unwrap()
+            .positioned_at(Vec2::new(0.0, -5.0));
+        assert_eq!(behind.ray_entry_distance(Vec2::ZERO, Vec2::Y, 10.0), None);
     }
 }

@@ -337,6 +337,7 @@ pub async fn run_with_config(
                 simulation.schedule_authoritative(&command);
             }
         }
+        let mut match_reset = false;
         for event in simulation
             .step()
             .map_err(|error| io::Error::other(error.to_string()))?
@@ -345,10 +346,10 @@ pub async fn run_with_config(
                 spacegame2d_simulation::SimulationEvent::ShotFired {
                     tick,
                     shooter_id,
-                    hit_unit_id,
+                    impact_entity,
                     ..
                 } => {
-                    tracing::info!(event = "shot_fired", tick = ?tick, shooter_id = shooter_id.0, hit_unit_id = ?hit_unit_id.map(|id| id.0));
+                    tracing::info!(event = "shot_fired", tick = ?tick, shooter_id = shooter_id.0, ?impact_entity);
                 }
                 spacegame2d_simulation::SimulationEvent::HullDepleted {
                     tick,
@@ -364,7 +365,39 @@ pub async fn run_with_config(
                 } => {
                     tracing::info!(event = "boundary_crossed", tick = ?tick, unit_id = unit_id.0, position = ?position);
                 }
+                spacegame2d_simulation::SimulationEvent::ObjectiveTransition {
+                    tick,
+                    owner,
+                    relay_id,
+                    core_id,
+                    previous_state,
+                    next_state,
+                } => {
+                    tracing::info!(event = "objective_transition", tick = ?tick, owner = owner.0, relay_id = relay_id.0, core_id = core_id.0, previous_state = ?previous_state, next_state = ?next_state);
+                }
+                spacegame2d_simulation::SimulationEvent::CoreHitProtected { tick, core_id } => {
+                    tracing::info!(event = "core_hit_protected", tick = ?tick, core_id = core_id.0);
+                }
+                spacegame2d_simulation::SimulationEvent::MatchResult { tick, outcome } => {
+                    match outcome {
+                        spacegame2d_simulation::MatchResult::Victory {
+                            winner,
+                            loser,
+                            destroyed_core,
+                        } => {
+                            tracing::info!(event = "match_victory", tick = ?tick, winner = winner.0, loser = loser.0, destroyed_core = destroyed_core.0)
+                        }
+                        spacegame2d_simulation::MatchResult::Draw { destroyed_cores } => {
+                            tracing::info!(event = "match_draw", tick = ?tick, destroyed_cores = ?destroyed_cores)
+                        }
+                    }
+                    match_reset = true;
+                }
             }
+        }
+        if match_reset {
+            scheduled.clear();
+            simulation.commands.clear_pending();
         }
         let completed_tick = simulation.tick();
         if completed_tick.0 % u64::from(SIMULATION_HZ) == 0 {
@@ -762,8 +795,8 @@ mod tests {
                 player_one_mirror.step().unwrap();
                 let mirrored_unit = player_one_mirror
                     .world
-                    .unit(UnitId(31))
-                    .expect("unit 31 in Player 1 mirror");
+                    .unit(UnitId(player_one_mirror.config().fleet_size() + 1))
+                    .expect("first Player 2 unit in Player 1 mirror");
                 assert_eq!(mirrored_unit.owner, Some(PlayerId(2)));
                 let destination = mirrored_unit.autopilot.destination().unwrap();
                 assert!((destination.x - 5.0).abs() < f32::EPSILON);

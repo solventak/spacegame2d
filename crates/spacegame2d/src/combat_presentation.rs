@@ -1,12 +1,9 @@
 //! Client-only combat effect state derived from authoritative simulation events.
 
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use glam::Vec2;
-use spacegame2d_simulation::{SimulationEvent, Unit};
+use spacegame2d_simulation::SimulationEvent;
 
 pub(crate) const TRACER_LIFETIME: Duration = Duration::from_millis(60);
 pub(crate) const FLASH_LIFETIME: Duration = Duration::from_millis(100);
@@ -49,29 +46,12 @@ pub(crate) struct CombatPresentation {
 }
 
 impl CombatPresentation {
-    pub(crate) fn ingest(&mut self, now: Instant, events: &[SimulationEvent], live_units: &[Unit]) {
-        let mut positions = live_units
-            .iter()
-            .map(|unit| (unit.id, unit.state.position))
-            .collect::<BTreeMap<_, _>>();
-        for event in events {
-            match *event {
-                SimulationEvent::HullDepleted {
-                    unit_id, position, ..
-                }
-                | SimulationEvent::BoundaryCrossed {
-                    unit_id, position, ..
-                } => {
-                    positions.insert(unit_id, position);
-                }
-                SimulationEvent::ShotFired { .. } => {}
-            }
-        }
+    pub(crate) fn ingest(&mut self, now: Instant, events: &[SimulationEvent]) {
         for event in events {
             let SimulationEvent::ShotFired {
                 muzzle_origin,
                 impact_position,
-                hit_unit_id,
+                impact_entity,
                 ..
             } = *event
             else {
@@ -83,11 +63,9 @@ impl CombatPresentation {
                 started_at: now,
                 expires_at: now + TRACER_LIFETIME,
             });
-            if let Some(hit_unit_id) = hit_unit_id
-                && let Some(&position) = positions.get(&hit_unit_id)
-            {
+            if impact_entity.is_some() {
                 self.flashes.push(HitFlashEffect {
-                    position,
+                    position: impact_position,
                     started_at: now,
                     expires_at: now + FLASH_LIFETIME,
                 });
@@ -125,16 +103,16 @@ fn remaining_fraction(started_at: Instant, expires_at: Instant, now: Instant) ->
 mod tests {
     use super::*;
     use spacegame2d_protocol::Tick;
-    use spacegame2d_simulation::UnitId;
+    use spacegame2d_simulation::{ImpactEntityId, StaticStructureId, UnitId};
 
-    fn shot(hit_unit_id: Option<UnitId>) -> SimulationEvent {
+    fn shot(impact_entity: Option<ImpactEntityId>) -> SimulationEvent {
         SimulationEvent::ShotFired {
             tick: Tick::new(1),
             shooter_id: UnitId(1),
             muzzle_origin: Vec2::new(1.0, 2.0),
             ray_endpoint: Vec2::new(1.0, 14.0),
             impact_position: Vec2::new(1.0, 14.0),
-            hit_unit_id,
+            impact_entity,
         }
     }
 
@@ -142,7 +120,7 @@ mod tests {
     fn miss_creates_only_a_tracer_and_expires_at_the_lifetime() {
         let now = Instant::now();
         let mut presentation = CombatPresentation::default();
-        presentation.ingest(now, &[shot(None)], &[]);
+        presentation.ingest(now, &[shot(None)]);
         assert_eq!(presentation.tracers.len(), 1);
         assert!(presentation.flashes.is_empty());
         presentation.retain_active(now + TRACER_LIFETIME - Duration::from_nanos(1));
@@ -152,33 +130,23 @@ mod tests {
     }
 
     #[test]
-    fn lethal_hit_uses_the_removal_event_position_regardless_of_order() {
+    fn impact_uses_the_authoritative_boundary_position() {
         let now = Instant::now();
-        let unit_id = UnitId(9);
-        let depleted = SimulationEvent::HullDepleted {
-            tick: Tick::new(1),
-            unit_id,
-            position: Vec2::new(4.0, -2.0),
-        };
         let mut presentation = CombatPresentation::default();
-        presentation.ingest(now, &[depleted, shot(Some(unit_id))], &[]);
-        assert_eq!(presentation.flashes()[0].position, Vec2::new(4.0, -2.0));
+        presentation.ingest(now, &[shot(Some(ImpactEntityId::Unit(UnitId(9))))]);
+        assert_eq!(presentation.flashes()[0].position, Vec2::new(1.0, 14.0));
     }
 
     #[test]
     fn same_tick_events_are_not_coalesced_and_clear_removes_them() {
         let now = Instant::now();
-        let unit_id = UnitId(3);
-        let removal = SimulationEvent::BoundaryCrossed {
-            tick: Tick::new(1),
-            unit_id,
-            position: Vec2::ZERO,
-        };
         let mut presentation = CombatPresentation::default();
         presentation.ingest(
             now,
-            &[shot(Some(unit_id)), shot(Some(unit_id)), removal],
-            &[],
+            &[
+                shot(Some(ImpactEntityId::Unit(UnitId(3)))),
+                shot(Some(ImpactEntityId::StaticStructure(StaticStructureId(4)))),
+            ],
         );
         assert_eq!(presentation.tracers.len(), 2);
         assert_eq!(presentation.flashes.len(), 2);

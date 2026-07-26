@@ -11,7 +11,9 @@ use crate::config::{AvoidanceConfig, MAX_PLAYERS, SimulationConfig};
 use crate::flight_control::ArrivalController;
 use crate::hitbox::{Hitbox, HitboxShape, PositionedHitbox};
 use crate::simulation::{ShipState, Simulation, SimulationEvent};
-use crate::structure::{HomeObjectivePair, StaticStructure, initial_home_objectives};
+use crate::structure::{
+    HomeObjectivePair, StaticStructure, StaticStructureId, initial_home_objectives,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlayerId(pub u8);
@@ -170,6 +172,39 @@ impl World {
 
     pub fn home_objective_pairs(&self) -> &[HomeObjectivePair] {
         &self.home_objective_pairs
+    }
+
+    pub(crate) fn home_objective_pairs_mut(&mut self) -> &mut [HomeObjectivePair] {
+        &mut self.home_objective_pairs
+    }
+
+    pub(crate) fn home_objective_pair_mut(
+        &mut self,
+        core_id: StaticStructureId,
+    ) -> Option<&mut HomeObjectivePair> {
+        self.home_objective_pairs
+            .iter_mut()
+            .find(|pair| pair.core_id() == core_id)
+    }
+
+    pub(crate) fn reset_match(&mut self) -> Result<(), CommandExecutionError> {
+        self.advance_allocator_past_units();
+        let mut units = Vec::new();
+        let config = self.config.clone();
+        for (i, state) in crate::fleet::initial_world_positions(&config)
+            .into_iter()
+            .enumerate()
+        {
+            let id = self.allocate_unit_id()?;
+            let owner = ((i / config.fleet_size() as usize) < MAX_PLAYERS)
+                .then(|| PlayerId((i / config.fleet_size() as usize + 1) as u8));
+            units.push(Unit::with_avoidance(id, owner, state, config.avoidance()));
+        }
+        self.units = units;
+        let (structures, pairs) = initial_home_objectives();
+        self.static_structures = structures;
+        self.home_objective_pairs = pairs;
+        Ok(())
     }
 
     /// Project a requested destination out of a static structure hitbox.
@@ -383,26 +418,7 @@ pub struct ResetSimulation;
 
 impl Command for ResetSimulation {
     fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
-        world.advance_allocator_past_units();
-
-        // Rebuild the demo swarm using the deterministic demo layout and fresh
-        // IDs from the session allocator.
-        let mut units = Vec::new();
-        let config = world.config.clone();
-        for (i, state) in crate::fleet::initial_world_positions(&config)
-            .into_iter()
-            .enumerate()
-        {
-            let id = world.allocate_unit_id()?;
-            let owner = ((i / config.fleet_size() as usize) < MAX_PLAYERS)
-                .then(|| PlayerId((i / config.fleet_size() as usize + 1) as u8));
-            units.push(Unit::with_avoidance(id, owner, state, config.avoidance()));
-        }
-        world.units = units;
-        let (structures, pairs) = initial_home_objectives();
-        world.static_structures = structures;
-        world.home_objective_pairs = pairs;
-        Ok(())
+        world.reset_match()
     }
 
     fn record(&self, execute_tick: Tick) -> RecordedCommand {
@@ -635,9 +651,10 @@ mod tests {
         assert_eq!(world.units.len(), MAX_UNITS);
         assert_eq!(world.units[0].owner, Some(PlayerId(1)));
         assert_eq!(world.units[1].owner, Some(PlayerId(1)));
-        assert_eq!(world.units[29].owner, Some(PlayerId(1)));
-        assert_eq!(world.units[30].owner, Some(PlayerId(2)));
-        assert_eq!(world.units[59].owner, Some(PlayerId(2)));
+        let fleet_size = world.config().fleet_size() as usize;
+        assert_eq!(world.units[fleet_size - 1].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[fleet_size].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[fleet_size * 2 - 1].owner, Some(PlayerId(2)));
         assert_ne!(world.units[0].id, UnitId(1));
         assert_ne!(world.units[1].id, UnitId(2));
         assert!(
@@ -654,7 +671,7 @@ mod tests {
         let unit = &mut world.units[0];
         unit.combat.hull.current = 1;
         unit.combat.turret.local_heading_radians = 1.5;
-        unit.combat.turret.target = Some(target);
+        unit.combat.turret.target = Some(crate::combat::CombatTargetId::Unit(target));
         unit.combat.turret.cooldown_ticks_remaining = 7;
         ResetSimulation.execute(&mut world).unwrap();
         let reset = &world.units[0];
@@ -685,9 +702,10 @@ mod tests {
 
         assert_eq!(world.units[0].owner, Some(PlayerId(1)));
         assert_eq!(world.units[1].owner, Some(PlayerId(1)));
-        assert_eq!(world.units[29].owner, Some(PlayerId(1)));
-        assert_eq!(world.units[30].owner, Some(PlayerId(2)));
-        assert_eq!(world.units[59].owner, Some(PlayerId(2)));
+        let fleet_size = world.config().fleet_size() as usize;
+        assert_eq!(world.units[fleet_size - 1].owner, Some(PlayerId(1)));
+        assert_eq!(world.units[fleet_size].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[fleet_size * 2 - 1].owner, Some(PlayerId(2)));
     }
 
     #[test]
@@ -814,7 +832,7 @@ mod tests {
         let mut world = World::demo();
 
         assert!(world.assign_player_unit(PlayerId(2)));
-        assert_eq!(world.units[30].owner, Some(PlayerId(2)));
+        assert_eq!(world.units[FLEET_SIZE].owner, Some(PlayerId(2)));
         assert_eq!(world.units[0].owner, None);
     }
 
