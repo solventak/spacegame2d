@@ -590,10 +590,13 @@ mod tests {
     fn owned_static_structures_remain_stationary_static_avoidance_observations() {
         let mut simulation = Simulation::default();
         simulation.world.units.truncate(1);
-        simulation.world.units[0].state.position = Vec2::new(4.0, 0.0);
+        let nearby_structure = simulation.world.structures()[3];
+        let unit_position = nearby_structure.position() - Vec2::X * 4.0;
+        let destination = unit_position + Vec2::Y * 10.0;
+        simulation.world.units[0].state.position = unit_position;
         simulation.world.units[0]
             .autopilot
-            .set_destination(Vec2::new(4.0, 10.0));
+            .set_destination(destination);
 
         let observations = avoidance_observations(&simulation.world);
         assert_eq!(
@@ -609,15 +612,11 @@ mod tests {
                 AvoidanceEntityId::StaticStructure(crate::StaticStructureId(4)),
             ]
         );
-        for (structure, (position, owner)) in observations[1..].iter().zip([
-            (Vec2::new(-20.0, 0.0), PlayerId(1)),
-            (Vec2::new(-10.0, 0.0), PlayerId(1)),
-            (Vec2::new(20.0, 0.0), PlayerId(2)),
-            (Vec2::new(10.0, 0.0), PlayerId(2)),
-        ]) {
-            assert_eq!(structure.position, position);
-            assert_eq!(structure.velocity, Vec2::ZERO);
-            assert_eq!(structure.owner, Some(owner));
+        for (observation, structure) in observations[1..].iter().zip(simulation.world.structures())
+        {
+            assert_eq!(observation.position, structure.position());
+            assert_eq!(observation.velocity, Vec2::ZERO);
+            assert_eq!(observation.owner, Some(structure.owner()));
         }
 
         let unit = &mut simulation.world.units[0];
@@ -634,7 +633,7 @@ mod tests {
         let with_structure =
             unit.autopilot
                 .controls_for_tick_with_hitbox(&unit.state, unit.hitbox(), &neighbors);
-        unit.autopilot.set_destination(Vec2::new(4.0, 10.0));
+        unit.autopilot.set_destination(destination);
         let without_structure =
             unit.autopilot
                 .controls_for_tick_with_hitbox(&unit.state, unit.hitbox(), &[]);

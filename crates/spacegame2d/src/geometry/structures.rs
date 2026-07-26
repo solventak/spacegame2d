@@ -152,14 +152,12 @@ mod tests {
     fn circles_use_simulation_visual_radii_at_simulation_positions() {
         let world = World::demo();
         let vertices = structure_vertices(world.structures());
-        let command_core_center = Vec2::new(-20.0, 0.0);
-        let command_core_boundary = Vec2::from_array(vertices[1].position);
-        assert!((command_core_center.distance(command_core_boundary) - 3.5).abs() < 0.0001);
-
-        let relay_start = CIRCLE_SEGMENTS * 6 + 12;
-        let relay_center = Vec2::from_array(vertices[relay_start].position);
-        let relay_boundary = Vec2::from_array(vertices[relay_start + 1].position);
-        assert_eq!(relay_center, Vec2::new(-10.0, 0.0));
-        assert!((relay_center.distance(relay_boundary) - 2.5).abs() < 0.0001);
+        for (index, structure) in world.structures().iter().enumerate() {
+            let start = index * (CIRCLE_SEGMENTS * 6 + 12);
+            let center = Vec2::from_array(vertices[start].position);
+            let boundary = Vec2::from_array(vertices[start + 1].position);
+            assert_eq!(center, structure.position());
+            assert!((center.distance(boundary) - structure.visual_radius_meters()).abs() < 0.0001);
+        }
     }
 }

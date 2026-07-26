@@ -763,12 +763,10 @@ mod tests {
     fn projection_uses_structure_hitboxes_with_a_positive_x_center_fallback() {
         let world = World::demo();
 
-        for (center, radius) in [
-            (Vec2::new(-20.0, 0.0), 3.85),
-            (Vec2::new(-10.0, 0.0), 2.75),
-            (Vec2::new(20.0, 0.0), 3.85),
-            (Vec2::new(10.0, 0.0), 2.75),
-        ] {
+        for structure in world.structures() {
+            let center = structure.position();
+            let HitboxShape::Circle(circle) = structure.hitbox().shape();
+            let radius = circle.radius_meters();
             assert_eq!(world.project_destination(center), center + Vec2::X * radius);
             assert_eq!(
                 world.project_destination(center + Vec2::X * radius),
@@ -782,7 +780,8 @@ mod tests {
     fn destination_commands_share_one_projected_point_but_record_raw_input() {
         let mut world = World::demo();
         world.assign_player_fleet(PlayerId(1));
-        let requested = Vec2::new(-10.0, 0.0);
+        let requested = world.structures()[1].position();
+        let projected = world.project_destination(requested);
         let command = SetDestination {
             player: PlayerId(1),
             destination: requested,
@@ -793,7 +792,7 @@ mod tests {
         assert!(
             world.units[..FLEET_SIZE]
                 .iter()
-                .all(|unit| unit.autopilot.destination() == Some(Vec2::new(-7.25, 0.0)))
+                .all(|unit| unit.autopilot.destination() == Some(projected))
         );
         assert!(
             world.units[FLEET_SIZE..]

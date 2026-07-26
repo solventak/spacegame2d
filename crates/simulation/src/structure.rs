@@ -131,18 +131,18 @@ pub(crate) const HOME_AREA_DEFINITIONS: [HomeAreaDefinition; 2] = [
     HomeAreaDefinition {
         owner: PlayerId(1),
         core_id: StaticStructureId(1),
-        core_position: Vec2::new(-20.0, 0.0),
+        core_position: Vec2::new(-40.0, 0.0),
         relay_id: StaticStructureId(2),
-        relay_position: Vec2::new(-10.0, 0.0),
-        fleet_spawn_center: Vec2::new(-26.0, 0.0),
+        relay_position: Vec2::new(-25.0, 0.0),
+        fleet_spawn_center: Vec2::new(-50.0, 0.0),
     },
     HomeAreaDefinition {
         owner: PlayerId(2),
         core_id: StaticStructureId(3),
-        core_position: Vec2::new(20.0, 0.0),
+        core_position: Vec2::new(40.0, 0.0),
         relay_id: StaticStructureId(4),
-        relay_position: Vec2::new(10.0, 0.0),
-        fleet_spawn_center: Vec2::new(26.0, 0.0),
+        relay_position: Vec2::new(25.0, 0.0),
+        fleet_spawn_center: Vec2::new(50.0, 0.0),
     },
 ];
 
@@ -189,21 +189,21 @@ mod tests {
         assert_eq!(structures[0].id(), StaticStructureId(1));
         assert_eq!(structures[0].owner(), PlayerId(1));
         assert_eq!(structures[0].kind(), StaticStructureKind::CommandCore);
-        assert_eq!(structures[0].position(), Vec2::new(-20.0, 0.0));
+        assert_eq!(structures[0].position(), Vec2::new(-40.0, 0.0));
         assert_eq!(structures[0].visual_radius_meters(), 3.5);
         assert_eq!(structures[1].id(), StaticStructureId(2));
         assert_eq!(structures[1].owner(), PlayerId(1));
         assert_eq!(structures[1].kind(), StaticStructureKind::ShieldRelay);
-        assert_eq!(structures[1].position(), Vec2::new(-10.0, 0.0));
+        assert_eq!(structures[1].position(), Vec2::new(-25.0, 0.0));
         assert_eq!(structures[1].visual_radius_meters(), 2.5);
         assert_eq!(structures[2].id(), StaticStructureId(3));
         assert_eq!(structures[2].owner(), PlayerId(2));
         assert_eq!(structures[2].kind(), StaticStructureKind::CommandCore);
-        assert_eq!(structures[2].position(), Vec2::new(20.0, 0.0));
+        assert_eq!(structures[2].position(), Vec2::new(40.0, 0.0));
         assert_eq!(structures[3].id(), StaticStructureId(4));
         assert_eq!(structures[3].owner(), PlayerId(2));
         assert_eq!(structures[3].kind(), StaticStructureKind::ShieldRelay);
-        assert_eq!(structures[3].position(), Vec2::new(10.0, 0.0));
+        assert_eq!(structures[3].position(), Vec2::new(25.0, 0.0));
         for (structure, radius) in structures.iter().zip([3.85, 2.75, 3.85, 2.75]) {
             assert_eq!(
                 structure.hitbox().shape(),
@@ -227,7 +227,7 @@ mod tests {
         );
         assert_eq!(
             HOME_AREA_DEFINITIONS.map(|home| home.fleet_spawn_center),
-            [Vec2::new(-26.0, 0.0), Vec2::new(26.0, 0.0)]
+            [Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)]
         );
     }
 }

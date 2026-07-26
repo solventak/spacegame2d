@@ -134,7 +134,6 @@ impl Renderer {
         units: &[Unit],
         world_radius: f32,
         structures: &[StaticStructure],
-        world_radius: f32,
     ) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
@@ -591,7 +590,6 @@ impl ApplicationHandler for App {
             &self.simulation.world.units,
             self.simulation.world_radius(),
             self.simulation.world.structures(),
-            self.simulation.world_radius(),
         )) {
             Ok(renderer) => {
                 self.next_tick = Instant::now() + TICK_DURATION;
@@ -892,11 +890,12 @@ mod tests {
     fn destination_markers_project_pending_and_confirmed_points() {
         let world = spacegame2d_simulation::World::demo();
         let mut presentation = DestinationPresentation::default();
-        presentation.begin(4, Vec2::new(-20.0, 0.0));
+        let pending = world.structures()[0].position();
+        presentation.begin(4, pending);
         assert_eq!(
             presentation.marker(&world),
             Some(DestinationMarker {
-                position: Vec2::new(-16.15, 0.0),
+                position: world.project_destination(pending),
                 status: MarkerStatus::Pending,
             })
         );
@@ -908,14 +907,17 @@ mod tests {
                 player_slot: 1,
                 sequence: 4,
                 command: spacegame2d_protocol::CommandData::SetDestination {
-                    destination: [(-10.0f32).to_bits(), 0.0f32.to_bits()],
+                    destination: [
+                        world.structures()[1].position().x.to_bits(),
+                        0.0f32.to_bits(),
+                    ],
                 },
             },
         );
         assert_eq!(
             presentation.marker(&world),
             Some(DestinationMarker {
-                position: Vec2::new(-7.25, 0.0),
+                position: world.project_destination(world.structures()[1].position()),
                 status: MarkerStatus::Confirmed,
             })
         );

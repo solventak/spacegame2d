@@ -279,27 +279,41 @@ mod tests {
 
     #[test]
     fn structures_are_canonical_snapshot_state() {
-        let snapshot = Simulation::default().snapshot();
+        let simulation = Simulation::default();
+        let snapshot = simulation.snapshot();
         assert_eq!(snapshot.format_version, SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(snapshot.structures.len(), 4);
-        for (structure, (id, owner, kind, position, visual_radius, hitbox_radius)) in
-            snapshot.structures.iter().zip([
-                (1, 1, 1, [-20.0_f32, 0.0], 3.5_f32, 3.85_f32),
-                (2, 1, 2, [-10.0_f32, 0.0], 2.5_f32, 2.75_f32),
-                (3, 2, 1, [20.0_f32, 0.0], 3.5_f32, 3.85_f32),
-                (4, 2, 2, [10.0_f32, 0.0], 2.5_f32, 2.75_f32),
-            ])
+        assert_eq!(
+            snapshot.structures.len(),
+            simulation.world.structures().len()
+        );
+        for (snapshot_structure, structure) in snapshot
+            .structures
+            .iter()
+            .zip(simulation.world.structures())
         {
-            assert_eq!(structure.id, id);
-            assert_eq!(structure.owner, owner);
-            assert_eq!(structure.kind_tag, kind);
+            assert_eq!(snapshot_structure.id, structure.id().0);
+            assert_eq!(snapshot_structure.owner, structure.owner().0);
             assert_eq!(
-                structure.position_bits,
-                [position[0].to_bits(), position[1].to_bits()]
+                snapshot_structure.kind_tag,
+                structure.kind().canonical_tag()
             );
-            assert_eq!(structure.visual_radius_bits, visual_radius.to_bits());
-            assert_eq!(structure.hitbox_shape_tag, 1);
-            assert_eq!(structure.hitbox_radius_bits, hitbox_radius.to_bits());
+            assert_eq!(
+                snapshot_structure.position_bits,
+                [
+                    structure.position().x.to_bits(),
+                    structure.position().y.to_bits()
+                ]
+            );
+            assert_eq!(
+                snapshot_structure.visual_radius_bits,
+                structure.visual_radius_meters().to_bits()
+            );
+            assert_eq!(snapshot_structure.hitbox_shape_tag, 1);
+            let HitboxShape::Circle(circle) = structure.hitbox().shape();
+            assert_eq!(
+                snapshot_structure.hitbox_radius_bits,
+                circle.radius_meters().to_bits()
+            );
         }
         assert_eq!(
             snapshot.home_objective_pairs,

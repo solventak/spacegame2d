@@ -226,22 +226,26 @@ mod tests {
     }
 
     #[test]
-    fn world_fleets_start_beyond_their_cores_and_inside_original_arena() {
+    fn world_fleets_start_beyond_their_cores_and_inside_default_arena() {
         let positions = initial_world_positions(&SimulationConfig::default());
         let split = DEFAULT_FLEET_SIZE as usize;
+        let [first_home, second_home] = crate::structure::HOME_AREA_DEFINITIONS;
         assert!(
             positions[..split]
                 .iter()
-                .all(|ship| ship.position.x < -20.0)
+                .all(|ship| ship.position.x < first_home.core_position.x)
         );
-        assert!(positions[split..].iter().all(|ship| ship.position.x > 20.0));
-        const ORIGINAL_ARENA_RADIUS_METERS: f32 = 32.0;
+        assert!(
+            positions[split..]
+                .iter()
+                .all(|ship| ship.position.x > second_home.core_position.x)
+        );
         let crate::hitbox::HitboxShape::Circle(ship_circle) = Hitbox::default_ship().shape();
         let ship_radius = ship_circle.radius_meters();
         assert!(
-            positions.iter().all(|ship| {
-                ship.position.length() + ship_radius <= ORIGINAL_ARENA_RADIUS_METERS
-            })
+            positions
+                .iter()
+                .all(|ship| { ship.position.length() + ship_radius <= WORLD_RADIUS_M })
         );
     }
 
