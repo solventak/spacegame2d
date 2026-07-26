@@ -132,7 +132,7 @@ pub async fn run_with_config(
     let bound = listener.local_addr()?;
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
-    let mut simulation = Simulation::new(config);
+    let mut simulation = Simulation::new(config.clone());
     let mut scheduled = BTreeMap::<Tick, Vec<AuthoritativeCommand>>::new();
     let mut state_hashes = BTreeMap::<Tick, [u8; 32]>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));

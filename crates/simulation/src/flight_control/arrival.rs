@@ -7,8 +7,8 @@
 //! stopped speed.
 
 use crate::flight_control::{
-    FlightController, FlightObservation, NeighborRelationship, forward, max_angular_speed,
-    thrust_acceleration,
+    AvoidanceProfiles, FlightController, FlightObservation, MAX_AVOIDANCE_GROUPS, forward,
+    max_angular_speed, thrust_acceleration,
 };
 use crate::simulation::FlightInput;
 use glam::Vec2;
@@ -44,7 +44,7 @@ pub(crate) fn closest_approach(
 }
 
 /// Tuning gains and thresholds for the [`ArrivalController`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ArrivalControllerConfig {
     /// Maximum desired speed in meters per second, clamping the position-gain
     /// term far from the destination.
@@ -66,25 +66,8 @@ pub struct ArrivalControllerConfig {
     pub angular_deadband: f32,
     /// Distance from the destination at which the controller settles.
     pub arrival_radius_meters: f32,
-    /// Prediction horizon for neighbor closest-approach guidance.
-    pub prediction_horizon_seconds: f32,
-    /// Desired hull-to-hull clearance for predicted friendly approaches.
-    pub comfort_clearance_meters: f32,
-    /// Desired hull-to-hull clearance for predicted opposing approaches.
-    pub opposing_comfort_clearance_meters: f32,
-    /// Desired hull-to-structure clearance for predicted static approaches.
-    pub structure_comfort_clearance_meters: f32,
-    /// Strength of each neighbor guidance contribution.
-    pub avoidance_strength: f32,
-    /// Maximum total neighbor guidance magnitude.
-    pub max_avoidance_acceleration: f32,
-    /// Maximum static-structure guidance magnitude, applied independently of
-    /// movable-neighbor guidance.
-    pub max_structure_avoidance_acceleration: f32,
-    pub opposing_avoidance_strength: f32,
-    pub structure_avoidance_strength: f32,
-    pub opposing_speed_squared_scale: f32,
-    pub structure_speed_squared_scale: f32,
+    /// Ordered avoidance profiles and their independently capped groups.
+    pub avoidance: AvoidanceProfiles,
 }
 impl Default for ArrivalControllerConfig {
     fn default() -> Self {
@@ -97,24 +80,14 @@ impl Default for ArrivalControllerConfig {
             thrust_angle_radians: 20.0_f32.to_radians(),
             angular_deadband: 0.08,
             arrival_radius_meters: 0.6,
-            prediction_horizon_seconds: 0.75,
-            comfort_clearance_meters: 2.,
-            opposing_comfort_clearance_meters: 4.0,
-            structure_comfort_clearance_meters: 6.0,
-            avoidance_strength: 8.0,
-            max_avoidance_acceleration: 12.0,
-            max_structure_avoidance_acceleration: 24.0,
-            opposing_avoidance_strength: 24.0,
-            structure_avoidance_strength: 48.0,
-            opposing_speed_squared_scale: 1.5,
-            structure_speed_squared_scale: 2.0,
+            avoidance: AvoidanceProfiles::default(),
         }
     }
 }
 /// Velocity-arrival controller. Stateless aside from its [`config`](ArrivalControllerConfig) field.
 ///
 /// See the [module docs](crate::flight_control::arrival) for the control law.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ArrivalController {
     /// Tuning parameters.
     pub config: ArrivalControllerConfig,
@@ -172,89 +145,121 @@ impl FlightController for ArrivalController {
 }
 impl ArrivalController {
     fn avoidance_acceleration(&self, observation: FlightObservation) -> Vec2 {
-        if observation.neighbors.is_empty()
-            || (self.config.avoidance_strength <= 0.0
-                && self.config.opposing_avoidance_strength <= 0.0
-                && self.config.structure_avoidance_strength <= 0.0)
-        {
+        if observation.neighbors.is_empty() {
             return Vec2::ZERO;
         }
 
-        let mut friendly_avoidance = Vec2::ZERO;
-        let mut opposing_avoidance = Vec2::ZERO;
-        let mut structure_avoidance = Vec2::ZERO;
+        let mut group_avoidance = [Vec2::ZERO; MAX_AVOIDANCE_GROUPS];
         let speed_fraction = (observation.velocity.length()
             / crate::simulation::MAX_SPEED_METERS_PER_SECOND)
             .clamp(0.0, 1.0);
-        let opposing_strength = self.config.opposing_avoidance_strength
-            * (1.0 + self.config.opposing_speed_squared_scale * speed_fraction * speed_fraction);
-        let structure_strength = self.config.structure_avoidance_strength
-            * (1.0 + self.config.structure_speed_squared_scale * speed_fraction * speed_fraction);
+        for profile in self.config.avoidance.profiles() {
+            let group_index = self.config.avoidance.group_index(profile.group());
+            let strength = profile.strength()
+                * (1.0 + profile.speed_squared_scale() * speed_fraction * speed_fraction);
+            for neighbor in observation.neighbors {
+                if neighbor.relationship != profile.relationship() {
+                    continue;
+                }
+                let relative_position = neighbor.position - observation.position;
+                let relative_velocity = neighbor.velocity - observation.velocity;
+                let closest = closest_approach(
+                    relative_position,
+                    relative_velocity,
+                    self.config.avoidance.prediction_horizon_seconds(),
+                );
+                let own_hitbox = observation.hitbox.positioned_at(observation.position);
+                let neighbor_hitbox = neighbor.hitbox.positioned_at(neighbor.position);
+                let contact_distance = own_hitbox.contact_distance_to(neighbor_hitbox);
+                let predicted_clearance = closest.distance_meters - contact_distance;
+                let desired_clearance = profile.comfort_clearance_meters();
+                let activation_distance = contact_distance + desired_clearance;
+                if predicted_clearance >= desired_clearance || activation_distance <= 0.0 {
+                    continue;
+                }
 
-        for neighbor in observation.neighbors {
-            let relative_position = neighbor.position - observation.position;
-            let relative_velocity = neighbor.velocity - observation.velocity;
-            let closest = closest_approach(
-                relative_position,
-                relative_velocity,
-                self.config.prediction_horizon_seconds,
-            );
-            let desired_clearance = match neighbor.relationship {
-                NeighborRelationship::Friendly => self.config.comfort_clearance_meters,
-                NeighborRelationship::Opposing => self.config.opposing_comfort_clearance_meters,
-                NeighborRelationship::StaticStructure => {
-                    self.config.structure_comfort_clearance_meters
-                }
-            };
-            let own_hitbox = observation.hitbox.positioned_at(observation.position);
-            let neighbor_hitbox = neighbor.hitbox.positioned_at(neighbor.position);
-            let contact_distance = own_hitbox.contact_distance_to(neighbor_hitbox);
-            let predicted_clearance = closest.distance_meters - contact_distance;
-            let activation_distance = contact_distance + desired_clearance;
-            if predicted_clearance >= desired_clearance || activation_distance <= 0.0 {
-                continue;
-            }
-
-            let away = if closest.predicted_offset.length_squared() > APPROACH_EPSILON {
-                -closest.predicted_offset.normalize()
-            } else if relative_position.length_squared() > APPROACH_EPSILON {
-                -relative_position.normalize()
-            } else if relative_velocity.length_squared() > APPROACH_EPSILON {
-                Vec2::new(-relative_velocity.y, relative_velocity.x).normalize()
-            } else {
-                Vec2::ZERO
-            };
-            let penetration =
-                ((desired_clearance - predicted_clearance) / activation_distance).clamp(0.0, 1.0);
-            let contribution = away * penetration * penetration * 0.5;
-            match neighbor.relationship {
-                NeighborRelationship::Friendly => {
-                    friendly_avoidance += contribution * self.config.avoidance_strength;
-                }
-                NeighborRelationship::Opposing => {
-                    opposing_avoidance += contribution * opposing_strength;
-                }
-                NeighborRelationship::StaticStructure => {
-                    structure_avoidance += contribution * structure_strength;
-                }
+                let away = if closest.predicted_offset.length_squared() > APPROACH_EPSILON {
+                    -closest.predicted_offset.normalize()
+                } else if relative_position.length_squared() > APPROACH_EPSILON {
+                    -relative_position.normalize()
+                } else if relative_velocity.length_squared() > APPROACH_EPSILON {
+                    Vec2::new(-relative_velocity.y, relative_velocity.x).normalize()
+                } else {
+                    Vec2::ZERO
+                };
+                let penetration = ((desired_clearance - predicted_clearance) / activation_distance)
+                    .clamp(0.0, 1.0);
+                group_avoidance[group_index] += away * penetration * penetration * 0.5 * strength;
             }
         }
 
-        let movable_avoidance = (friendly_avoidance + opposing_avoidance)
-            .clamp_length_max(self.config.max_avoidance_acceleration.max(0.0));
-        movable_avoidance
-            + structure_avoidance
-                .clamp_length_max(self.config.max_structure_avoidance_acceleration.max(0.0))
+        self.config.avoidance.groups().iter().enumerate().fold(
+            Vec2::ZERO,
+            |total, (index, group)| {
+                total + group_avoidance[index].clamp_length_max(group.max_acceleration())
+            },
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flight_control::{AvoidanceEntityId, NeighborObservation, NeighborRelationship};
+    use crate::flight_control::{
+        AvoidanceEntityId, AvoidanceGroup, AvoidanceProfile, AvoidanceProfiles,
+        MOBILE_AVOIDANCE_GROUP, NeighborObservation, NeighborRelationship,
+        STRUCTURE_AVOIDANCE_GROUP,
+    };
     use crate::hitbox::Hitbox;
     use crate::simulation::ShipState;
     use glam::Vec2;
+
+    fn profiles_with(
+        friendly_clearance: Option<f32>,
+        opposing_clearance: Option<f32>,
+        mobile_max_acceleration: Option<f32>,
+    ) -> AvoidanceProfiles {
+        let defaults = AvoidanceProfiles::default();
+        let groups = defaults
+            .groups()
+            .iter()
+            .map(|group| {
+                AvoidanceGroup::new(
+                    group.id(),
+                    if group.id() == MOBILE_AVOIDANCE_GROUP {
+                        mobile_max_acceleration.unwrap_or(group.max_acceleration())
+                    } else {
+                        group.max_acceleration()
+                    },
+                )
+                .unwrap()
+            })
+            .collect();
+        let profiles = defaults
+            .profiles()
+            .iter()
+            .map(|profile| {
+                let clearance = match profile.relationship() {
+                    NeighborRelationship::Friendly => {
+                        friendly_clearance.unwrap_or(profile.comfort_clearance_meters())
+                    }
+                    NeighborRelationship::Opposing => {
+                        opposing_clearance.unwrap_or(profile.comfort_clearance_meters())
+                    }
+                    NeighborRelationship::StaticStructure => profile.comfort_clearance_meters(),
+                };
+                AvoidanceProfile::new(
+                    profile.relationship(),
+                    profile.group(),
+                    clearance,
+                    profile.strength(),
+                    profile.speed_squared_scale(),
+                )
+                .unwrap()
+            })
+            .collect();
+        AvoidanceProfiles::new(defaults.prediction_horizon_seconds(), groups, profiles).unwrap()
+    }
     #[test]
     fn predicts_converging_closest_approach() {
         let result = closest_approach(Vec2::X * 4.0, Vec2::X * -2.0, 5.0);
@@ -337,8 +342,7 @@ mod tests {
     fn zero_clearance_allows_tangency_but_responds_to_overlap() {
         let controller = ArrivalController {
             config: ArrivalControllerConfig {
-                comfort_clearance_meters: 0.0,
-                opposing_comfort_clearance_meters: 0.0,
+                avoidance: profiles_with(Some(0.0), Some(0.0), None),
                 ..ArrivalControllerConfig::default()
             },
         };
@@ -381,8 +385,7 @@ mod tests {
     fn opposing_neighbors_use_the_larger_comfort_clearance() {
         let controller = ArrivalController {
             config: ArrivalControllerConfig {
-                comfort_clearance_meters: 1.2,
-                opposing_comfort_clearance_meters: 2.0,
+                avoidance: profiles_with(Some(1.2), Some(2.0), None),
                 ..ArrivalControllerConfig::default()
             },
         };
@@ -450,7 +453,15 @@ mod tests {
 
         assert!(structure_result.length() > opposing_result.length());
         assert!(
-            structure_result.length() <= controller.config.max_structure_avoidance_acceleration
+            structure_result.length()
+                <= controller
+                    .config
+                    .avoidance
+                    .groups()
+                    .iter()
+                    .find(|group| group.id() == STRUCTURE_AVOIDANCE_GROUP)
+                    .unwrap()
+                    .max_acceleration()
         );
     }
 
@@ -501,14 +512,21 @@ mod tests {
         let observation = FlightObservation::from_ship(&ShipState::default(), Vec2::Y, &neighbors);
         assert!(
             controller.avoidance_acceleration(observation).length()
-                <= controller.config.max_avoidance_acceleration
+                <= controller
+                    .config
+                    .avoidance
+                    .groups()
+                    .iter()
+                    .find(|group| group.id() == MOBILE_AVOIDANCE_GROUP)
+                    .unwrap()
+                    .max_acceleration()
         );
     }
 
     #[test]
     fn opposing_neighbor_has_stronger_base_response() {
         let config = ArrivalControllerConfig {
-            max_avoidance_acceleration: 100.0,
+            avoidance: profiles_with(None, None, Some(100.0)),
             ..ArrivalControllerConfig::default()
         };
         let controller = ArrivalController { config };
@@ -544,7 +562,7 @@ mod tests {
     #[test]
     fn opposing_speed_boost_is_quadratic_and_normalized() {
         let config = ArrivalControllerConfig {
-            max_avoidance_acceleration: 100.0,
+            avoidance: profiles_with(None, None, Some(100.0)),
             ..ArrivalControllerConfig::default()
         };
         let controller = ArrivalController { config };

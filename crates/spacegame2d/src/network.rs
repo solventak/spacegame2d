@@ -52,7 +52,7 @@ impl NetworkSession {
     }
 
     pub fn simulation_config(&self) -> SimulationConfig {
-        self.simulation_config
+        self.simulation_config.clone()
     }
 
     pub fn register_player(

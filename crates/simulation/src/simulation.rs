@@ -570,7 +570,9 @@ mod tests {
 
     use crate::autopilot::{Autopilot, AutopilotConfig};
     use crate::command::PlayerId;
-    use crate::flight_control::ArrivalController;
+    use crate::flight_control::{
+        ArrivalController, AvoidanceProfile, AvoidanceProfiles, NeighborRelationship,
+    };
 
     #[test]
     fn starts_without_player_ship() {
@@ -1033,10 +1035,36 @@ mod tests {
                     ..Default::default()
                 },
             ];
+            let defaults = AvoidanceProfiles::default();
+            let profiles = defaults
+                .profiles()
+                .iter()
+                .map(|profile| {
+                    let strength = match profile.relationship() {
+                        NeighborRelationship::Friendly | NeighborRelationship::Opposing => {
+                            avoidance_strength
+                        }
+                        NeighborRelationship::StaticStructure => profile.strength(),
+                    };
+                    AvoidanceProfile::new(
+                        profile.relationship(),
+                        profile.group(),
+                        profile.comfort_clearance_meters(),
+                        strength,
+                        profile.speed_squared_scale(),
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let avoidance = AvoidanceProfiles::new(
+                defaults.prediction_horizon_seconds(),
+                defaults.groups().to_vec(),
+                profiles,
+            )
+            .unwrap();
             for (unit, state) in simulation.world.units.iter_mut().zip(states) {
                 let mut controller_config = ArrivalController::default().config;
-                controller_config.avoidance_strength = avoidance_strength;
-                controller_config.opposing_avoidance_strength = avoidance_strength;
+                controller_config.avoidance = avoidance.clone();
                 unit.state = state;
                 unit.autopilot = Autopilot::new(
                     Box::new(ArrivalController {

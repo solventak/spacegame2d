@@ -109,18 +109,7 @@ impl Unit {
     ) -> Self {
         let controller = ArrivalController {
             config: crate::flight_control::arrival::ArrivalControllerConfig {
-                comfort_clearance_meters: avoidance.friendly_comfort_clearance_meters,
-                opposing_comfort_clearance_meters: avoidance.opposing_comfort_clearance_meters,
-                structure_comfort_clearance_meters: avoidance.structure_comfort_clearance_meters,
-                avoidance_strength: avoidance.friendly_strength,
-                opposing_avoidance_strength: avoidance.opposing_strength,
-                structure_avoidance_strength: avoidance.structure_strength,
-                prediction_horizon_seconds: avoidance.prediction_horizon_seconds,
-                max_avoidance_acceleration: avoidance.max_avoidance_acceleration,
-                max_structure_avoidance_acceleration: avoidance
-                    .max_structure_avoidance_acceleration,
-                opposing_speed_squared_scale: avoidance.opposing_speed_squared_scale,
-                structure_speed_squared_scale: avoidance.structure_speed_squared_scale,
+                avoidance,
                 ..Default::default()
             },
         };
@@ -150,16 +139,17 @@ impl World {
     }
 
     pub fn new(config: SimulationConfig) -> Self {
-        let units = crate::fleet::initial_world_positions(config)
+        let units = crate::fleet::initial_world_positions(&config)
             .into_iter()
             .enumerate()
             .map(|(i, state)| {
                 Unit::with_avoidance(UnitId(i as u32 + 1), None, state, config.avoidance())
             })
             .collect();
+        let next_unit_id = config.total_units() as u32 + 1;
         Self {
             config,
-            next_unit_id: config.total_units() as u32 + 1,
+            next_unit_id,
             units,
             static_structures: initial_static_structures(),
             connected_players: BTreeSet::new(),
@@ -168,7 +158,7 @@ impl World {
     }
 
     pub fn config(&self) -> SimulationConfig {
-        self.config
+        self.config.clone()
     }
 
     pub fn structures(&self) -> &[StaticStructure] {
@@ -391,8 +381,8 @@ impl Command for ResetSimulation {
         // Rebuild the demo swarm using the deterministic demo layout and fresh
         // IDs from the session allocator.
         let mut units = Vec::new();
-        let config = world.config;
-        for (i, state) in crate::fleet::initial_world_positions(config)
+        let config = world.config.clone();
+        for (i, state) in crate::fleet::initial_world_positions(&config)
             .into_iter()
             .enumerate()
         {

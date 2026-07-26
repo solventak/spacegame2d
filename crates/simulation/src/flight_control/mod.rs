@@ -18,7 +18,12 @@ use crate::simulation::{
 };
 
 pub mod arrival;
+pub mod avoidance;
 pub use arrival::ArrivalController;
+pub use avoidance::{
+    AvoidanceError, AvoidanceGroup, AvoidanceGroupId, AvoidanceProfile, AvoidanceProfiles,
+    MAX_AVOIDANCE_GROUPS, MOBILE_AVOIDANCE_GROUP, STRUCTURE_AVOIDANCE_GROUP,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NeighborRelationship {
