@@ -8,11 +8,11 @@ A 2D space simulation in Rust using wgpu. Drones move under autopilot; collision
 cargo run
 ```
 
-A window opens showing the 16 m arena ring and 30 drone ships by default. The player ship starts at the origin.
+A window opens showing the 64 m arena ring and 30 drone ships by default. The local camera starts at the world origin.
 
 ### Server configuration
 
-The server uses 30 drones per fleet by default. Set `SPACEGAME_FLEET_SIZE` before starting it to run a smaller or larger validated configuration; clients receive the authoritative value during the version-2 handshake.
+The server uses 30 drones per fleet and a 64 m arena radius by default. Set `SPACEGAME_FLEET_SIZE` or `SPACEGAME_WORLD_RADIUS_METERS` before starting it to tune validated authoritative configuration; clients receive both values during the version-9 handshake.
 
 ### Controls
 
@@ -23,6 +23,7 @@ The server uses 30 drones per fleet by default. Set `SPACEGAME_FLEET_SIZE` befor
 | `D` | Turn right (clockwise) |
 | `R` | Reset the shared simulation |
 | Right-click | Set autopilot destination |
+| Middle-click drag | Pan the local camera |
 | Close window | Exit |
 
 ## QA

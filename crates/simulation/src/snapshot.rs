@@ -3,7 +3,7 @@
 use crate::{autopilot::AutopilotConfig, command::Unit, simulation::Simulation};
 use spacegame2d_protocol::Tick;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 3;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 4;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -67,6 +67,7 @@ impl Simulation {
 impl SimulationSnapshot {
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
+        put_u32(&mut bytes, self.world_radius_bits);
         put_u64(&mut bytes, self.tick.0);
         put_u32(&mut bytes, self.units.len() as u32);
         for unit in &self.units {
@@ -181,6 +182,21 @@ mod tests {
         assert_eq!(a.state_hash(), b.state_hash());
         a.world.units[0].state.position.x += 1.0;
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn world_radius_changes_canonical_bytes_and_hash() {
+        let default = Simulation::default();
+        let custom = Simulation::with_world_radius(32.0);
+        assert_ne!(
+            default.snapshot().world_radius_bits,
+            custom.snapshot().world_radius_bits
+        );
+        assert_ne!(
+            default.snapshot().encode_canonical(),
+            custom.snapshot().encode_canonical()
+        );
+        assert_ne!(default.state_hash(), custom.state_hash());
     }
 
     #[test]

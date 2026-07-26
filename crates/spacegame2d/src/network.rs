@@ -37,6 +37,9 @@ impl NetworkSession {
         };
         hello.validate(SIMULATION_HZ)?;
         let simulation_config = SimulationConfig::try_from(hello.fleet_size)
+            .and_then(|config| {
+                config.with_world_radius_meters(f32::from_bits(hello.world_radius_bits))
+            })
             .map_err(|error| invalid(&error.to_string()))?;
         stream.set_nonblocking(true)?;
         Ok(Self {
@@ -224,6 +227,7 @@ mod tests {
             player_slot: 7,
             server_tick: Tick::from(123),
             fleet_size: 30,
+            world_radius_bits: 64.0_f32.to_bits(),
             capabilities: vec![Capability::StateChecksums],
         }
     }
@@ -234,6 +238,7 @@ mod tests {
         let session = NetworkSession::connect(&address).unwrap();
         assert_eq!(session.player_slot, 7);
         assert_eq!(session.server_tick, Tick::new(123));
+        assert_eq!(session.simulation_config().world_radius_meters(), 64.0);
     }
 
     #[test]
@@ -301,6 +306,7 @@ mod tests {
             player_slot: 1,
             server_tick: Tick::from(42),
             fleet_size: 30,
+            world_radius_bits: 64.0_f32.to_bits(),
             capabilities: vec![Capability::StateChecksums],
         };
         let mut wrong = base.clone();
@@ -321,6 +327,22 @@ mod tests {
             wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+        for world_radius_bits in [0.0_f32.to_bits(), f32::NAN.to_bits(), (-1.0_f32).to_bits()] {
+            let mut wrong = ServerHello {
+                simulation_version: SIMULATION_VERSION,
+                simulation_hz: SIMULATION_HZ,
+                player_slot: 1,
+                server_tick: Tick::from(42),
+                fleet_size: 30,
+                world_radius_bits,
+                capabilities: vec![Capability::StateChecksums],
+            };
+            assert_eq!(
+                wrong.validate(SIMULATION_HZ).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            wrong.world_radius_bits = 64.0_f32.to_bits();
+        }
     }
 
     #[test]

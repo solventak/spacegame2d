@@ -23,6 +23,7 @@ message ServerHello {
   uint64 server_tick = 4;
   repeated Capability enabled_capabilities = 5;
   uint32 fleet_size = 6;
+  uint32 world_radius_bits = 7;
 }
 message CommandRequest {
   uint32 sequence = 1;

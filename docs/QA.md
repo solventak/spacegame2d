@@ -89,7 +89,7 @@ This path launches the actual desktop application and exercises it through keybo
 cargo run
 ```
 
-A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the 16 m death boundary) and the deterministic fleet spawned for the connected player and mirrored fleets received from the server.
+A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the default 64 m death boundary) and the deterministic fleet spawned for the connected player and mirrored fleets received from the server.
 
 ### Controls
 
@@ -100,6 +100,7 @@ A window titled "Spacegame 2D" opens showing a black background with a subtle ri
 | `D` | Turn right (clockwise angular thrust) |
 | `R` | Reset simulation (respawn ship at origin, preserve the monotonic tick) |
 | Right-click | Set autopilot destination (ship navigates to clicked world position) |
+| Middle-click drag | Pan the local camera; the world follows the pointer |
 | Close window or `Alt+F4` | Exit |
 
 ### Meaningful interactions to verify
@@ -110,9 +111,11 @@ A window titled "Spacegame 2D" opens showing a black background with a subtle ri
 
 3. **Reset**: Press `R` from either client. The server authorizes one reset event at the next fixed-tick boundary; both clients respawn the deterministic fleets, clear destinations, and preserve the monotonic tick.
 
-4. **World boundary**: Fly the ship beyond the visible ring (16 m radius). The ship is destroyed (disappears). Press `R` to respawn.
+4. **Camera**: Middle-drag the arena in both directions. The world follows the pointer, right-click targets remain aligned with the visible world, and `R` leaves the local camera position unchanged. At each edge, no more than about one-third of the visible axis lies outside the arena.
 
-5. **Drone swarm**: Each player's fleet moves under the deterministic simulation and receives authoritative commands from the server. Drones that fly beyond the boundary are culled and disappear.
+5. **World boundary**: Fly the ship beyond the visible ring (64 m radius). The ship is destroyed (disappears). Press `R` to respawn.
+
+6. **Drone swarm**: Each player's fleet moves under the deterministic simulation and receives authoritative commands from the server. Drones that fly beyond the boundary are culled and disappear.
 
 ### Agent-driven GUI QA
 
