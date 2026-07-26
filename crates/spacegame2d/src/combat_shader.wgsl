@@ -18,7 +18,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    output.clip_position = vec4<f32>(input.position * scene.viewport.xy, 0.0, 1.0);
+    output.clip_position = vec4<f32>((input.position - scene.viewport.zw) * scene.viewport.xy, 0.0, 1.0);
     output.color = input.color;
     return output;
 }

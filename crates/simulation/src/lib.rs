@@ -38,6 +38,7 @@ pub use command::{
     World,
 };
 pub use config::{
-    AvoidanceConfig, DEFAULT_FLEET_SIZE, MAX_PLAYERS, SimulationConfig, SimulationConfigError,
+    AvoidanceConfig, DEFAULT_FLEET_SIZE, DEFAULT_WORLD_RADIUS_METERS, MAX_PLAYERS,
+    SimulationConfig, SimulationConfigError,
 };
 pub use simulation::SimulationEvent;
