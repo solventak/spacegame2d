@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use serde::Serialize;
+use spacegame2d_ui_protocol::{ConnectionStateSnapshot, EngineToUiMessage};
 use thiserror::Error;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::window::Window;
@@ -8,8 +8,6 @@ use wry::{
     Rect, WebView, WebViewBuilder,
     http::{Response, StatusCode},
 };
-
-use crate::{player_presentation::PlayerColor, session::UiStateEnvelope};
 
 const HUD_ORIGIN: &str = "spacegame-hud://localhost";
 const EDGE_INSET: f64 = 14.0;
@@ -21,40 +19,15 @@ const INDEX_HTML: &[u8] = include_bytes!("../hud/dist/index.html");
 const HUD_JS: &[u8] = include_bytes!("../hud/dist/assets/hud.js");
 const HUD_CSS: &[u8] = include_bytes!("../hud/dist/assets/hud.css");
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalPlayerHudModel {
-    pub schema_version: u8,
-    pub player_slot: u32,
-    pub color: PlayerColor,
-    pub color_hex: &'static str,
-}
-
-impl LocalPlayerHudModel {
-    pub fn for_slot(player_slot: u32) -> Self {
-        let color = PlayerColor::for_slot(player_slot);
-        Self {
-            schema_version: 1,
-            player_slot,
-            color,
-            color_hex: color.css_hex(),
-        }
-    }
-
-    fn initialization_script(state: &UiStateEnvelope) -> Result<String, serde_json::Error> {
-        let state = serde_json::to_string(state)?;
-        Ok(format!(
-            "window.addEventListener('error', event => {{ document.title = `HUD_ERROR:${{event.message}}`; }});\
-             window.addEventListener('unhandledrejection', event => {{ document.title = `HUD_ERROR:${{String(event.reason)}}`; }});\
-             const listeners = new Set(); let current = {state};
-             Object.defineProperty(window, '__SPACEGAME_HUD__', {{ value: Object.freeze({{
-               getState: () => current,
-               receive: value => {{ current = value; listeners.forEach(listener => listener(value)); }},
-               subscribe: listener => {{ listeners.add(listener); return () => listeners.delete(listener); }},
-               send: command => window.ipc.postMessage(JSON.stringify(command))
-             }}), writable: false, configurable: false }});"
-        ))
-    }
+fn initialization_script() -> &'static str {
+    "window.addEventListener('error', event => { document.title = `HUD_ERROR:${event.message}`; });\
+     window.addEventListener('unhandledrejection', event => { document.title = `HUD_ERROR:${String(event.reason)}`; });\
+     const listeners = new Set();\
+     Object.defineProperty(window, '__SPACEGAME_HUD__', { value: Object.freeze({\
+       receiveJson: value => { listeners.forEach(listener => listener(value)); },\
+       subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },\
+       sendJson: value => window.ipc.postMessage(value)\
+     }), writable: false, configurable: false });"
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,8 +37,8 @@ pub enum HudLayout {
 }
 
 impl HudLayout {
-    fn for_state(state: &UiStateEnvelope) -> Self {
-        if state.state.is_connected() {
+    fn for_state(state: &ConnectionStateSnapshot) -> Self {
+        if state.is_connected() {
             Self::Compact
         } else {
             Self::Pregame
@@ -121,26 +94,25 @@ pub struct HudWebView {
 
 #[derive(Debug, Error)]
 pub enum HudError {
-    #[error("failed to serialize HUD bootstrap model: {0}")]
+    #[error("failed to serialize HUD message: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("failed to create HUD WebView: {0}")]
     Creation(#[from] wry::Error),
 }
 
 impl HudWebView {
-    pub fn new<F>(window: &Window, state: &UiStateEnvelope, ipc: F) -> Result<Self, HudError>
+    pub fn new<F>(window: &Window, ipc: F) -> Result<Self, HudError>
     where
         F: Fn(String) + 'static,
     {
-        let layout = HudLayout::for_state(state);
+        let layout = HudLayout::Pregame;
         let bounds = HudBounds::for_window(window.inner_size(), window.scale_factor(), layout);
-        let script = LocalPlayerHudModel::initialization_script(state)?;
         let webview = WebViewBuilder::new()
             .with_url(format!("{HUD_ORIGIN}/index.html"))
             .with_transparent(true)
             .with_focused(false)
             .with_bounds(bounds.rect())
-            .with_initialization_script(&script)
+            .with_initialization_script(initialization_script())
             .with_ipc_handler(move |request| ipc(request.body().clone()))
             .with_on_page_load_handler(|event, url| {
                 let phase = match event {
@@ -183,12 +155,20 @@ impl HudWebView {
         Ok(())
     }
 
-    pub fn publish(&mut self, window: &Window, state: &UiStateEnvelope) -> Result<(), HudError> {
-        self.layout = HudLayout::for_state(state);
+    pub fn publish(
+        &mut self,
+        window: &Window,
+        message: &EngineToUiMessage,
+    ) -> Result<(), HudError> {
+        if let EngineToUiMessage::ConnectionStateChanged { state, .. } = message {
+            self.layout = HudLayout::for_state(state);
+        }
         self.resize(window)?;
-        let state = serde_json::to_string(state)?;
-        self.webview
-            .evaluate_script(&format!("window.__SPACEGAME_HUD__.receive({state});"))?;
+        let state = message.encode()?;
+        let argument = serde_json::to_string(&state)?;
+        self.webview.evaluate_script(&format!(
+            "window.__SPACEGAME_HUD__.receiveJson({argument});"
+        ))?;
         Ok(())
     }
 }
@@ -218,20 +198,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_is_camel_case_and_rust_publishes_the_colour() {
-        assert_eq!(
-            serde_json::to_string(&LocalPlayerHudModel::for_slot(2)).unwrap(),
-            "{\"schemaVersion\":1,\"playerSlot\":2,\"color\":\"coral\",\"colorHex\":\"#FF6A47\"}"
-        );
-    }
-
-    #[test]
     fn script_installs_an_immutable_namespace() {
-        let state = crate::session::SessionLifecycle::<()>::new("localhost:4000").ui_state();
-        let script = LocalPlayerHudModel::initialization_script(&state).unwrap();
+        let script = initialization_script();
         assert!(script.contains("Object.defineProperty(window, '__SPACEGAME_HUD__'"));
         assert!(script.contains("writable: false"));
-        assert!(script.contains("\"kind\":\"disconnected\""));
+        assert!(script.contains("receiveJson"));
     }
 
     #[test]

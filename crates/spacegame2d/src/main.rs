@@ -15,6 +15,7 @@ pub mod network;
 mod player_presentation;
 mod presentation;
 mod session;
+mod ui_bridge;
 
 use std::{
     sync::Arc,
@@ -54,13 +55,23 @@ use crate::player_presentation::PLAYER_TWO_COLOR;
 use crate::player_presentation::{PLAYER_ONE_COLOR, PlayerColor};
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 use crate::session::{
-    ConnectionOutcome, DEFAULT_SERVER_ADDRESS, HandshakeOutcome, SessionLifecycle, UiCommand,
+    ConnectionOutcome, ConnectionProgress, DEFAULT_SERVER_ADDRESS, HandshakeOutcome,
+    SessionLifecycle,
+};
+use crate::ui_bridge::{BridgeHealthConfig, UiBridge};
+use spacegame2d_ui_protocol::{
+    EngineToUiMessage, ProtocolErrorCode, RequestId, UI_ENGINE_PROTOCOL_VERSION, UiToEngineMessage,
 };
 
 enum AppEvent {
-    UiCommand(UiCommand),
+    UiMessage(UiToEngineMessage),
+    ProtocolError(ProtocolErrorCode),
+    ConnectionProgress {
+        attempt_id: RequestId,
+        progress: ConnectionProgress,
+    },
     ConnectionFinished {
-        attempt_id: u64,
+        attempt_id: RequestId,
         result: Result<network::NetworkSession, network::ConnectError>,
     },
 }
@@ -541,6 +552,7 @@ struct App {
     next_tick: Instant,
     network: Option<network::NetworkSession>,
     lifecycle: SessionLifecycle<()>,
+    bridge: UiBridge,
     proxy: EventLoopProxy<AppEvent>,
     scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
@@ -563,6 +575,7 @@ impl App {
             next_tick: Instant::now(),
             network: None,
             lifecycle: SessionLifecycle::new(DEFAULT_SERVER_ADDRESS),
+            bridge: UiBridge::new(BridgeHealthConfig::default()),
             proxy,
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
@@ -577,7 +590,15 @@ impl App {
         let (Some(hud), Some(window)) = (self.hud.as_mut(), self.window.as_ref()) else {
             return;
         };
-        if let Err(error) = hud.publish(window, &self.lifecycle.ui_state()) {
+        let Some(bridge_id) = self.bridge.bridge_id().cloned() else {
+            return;
+        };
+        let message = EngineToUiMessage::ConnectionStateChanged {
+            protocol_version: UI_ENGINE_PROTOCOL_VERSION,
+            bridge_id,
+            state: self.lifecycle.ui_state(),
+        };
+        if let Err(error) = hud.publish(window, &message) {
             tracing::error!(event = "hud_state_publish_failed", %error);
             event_loop.exit();
         }
@@ -586,15 +607,42 @@ impl App {
     fn start_attempt(&self, attempt: crate::session::ConnectionAttempt) {
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = network::NetworkSession::connect_with_timeout(
+            let progress_proxy = proxy.clone();
+            let request_id = attempt.id.clone();
+            let result = network::NetworkSession::connect_with_timeout_and_progress(
                 &attempt.address,
                 crate::session::CONNECTION_TIMEOUT,
+                move |progress| {
+                    let _ = progress_proxy.send_event(AppEvent::ConnectionProgress {
+                        attempt_id: request_id.clone(),
+                        progress,
+                    });
+                },
             );
             let _ = proxy.send_event(AppEvent::ConnectionFinished {
                 attempt_id: attempt.id,
                 result,
             });
         });
+    }
+
+    fn publish_protocol_error(&mut self, event_loop: &ActiveEventLoop, code: ProtocolErrorCode) {
+        let (Some(hud), Some(window), Some(bridge_id)) = (
+            self.hud.as_mut(),
+            self.window.as_ref(),
+            self.bridge.bridge_id().cloned(),
+        ) else {
+            return;
+        };
+        let message = EngineToUiMessage::ProtocolError {
+            protocol_version: UI_ENGINE_PROTOCOL_VERSION,
+            bridge_id,
+            code,
+        };
+        if let Err(error) = hud.publish(window, &message) {
+            tracing::error!(event = "hud_protocol_error_publish_failed", %error);
+            event_loop.exit();
+        }
     }
 
     fn reset_connected_resources(&mut self) {
@@ -641,12 +689,24 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         let proxy = self.proxy.clone();
-        match HudWebView::new(&window, &self.lifecycle.ui_state(), move |body| {
-            match serde_json::from_str::<UiCommand>(&body) {
-                Ok(command) if command.is_supported() => {
-                    let _ = proxy.send_event(AppEvent::UiCommand(command));
+        match HudWebView::new(&window, move |body| {
+            match UiToEngineMessage::decode(&body) {
+                Ok(message) => {
+                    let _ = proxy.send_event(AppEvent::UiMessage(message));
                 }
-                Ok(_) | Err(_) => tracing::warn!(event = "hud_command_invalid"),
+                Err(error) => {
+                    tracing::warn!(event = "hud_command_invalid", %error);
+                    let code = match error {
+                        spacegame2d_ui_protocol::ProtocolDecodeError::Invalid { code, .. } => code,
+                        spacegame2d_ui_protocol::ProtocolDecodeError::Validation(
+                            spacegame2d_ui_protocol::ProtocolValidationError::UnsupportedVersion(_),
+                        ) => ProtocolErrorCode::UnsupportedVersion,
+                        spacegame2d_ui_protocol::ProtocolDecodeError::Validation(_) => {
+                            ProtocolErrorCode::InvalidFieldValue
+                        }
+                    };
+                    let _ = proxy.send_event(AppEvent::ProtocolError(code));
+                }
             }
         }) {
             Ok(hud) => self.hud = Some(hud),
@@ -661,14 +721,54 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::UiCommand(UiCommand::Connect { address, .. }) => {
-                if let Some(attempt) = self.lifecycle.connect(address, Instant::now()) {
+            AppEvent::ProtocolError(code) => self.publish_protocol_error(event_loop, code),
+            AppEvent::UiMessage(UiToEngineMessage::UiReady { bridge_id, .. }) => {
+                self.bridge.ready(bridge_id, Instant::now());
+                self.publish_state(event_loop);
+            }
+            AppEvent::UiMessage(UiToEngineMessage::ConnectRequested {
+                bridge_id,
+                request_id,
+                address,
+                ..
+            }) => {
+                if self.bridge.accepts(&bridge_id)
+                    && let Some(attempt) =
+                        self.lifecycle.connect(request_id, address, Instant::now())
+                {
                     self.publish_state(event_loop);
                     self.start_attempt(attempt);
                 }
             }
-            AppEvent::UiCommand(UiCommand::Cancel { .. }) => {
-                if self.lifecycle.cancel() {
+            AppEvent::UiMessage(UiToEngineMessage::ConnectionCancelled {
+                bridge_id,
+                request_id,
+                ..
+            }) => {
+                if self.bridge.accepts(&bridge_id) && self.lifecycle.cancel(&request_id) {
+                    self.publish_state(event_loop);
+                }
+            }
+            AppEvent::UiMessage(UiToEngineMessage::HeartbeatAcknowledged {
+                bridge_id,
+                sequence,
+                ..
+            }) => {
+                let _ = self.bridge.acknowledge(&bridge_id, sequence);
+            }
+            AppEvent::UiMessage(UiToEngineMessage::BridgeFaultReported {
+                bridge_id, code, ..
+            }) => {
+                if self.bridge.accepts(&bridge_id) {
+                    tracing::warn!(event = "hud_bridge_fault_reported", ?code);
+                    self.publish_protocol_error(event_loop, code);
+                }
+            }
+            AppEvent::ConnectionProgress {
+                attempt_id,
+                progress,
+            } => {
+                if self.lifecycle.progress(&attempt_id, progress) {
                     self.publish_state(event_loop);
                 }
             }
@@ -763,6 +863,29 @@ impl ApplicationHandler<AppEvent> for App {
             gtk::main_iteration_do(false);
         }
         let now = Instant::now();
+        if let Some(sequence) = self.bridge.due(now)
+            && let (Some(hud), Some(window), Some(bridge_id)) = (
+                self.hud.as_mut(),
+                self.window.as_ref(),
+                self.bridge.bridge_id().cloned(),
+            )
+        {
+            let message = EngineToUiMessage::Heartbeat {
+                protocol_version: UI_ENGINE_PROTOCOL_VERSION,
+                bridge_id,
+                sequence,
+            };
+            if let Err(error) = hud.publish(window, &message) {
+                tracing::error!(event = "hud_heartbeat_publish_failed", %error);
+                event_loop.exit();
+                return;
+            }
+        }
+        if self.bridge.failed() {
+            tracing::error!(event = "hud_bridge_failed");
+            event_loop.exit();
+            return;
+        }
         if self.lifecycle.timeout(now) {
             self.publish_state(event_loop);
         }
@@ -850,11 +973,17 @@ impl ApplicationHandler<AppEvent> for App {
             }
             self.next_tick += TICK_DURATION;
         }
-        match self.lifecycle.next_deadline() {
+        let mut deadline = self
+            .lifecycle
+            .next_deadline()
+            .into_iter()
+            .chain(self.bridge.next_deadline())
+            .min();
+        if self.lifecycle.is_connected() {
+            deadline = Some(deadline.map_or(self.next_tick, |value| value.min(self.next_tick)));
+        }
+        match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
-            None if self.lifecycle.is_connected() => {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
-            }
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
         if let Some(renderer) = &self.renderer {

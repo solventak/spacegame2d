@@ -1,0 +1,465 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "engineToUi": {
+    "$defs": {
+      "ConnectionFailureReason": {
+        "enum": [
+          "timeout",
+          "network",
+          "rejected",
+          "serverFull",
+          "versionMismatch"
+        ],
+        "type": "string"
+      },
+      "ConnectionStateSnapshot": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/$defs/DisconnectedReason"
+              },
+              "stage": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "address",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "stage": {
+                "const": "resolvingHost",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "requestId",
+              "address"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "stage": {
+                "const": "openingSocket",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "requestId",
+              "address"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "stage": {
+                "const": "handshaking",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "requestId",
+              "address"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "localPlayer": {
+                "$ref": "#/$defs/LocalPlayerHudModel"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "stage": {
+                "const": "connected",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "requestId",
+              "address",
+              "localPlayer"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/$defs/ConnectionFailureReason"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "stage": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "requestId",
+              "address",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "DisconnectedReason": {
+        "enum": [
+          "startup",
+          "cancelled",
+          "sessionLost"
+        ],
+        "type": "string"
+      },
+      "LocalPlayerHudModel": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "$ref": "#/$defs/PlayerColor"
+          },
+          "colorHex": {
+            "type": "string"
+          },
+          "playerSlot": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schemaVersion": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "playerSlot",
+          "color",
+          "colorHex"
+        ],
+        "type": "object"
+      },
+      "PlayerColor": {
+        "enum": [
+          "cyan",
+          "coral"
+        ],
+        "type": "string"
+      },
+      "ProtocolErrorCode": {
+        "enum": [
+          "malformedJson",
+          "unsupportedVersion",
+          "wrongDirection",
+          "unknownMessageType",
+          "missingRequiredField",
+          "unknownField",
+          "invalidFieldValue"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "oneOf": [
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "connectionStateChanged",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/$defs/ConnectionStateSnapshot"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "state"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/$defs/ProtocolErrorCode"
+          },
+          "kind": {
+            "const": "protocolError",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "code"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "heartbeat",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "sequence"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "EngineToUiMessage"
+  },
+  "protocolVersion": 1,
+  "title": "spacegame2d UI-engine IPC",
+  "uiToEngine": {
+    "$defs": {
+      "ProtocolErrorCode": {
+        "enum": [
+          "malformedJson",
+          "unsupportedVersion",
+          "wrongDirection",
+          "unknownMessageType",
+          "missingRequiredField",
+          "unknownField",
+          "invalidFieldValue"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "oneOf": [
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "uiReady",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "connectRequested",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "requestId",
+          "address"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "connectionCancelled",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "heartbeatAcknowledged",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "sequence"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/$defs/ProtocolErrorCode"
+          },
+          "kind": {
+            "const": "bridgeFaultReported",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "code"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "UiToEngineMessage"
+  }
+}

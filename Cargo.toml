@@ -5,6 +5,7 @@ members = [
     "crates/protocol",
     "crates/server",
     "crates/logging",
+    "crates/ui-protocol",
 ]
 resolver = "2"
 
