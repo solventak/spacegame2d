@@ -15,6 +15,7 @@ lookup table.
 | Rust toolchain (MSRV 1.91) | Yes | Yes |
 | GPU adapter (wgpu-compatible) | No | Yes |
 | Display (X11/Wayland/Win32/macOS) | No | Yes |
+| WebView runtime (HUD) | No | Yes — WebView2 on Windows; WebKitGTK/XWayland on Ubuntu |
 
 Install Rust via [rustup](https://rustup.rs) if not already installed:
 
@@ -94,6 +95,16 @@ This path launches the actual desktop application and exercises it through keybo
 ```sh
 cargo run
 ```
+
+For the embedded HUD on Ubuntu, install `libwebkit2gtk-4.1-0` and `xwayland`; builds additionally need `libwebkit2gtk-4.1-dev` and `pkg-config`. The client forces X11 so Wayland sessions run through XWayland and need a valid `DISPLAY`. On Windows, verify the Evergreen WebView2 Runtime (install the Evergreen standalone runtime when absent). If WebKitGTK is blank on an affected Linux GPU/driver, retry once with `WEBKIT_DISABLE_DMABUF_RENDERER=1`; this is troubleshooting only, not an application default.
+
+### HUD acceptance
+
+1. Start the server and two clients. Confirm player 1’s upper-left transparent panel reports `01` / `CYAN`, and player 2’s reports `02` / `CORAL`.
+2. Run without a frontend server or network access after startup; the HUD remains visible because assets are embedded.
+3. Resize, maximize/restore, and change display scale. The panel stays 14 logical pixels from the upper-left and remains within the parent window.
+4. Outside the compact panel, verify right-click destination, middle-drag camera, keyboard controls, and close behavior still work.
+5. On an Ubuntu Wayland desktop, confirm logs record `display_backend="x11"` and the client is hosted through XWayland.
 
 A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the default 64 m death boundary) and the deterministic fleet spawned for the connected player and mirrored fleets received from the server.
 

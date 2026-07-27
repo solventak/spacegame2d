@@ -10,7 +10,9 @@ mod camera;
 mod combat_presentation;
 mod combat_rendering;
 mod geometry;
+mod hud;
 pub mod network;
+mod player_presentation;
 mod presentation;
 
 use std::{
@@ -44,13 +46,13 @@ use crate::combat_rendering::{CombatFrame, CombatRenderer};
 use crate::geometry::{
     Vertex, overlay::ring_vertices, structures::structure_vertices, units::notched_ship_vertices,
 };
+use crate::hud::{HudWebView, LocalPlayerHudModel};
 use crate::network::ServerEvent;
+use crate::player_presentation::{PLAYER_ONE_COLOR, PLAYER_TWO_COLOR, PlayerColor};
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 #[cfg(test)]
 use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
-const PLAYER_ONE_COLOR: [f32; 4] = [0.0, 0.9, 1.0, 1.0];
-const PLAYER_TWO_COLOR: [f32; 4] = [1.0, 0.35, 0.2, 1.0];
 const PENDING_MARKER_COLOR: [f32; 4] = [1.0, 0.85, 0.0, 1.0];
 const CONFIRMED_MARKER_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
@@ -67,10 +69,7 @@ struct SceneUniform {
 }
 
 fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
-    match owner {
-        Some(PlayerId(2)) => PLAYER_TWO_COLOR,
-        _ => PLAYER_ONE_COLOR,
-    }
+    PlayerColor::for_slot(owner.map_or(1, |PlayerId(slot)| slot)).render_rgba()
 }
 
 fn window_title(player_slot: u32) -> String {
@@ -517,6 +516,8 @@ impl Renderer {
 }
 
 struct App {
+    // Keep the child WebView ahead of its renderer/parent-window owner so it drops first.
+    hud: Option<HudWebView>,
     renderer: Option<Renderer>,
     simulation: Simulation,
     presentation: DestinationPresentation,
@@ -533,6 +534,7 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
+            hud: None,
             renderer: None,
             simulation: Simulation::default(),
             presentation: DestinationPresentation::default(),
@@ -594,6 +596,18 @@ impl ApplicationHandler for App {
             self.simulation.world.structures(),
         )) {
             Ok(renderer) => {
+                let player_slot = self
+                    .network
+                    .as_ref()
+                    .map_or(1, |session| session.player_slot);
+                match HudWebView::new(&window, LocalPlayerHudModel::for_slot(player_slot)) {
+                    Ok(hud) => self.hud = Some(hud),
+                    Err(error) => {
+                        tracing::error!(event = "hud_initialization_failed", %error);
+                        event_loop.exit();
+                        return;
+                    }
+                }
                 self.next_tick = Instant::now() + TICK_DURATION;
                 window.request_redraw();
                 self.renderer = Some(renderer);
@@ -605,6 +619,10 @@ impl ApplicationHandler for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "linux")]
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
         if let Some(session) = self.network.as_mut() {
             session.set_local_tick(self.simulation.tick());
             match session.poll_events() {
@@ -707,6 +725,21 @@ impl ApplicationHandler for App {
                     renderer.resize(size.width, size.height);
                     self.camera.clamp(size.width, size.height);
                 }
+                if let Some(hud) = self.hud.as_mut()
+                    && let Some(renderer) = self.renderer.as_ref()
+                    && let Err(error) = hud.resize(size, renderer.window.scale_factor())
+                {
+                    tracing::error!(event = "hud_resize_failed", %error);
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let (Some(hud), Some(renderer)) = (self.hud.as_mut(), self.renderer.as_ref())
+                    && let Err(error) = hud.resize(renderer.window.inner_size(), scale_factor)
+                {
+                    tracing::error!(event = "hud_resize_failed", %error);
+                    event_loop.exit();
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = Some(position);
@@ -808,12 +841,33 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {
+    #[cfg(target_os = "linux")]
+    initialize_linux_webview();
     let _logging =
         spacegame2d_logging::init("spacegame2d", "info").expect("failed to initialize logging");
+    #[cfg(target_os = "linux")]
+    tracing::info!(
+        event = "display_backend_selected",
+        display_backend = "x11",
+        wayland_session = std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value == "wayland"),
+        display_present = std::env::var_os("DISPLAY").is_some(),
+    );
     tracing::info!(event = "client_starting", "spacegame2d starting");
+    #[cfg(target_os = "linux")]
+    use winit::platform::x11::EventLoopBuilderExtX11;
+    #[cfg(target_os = "linux")]
+    let event_loop = EventLoop::builder().with_x11().build()?;
+    #[cfg(not(target_os = "linux"))]
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut App::default())
+}
+
+#[cfg(target_os = "linux")]
+fn initialize_linux_webview() {
+    // SAFETY: this runs before logging, GTK, Wry, Winit, or any worker thread is initialized.
+    unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+    gtk::init().expect("failed to initialize GTK for the required HUD WebView");
 }
 
 #[cfg(test)]

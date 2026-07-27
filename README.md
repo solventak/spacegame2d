@@ -44,6 +44,16 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo test
 
 See [`docs/QA.md`](./docs/QA.md) for the full interactive QA guide (headless and GUI paths, controls, and verification scenarios).
 
+### HUD development and runtime
+
+The connected client embeds its compact local-player HUD from the committed production bundle in `crates/spacegame2d/hud/dist`; it never starts a frontend server. To change it, use Node 22 and run:
+
+```sh
+./scripts/qa-hud.sh
+```
+
+Linux builds need `libwebkit2gtk-4.1-dev` and `pkg-config`; Ubuntu testers need `libwebkit2gtk-4.1-0` and XWayland. Windows testers need the Evergreen WebView2 Runtime. The executable embeds HUD assets, but relies on the platform WebView runtime.
+
 ## Lint and format
 
 ```

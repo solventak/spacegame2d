@@ -1,0 +1,17 @@
+name: HUD
+
+on:
+  pull_request:
+    paths: ["crates/spacegame2d/hud/**", "crates/spacegame2d/src/hud.rs", ".github/workflows/hud.yml"]
+  push:
+    branches: [dev, main]
+    paths: ["crates/spacegame2d/hud/**", "crates/spacegame2d/src/hud.rs", ".github/workflows/hud.yml"]
+
+jobs:
+  hud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm, cache-dependency-path: crates/spacegame2d/hud/package-lock.json }
+      - run: ./scripts/qa-hud.sh

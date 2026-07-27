@@ -84,6 +84,8 @@ enemy, gray is neutral/uncertain; tactical `Glyph` and interface `Icon` are dist
 
 The implementer must run the **test gate** locally before opening a PR. If any step fails, do not push; instead comment on the Linear ticket with the failure and move it to "Blocked".
 
+Changes under `crates/spacegame2d/hud/`, `crates/spacegame2d/src/hud.rs`, or native HUD lifecycle code must also run `./scripts/qa-hud.sh` after the Rust test gate.
+
 ## Coverage gate
 
 A **minimum coverage threshold of 85%** is enforced in CI via `cargo-tarpaulin` (see `.github/workflows/coverage.yml`). The gate runs on every PR and push to `dev`/`main` and will **fail the build** if coverage drops below 85%.
