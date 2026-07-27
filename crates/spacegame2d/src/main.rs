@@ -48,7 +48,9 @@ use crate::geometry::{
 };
 use crate::hud::{HudWebView, LocalPlayerHudModel};
 use crate::network::ServerEvent;
-use crate::player_presentation::{PLAYER_ONE_COLOR, PLAYER_TWO_COLOR, PlayerColor};
+#[cfg(test)]
+use crate::player_presentation::PLAYER_TWO_COLOR;
+use crate::player_presentation::{PLAYER_ONE_COLOR, PlayerColor};
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 #[cfg(test)]
 use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
@@ -69,7 +71,7 @@ struct SceneUniform {
 }
 
 fn fleet_color(owner: Option<PlayerId>) -> [f32; 4] {
-    PlayerColor::for_slot(owner.map_or(1, |PlayerId(slot)| slot)).render_rgba()
+    PlayerColor::for_slot(owner.map_or(1, |PlayerId(slot)| slot as u32)).render_rgba()
 }
 
 fn window_title(player_slot: u32) -> String {
@@ -529,6 +531,7 @@ struct App {
     combat_presentation: CombatPresentation,
     match_result: Option<spacegame2d_simulation::MatchResult>,
     camera: Camera,
+    window_title: Option<String>,
 }
 
 impl Default for App {
@@ -546,6 +549,7 @@ impl Default for App {
             combat_presentation: CombatPresentation::default(),
             match_result: None,
             camera: Camera::new(spacegame2d_simulation::DEFAULT_WORLD_RADIUS_METERS),
+            window_title: None,
         }
     }
 }
@@ -580,7 +584,7 @@ impl ApplicationHandler for App {
             || "Spacegame 2D".to_owned(),
             |session| window_title(session.player_slot),
         );
-        let window = match event_loop.create_window(Window::default_attributes().with_title(title))
+        let window = match event_loop.create_window(Window::default_attributes().with_title(&title))
         {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -589,6 +593,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        self.window_title = Some(title);
         match pollster::block_on(Renderer::new(
             window.clone(),
             &self.simulation.world.units,
@@ -620,7 +625,10 @@ impl ApplicationHandler for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(target_os = "linux")]
-        while gtk::events_pending() {
+        for _ in 0..8 {
+            if !gtk::events_pending() {
+                break;
+            }
             gtk::main_iteration_do(false);
         }
         if let Some(session) = self.network.as_mut() {
@@ -656,25 +664,25 @@ impl ApplicationHandler for App {
         if let Some(renderer) = self.renderer.as_ref() {
             let title = self.presentation.rejection_text(now).map_or_else(
                 || {
-                    window_title(
-                        self.network
-                            .as_ref()
-                            .map_or(0, |session| session.player_slot),
+                    self.network.as_ref().map_or_else(
+                        || "Spacegame 2D".to_owned(),
+                        |session| window_title(session.player_slot),
                     )
                 },
                 |message| {
                     format!(
-                        "{} — {}",
-                        window_title(
-                            self.network
-                                .as_ref()
-                                .map_or(0, |session| session.player_slot)
-                        ),
-                        message
+                        "{} — {message}",
+                        self.network.as_ref().map_or_else(
+                            || "Spacegame 2D".to_owned(),
+                            |session| window_title(session.player_slot),
+                        )
                     )
                 },
             );
-            renderer.window.set_title(&title);
+            if self.window_title.as_ref() != Some(&title) {
+                renderer.window.set_title(&title);
+                self.window_title = Some(title);
+            }
         }
         while now >= self.next_tick {
             let applied = self.simulation.apply_due_commands(&mut self.scheduled);
@@ -727,18 +735,33 @@ impl ApplicationHandler for App {
                 }
                 if let Some(hud) = self.hud.as_mut()
                     && let Some(renderer) = self.renderer.as_ref()
-                    && let Err(error) = hud.resize(size, renderer.window.scale_factor())
+                    && let Err(error) = hud.resize(&renderer.window)
                 {
                     tracing::error!(event = "hud_resize_failed", %error);
                     event_loop.exit();
                 }
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+            WindowEvent::ScaleFactorChanged { .. } => {
                 if let (Some(hud), Some(renderer)) = (self.hud.as_mut(), self.renderer.as_ref())
-                    && let Err(error) = hud.resize(renderer.window.inner_size(), scale_factor)
+                    && let Err(error) = hud.resize(&renderer.window)
                 {
                     tracing::error!(event = "hud_resize_failed", %error);
                     event_loop.exit();
+                }
+            }
+            WindowEvent::Moved(_) => {
+                if let (Some(hud), Some(renderer)) = (self.hud.as_mut(), self.renderer.as_ref())
+                    && let Err(error) = hud.resize(&renderer.window)
+                {
+                    tracing::error!(event = "hud_move_failed", %error);
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Occluded(occluded) =>
+            {
+                #[cfg(target_os = "linux")]
+                if let Some(hud) = self.hud.as_ref() {
+                    hud.set_visible(!occluded);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
