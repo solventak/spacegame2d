@@ -9,6 +9,7 @@ message Envelope {
     AuthoritativeCommand authoritative_command = 4;
     CommandRejected command_rejected = 5;
     StateChecksum state_checksum = 6;
+    HandshakeRejected handshake_rejected = 7;
   }
 }
 
@@ -57,6 +58,16 @@ message StateChecksum {
 message CommandRejected {
   uint32 sequence = 1;
   CommandRejectionReason reason = 2;
+}
+message HandshakeRejected {
+  HandshakeRejectionReason reason = 1;
+}
+enum HandshakeRejectionReason {
+  HANDSHAKE_REJECTION_REASON_UNSPECIFIED = 0;
+  HANDSHAKE_REJECTION_REASON_SERVER_FULL = 1;
+  HANDSHAKE_REJECTION_REASON_INCOMPATIBLE_VERSION = 2;
+  HANDSHAKE_REJECTION_REASON_MISSING_REQUIRED_CAPABILITY = 3;
+  HANDSHAKE_REJECTION_REASON_INVALID_HANDSHAKE = 4;
 }
 enum CommandRejectionReason {
   COMMAND_REJECTION_REASON_UNSPECIFIED = 0;

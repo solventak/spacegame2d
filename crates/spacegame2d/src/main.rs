@@ -14,6 +14,7 @@ mod hud;
 pub mod network;
 mod player_presentation;
 mod presentation;
+mod session;
 
 use std::{
     sync::Arc,
@@ -24,7 +25,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use spacegame2d_protocol::Tick;
 use spacegame2d_simulation::{
-    StaticStructure,
+    SimulationConfig, StaticStructure,
     command::PlayerId,
     command::Unit,
     simulation::{SIMULATION_HZ, ShipState, Simulation},
@@ -33,9 +34,9 @@ use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowId},
+    window::{Fullscreen, Window, WindowId},
 };
 
 use crate::camera::Camera;
@@ -46,12 +47,23 @@ use crate::combat_rendering::{CombatFrame, CombatRenderer};
 use crate::geometry::{
     Vertex, overlay::ring_vertices, structures::structure_vertices, units::notched_ship_vertices,
 };
-use crate::hud::{HudWebView, LocalPlayerHudModel};
+use crate::hud::HudWebView;
 use crate::network::ServerEvent;
 #[cfg(test)]
 use crate::player_presentation::PLAYER_TWO_COLOR;
 use crate::player_presentation::{PLAYER_ONE_COLOR, PlayerColor};
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
+use crate::session::{
+    ConnectionOutcome, DEFAULT_SERVER_ADDRESS, HandshakeOutcome, SessionLifecycle, UiCommand,
+};
+
+enum AppEvent {
+    UiCommand(UiCommand),
+    ConnectionFinished {
+        attempt_id: u64,
+        result: Result<network::NetworkSession, network::ConnectError>,
+    },
+}
 #[cfg(test)]
 use spacegame2d_simulation::simulation::WORLD_RADIUS_M;
 
@@ -520,12 +532,16 @@ impl Renderer {
 struct App {
     // Keep the child WebView ahead of its renderer/parent-window owner so it drops first.
     hud: Option<HudWebView>,
+    window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    renderer_config: SimulationConfig,
     simulation: Simulation,
     presentation: DestinationPresentation,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     next_tick: Instant,
     network: Option<network::NetworkSession>,
+    lifecycle: SessionLifecycle<()>,
+    proxy: EventLoopProxy<AppEvent>,
     scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
     combat_presentation: CombatPresentation,
@@ -534,16 +550,20 @@ struct App {
     window_title: Option<String>,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
             hud: None,
+            window: None,
             renderer: None,
+            renderer_config: SimulationConfig::default(),
             simulation: Simulation::default(),
             presentation: DestinationPresentation::default(),
             cursor_position: None,
             next_tick: Instant::now(),
             network: None,
+            lifecycle: SessionLifecycle::new(DEFAULT_SERVER_ADDRESS),
+            proxy,
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
             combat_presentation: CombatPresentation::default(),
@@ -552,40 +572,53 @@ impl Default for App {
             window_title: None,
         }
     }
+
+    fn publish_state(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(hud), Some(window)) = (self.hud.as_mut(), self.window.as_ref()) else {
+            return;
+        };
+        if let Err(error) = hud.publish(window, &self.lifecycle.ui_state()) {
+            tracing::error!(event = "hud_state_publish_failed", %error);
+            event_loop.exit();
+        }
+    }
+
+    fn start_attempt(&self, attempt: crate::session::ConnectionAttempt) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = network::NetworkSession::connect_with_timeout(
+                &attempt.address,
+                crate::session::CONNECTION_TIMEOUT,
+            );
+            let _ = proxy.send_event(AppEvent::ConnectionFinished {
+                attempt_id: attempt.id,
+                result,
+            });
+        });
+    }
+
+    fn reset_connected_resources(&mut self) {
+        self.network = None;
+        self.simulation = Simulation::default();
+        self.presentation.clear();
+        self.scheduled.clear();
+        self.combat_presentation.clear();
+        self.match_result = None;
+        self.next_sequence = 1;
+    }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.renderer.is_some() {
+        if self.window.is_some() {
             return;
         }
-        let address = std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "127.0.0.1:4000".into());
-        match network::NetworkSession::connect(&address) {
-            Ok(session) => {
-                self.simulation = Simulation::new(session.simulation_config());
-                self.camera = Camera::new(self.simulation.world_radius());
-                self.simulation.set_tick(session.server_tick);
-                if let Err(error) = session.register_player(&mut self.simulation) {
-                    eprintln!("failed to register connected player: {error}");
-                    event_loop.exit();
-                    return;
-                }
-                self.network = Some(session);
-            }
-            Err(error) => {
-                eprintln!("failed to connect to server {address}: {error}");
-                event_loop.exit();
-                return;
-            }
-        }
-        let title = self.network.as_ref().map_or_else(
-            || "Spacegame 2D".to_owned(),
-            |session| window_title(session.player_slot),
-        );
-        let window = match event_loop.create_window(Window::default_attributes().with_title(&title))
-        {
+        let title = "Spacegame 2D".to_owned();
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_title(&title)
+                .with_fullscreen(Some(Fullscreen::Borderless(None))),
+        ) {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 eprintln!("failed to create window: {e}");
@@ -600,29 +633,127 @@ impl ApplicationHandler for App {
             self.simulation.world_radius(),
             self.simulation.world.structures(),
         )) {
-            Ok(renderer) => {
-                let player_slot = self
-                    .network
-                    .as_ref()
-                    .map_or(1, |session| session.player_slot);
-                match HudWebView::new(&window, LocalPlayerHudModel::for_slot(player_slot)) {
-                    Ok(hud) => self.hud = Some(hud),
-                    Err(error) => {
-                        tracing::error!(event = "hud_initialization_failed", %error);
-                        event_loop.exit();
+            Ok(renderer) => self.renderer = Some(renderer),
+            Err(error) => {
+                tracing::error!(event = "renderer_initialization_failed", %error);
+                event_loop.exit();
+                return;
+            }
+        }
+        let proxy = self.proxy.clone();
+        match HudWebView::new(&window, &self.lifecycle.ui_state(), move |body| {
+            match serde_json::from_str::<UiCommand>(&body) {
+                Ok(command) if command.is_supported() => {
+                    let _ = proxy.send_event(AppEvent::UiCommand(command));
+                }
+                Ok(_) | Err(_) => tracing::warn!(event = "hud_command_invalid"),
+            }
+        }) {
+            Ok(hud) => self.hud = Some(hud),
+            Err(error) => {
+                tracing::error!(event = "hud_initialization_failed", %error);
+                event_loop.exit();
+                return;
+            }
+        }
+        self.window = Some(window);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::UiCommand(UiCommand::Connect { address, .. }) => {
+                if let Some(attempt) = self.lifecycle.connect(address, Instant::now()) {
+                    self.publish_state(event_loop);
+                    self.start_attempt(attempt);
+                }
+            }
+            AppEvent::UiCommand(UiCommand::Cancel { .. }) => {
+                if self.lifecycle.cancel() {
+                    self.publish_state(event_loop);
+                }
+            }
+            AppEvent::ConnectionFinished { attempt_id, result } => {
+                let session = match result {
+                    Ok(session) => session,
+                    Err(network::ConnectError::Rejected(reason)) => {
+                        let reason = match reason {
+                            spacegame2d_protocol::HandshakeRejectionReason::ServerFull => {
+                                HandshakeOutcome::ServerFull
+                            }
+                            spacegame2d_protocol::HandshakeRejectionReason::IncompatibleVersion => {
+                                HandshakeOutcome::VersionMismatch
+                            }
+                            _ => HandshakeOutcome::Rejected,
+                        };
+                        if self
+                            .lifecycle
+                            .complete(attempt_id, ConnectionOutcome::Rejected(reason))
+                        {
+                            self.publish_state(event_loop);
+                        }
                         return;
                     }
+                    Err(error) => {
+                        tracing::warn!(event = "connection_failed", %error);
+                        if self
+                            .lifecycle
+                            .complete(attempt_id, ConnectionOutcome::Failed)
+                        {
+                            self.publish_state(event_loop);
+                        }
+                        return;
+                    }
+                };
+                let player_slot = session.player_slot;
+                if !self.lifecycle.complete(
+                    attempt_id,
+                    ConnectionOutcome::Connected {
+                        session: (),
+                        player_slot,
+                    },
+                ) {
+                    return;
                 }
+                self.simulation = Simulation::new(session.simulation_config());
+                self.camera = Camera::new(self.simulation.world_radius());
+                self.simulation.set_tick(session.server_tick);
+                if let Err(error) = session.register_player(&mut self.simulation) {
+                    tracing::error!(event = "connected_player_registration_failed", %error);
+                    self.lifecycle.session_lost();
+                    self.publish_state(event_loop);
+                    return;
+                }
+                let Some(window) = self.window.clone() else {
+                    return;
+                };
+                if self.renderer_config != self.simulation.config() {
+                    self.renderer = None;
+                    match pollster::block_on(Renderer::new(
+                        window.clone(),
+                        &self.simulation.world.units,
+                        self.simulation.world_radius(),
+                        self.simulation.world.structures(),
+                    )) {
+                        Ok(renderer) => {
+                            self.renderer = Some(renderer);
+                            self.renderer_config = self.simulation.config();
+                        }
+                        Err(error) => {
+                            tracing::error!(event = "renderer_initialization_failed", %error);
+                            self.lifecycle.session_lost();
+                            self.publish_state(event_loop);
+                            return;
+                        }
+                    }
+                }
+                self.network = Some(session);
                 self.next_tick = Instant::now() + TICK_DURATION;
+                self.publish_state(event_loop);
                 window.request_redraw();
-                self.renderer = Some(renderer);
-            }
-            Err(e) => {
-                eprintln!("failed to initialize renderer: {e}");
-                event_loop.exit();
             }
         }
     }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(target_os = "linux")]
         for _ in 0..8 {
@@ -630,6 +761,10 @@ impl ApplicationHandler for App {
                 break;
             }
             gtk::main_iteration_do(false);
+        }
+        let now = Instant::now();
+        if self.lifecycle.timeout(now) {
+            self.publish_state(event_loop);
         }
         if let Some(session) = self.network.as_mut() {
             session.set_local_tick(self.simulation.tick());
@@ -654,13 +789,14 @@ impl ApplicationHandler for App {
                     }
                 }
                 Err(error) => {
-                    eprintln!("server connection lost: {error}");
-                    event_loop.exit();
+                    tracing::warn!(event = "server_connection_lost", %error);
+                    self.reset_connected_resources();
+                    self.lifecycle.session_lost();
+                    self.publish_state(event_loop);
                     return;
                 }
             }
         }
-        let now = Instant::now();
         if let Some(renderer) = self.renderer.as_ref() {
             let title = self.presentation.rejection_text(now).map_or_else(
                 || {
@@ -684,7 +820,7 @@ impl ApplicationHandler for App {
                 self.window_title = Some(title);
             }
         }
-        while now >= self.next_tick {
+        while self.lifecycle.is_connected() && now >= self.next_tick {
             let applied = self.simulation.apply_due_commands(&mut self.scheduled);
             if applied.reset_applied {
                 self.presentation.clear();
@@ -714,7 +850,13 @@ impl ApplicationHandler for App {
             }
             self.next_tick += TICK_DURATION;
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+        match self.lifecycle.next_deadline() {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None if self.lifecycle.is_connected() => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+            }
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
         if let Some(renderer) = &self.renderer {
             renderer.window.request_redraw();
         }
@@ -749,21 +891,6 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                 }
             }
-            WindowEvent::Moved(_) => {
-                if let (Some(hud), Some(renderer)) = (self.hud.as_mut(), self.renderer.as_ref())
-                    && let Err(error) = hud.resize(&renderer.window)
-                {
-                    tracing::error!(event = "hud_move_failed", %error);
-                    event_loop.exit();
-                }
-            }
-            WindowEvent::Occluded(occluded) =>
-            {
-                #[cfg(target_os = "linux")]
-                if let Some(hud) = self.hud.as_ref() {
-                    hud.set_visible(!occluded);
-                }
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = Some(position);
                 if let Some(renderer) = self.renderer.as_ref()
@@ -795,6 +922,9 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
+                if !self.lifecycle.is_connected() {
+                    return;
+                }
                 if let (Some(cursor), Some(renderer)) =
                     (self.cursor_position, self.renderer.as_ref())
                 {
@@ -825,6 +955,9 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
+                if !self.lifecycle.is_connected() {
+                    return;
+                }
                 if let Some(session) = self.network.as_mut() {
                     if let Err(error) = session.send_reset_simulation(self.next_sequence) {
                         eprintln!("failed to send reset: {error}");
@@ -879,11 +1012,14 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     #[cfg(target_os = "linux")]
     use winit::platform::x11::EventLoopBuilderExtX11;
     #[cfg(target_os = "linux")]
-    let event_loop = EventLoop::builder().with_x11().build()?;
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .with_x11()
+        .build()?;
     #[cfg(not(target_os = "linux"))]
-    let event_loop = EventLoop::new()?;
+    let event_loop = EventLoop::<AppEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop.run_app(&mut App::default())
+    let mut app = App::new(event_loop.create_proxy());
+    event_loop.run_app(&mut app)
 }
 
 #[cfg(target_os = "linux")]

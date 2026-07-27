@@ -15,7 +15,7 @@ lookup table.
 | Rust toolchain (MSRV 1.91) | Yes | Yes |
 | GPU adapter (wgpu-compatible) | No | Yes |
 | Display (X11/Wayland/Win32/macOS) | No | Yes |
-| WebView runtime (HUD) | No | Yes — WebView2 on Windows; WebKitGTK/XWayland on Ubuntu |
+| WebView runtime (HUD) | No | Yes — WebView2 on Windows; WebKitGTK in an X11 child surface on Ubuntu |
 
 Install Rust via [rustup](https://rustup.rs) if not already installed:
 
@@ -96,15 +96,18 @@ This path launches the actual desktop application and exercises it through keybo
 cargo run
 ```
 
-For the embedded HUD on Ubuntu, install `libwebkit2gtk-4.1-0` and `xwayland`; builds additionally need `libwebkit2gtk-4.1-dev` and `pkg-config`. The client forces X11 so Wayland sessions run through XWayland and need a valid `DISPLAY`. On Windows, verify the Evergreen WebView2 Runtime (install the Evergreen standalone runtime when absent). If WebKitGTK is blank on an affected Linux GPU/driver, retry once with `WEBKIT_DISABLE_DMABUF_RENDERER=1`; this is troubleshooting only, not an application default.
+For the embedded HUD on Ubuntu, install `libwebkit2gtk-4.1-0` and `xwayland`; builds additionally need `libwebkit2gtk-4.1-dev` and `pkg-config`. The client forces X11 so Wry hosts WebKitGTK as a child of the game window; Wayland sessions run through XWayland and need a valid `DISPLAY`. On Windows, verify the Evergreen WebView2 Runtime (install the Evergreen standalone runtime when absent). If WebKitGTK is blank on an affected Linux GPU/driver, retry once with `WEBKIT_DISABLE_DMABUF_RENDERER=1`; this is troubleshooting only, not an application default.
 
 ### HUD acceptance
 
-1. Start the server and two clients. Confirm player 1’s upper-left transparent panel reports `01` / `CYAN`, and player 2’s reports `02` / `CORAL`.
-2. Run without a frontend server or network access after startup; the HUD remains visible because assets are embedded.
-3. Resize, maximize/restore, and change display scale. The panel stays 14 logical pixels from the upper-left and remains within the parent window.
-4. Outside the compact panel, verify right-click destination, middle-drag camera, keyboard controls, and close behavior still work.
-5. On an Ubuntu Wayland desktop, confirm logs record `display_backend="x11"` and the client is hosted through XWayland.
+1. Start the client without a server. Confirm the opaque connection form appears, its address is editable, and it does not auto-connect.
+2. Submit an unreachable address. Within five seconds the editable form returns with a connection-failed message.
+3. Start an attempt and select Cancel. The form is immediately editable again; a late result must not replace it.
+4. Start the server and connect. Confirm the existing native window remains open and the WebView shrinks to the compact player panel; player 1 reports `01` / `CYAN` and player 2 reports `02` / `CORAL`.
+5. Stop the server during play. Confirm the client returns to the full connection form instead of exiting.
+6. Resize, maximize/restore, and change display scale in both pregame and connected modes. The pregame form fills the window and the compact panel stays 14 logical pixels from the upper-left; no independent GTK host window or stale gray surface appears.
+7. Outside the compact panel, verify right-click destination, middle-drag camera, keyboard controls, and close behavior still work.
+8. On an Ubuntu Wayland desktop, confirm logs record `display_backend="x11"` and the client is hosted through XWayland.
 
 A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the default 64 m death boundary) and the deterministic fleet spawned for the connected player and mirrored fleets received from the server.
 

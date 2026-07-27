@@ -44,7 +44,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 16;
+pub const SIMULATION_VERSION: u32 = 17;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +122,17 @@ pub struct CommandRejected {
     pub sequence: u32,
     pub reason: CommandRejectionReason,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeRejectionReason {
+    ServerFull,
+    IncompatibleVersion,
+    MissingRequiredCapability,
+    InvalidHandshake,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandshakeRejected {
+    pub reason: HandshakeRejectionReason,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateChecksum {
     pub tick: Tick,
@@ -135,6 +146,7 @@ pub enum Message {
     AuthoritativeCommand(AuthoritativeCommand),
     CommandRejected(CommandRejected),
     StateChecksum(StateChecksum),
+    HandshakeRejected(HandshakeRejected),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -254,6 +266,16 @@ impl From<&Message> for wire::Envelope {
                     hash: v.hash.clone(),
                 })
             }
+            Message::HandshakeRejected(v) => {
+                wire::envelope::Payload::HandshakeRejected(wire::HandshakeRejected {
+                    reason: match v.reason {
+                        HandshakeRejectionReason::ServerFull => 1,
+                        HandshakeRejectionReason::IncompatibleVersion => 2,
+                        HandshakeRejectionReason::MissingRequiredCapability => 3,
+                        HandshakeRejectionReason::InvalidHandshake => 4,
+                    },
+                })
+            }
         };
         Self {
             payload: Some(payload),
@@ -322,6 +344,16 @@ impl TryFrom<wire::Envelope> for Message {
                     tick: Tick::from(v.tick),
                     hash: v.hash,
                 }))
+            }
+            wire::envelope::Payload::HandshakeRejected(v) => {
+                let reason = match v.reason {
+                    1 => HandshakeRejectionReason::ServerFull,
+                    2 => HandshakeRejectionReason::IncompatibleVersion,
+                    3 => HandshakeRejectionReason::MissingRequiredCapability,
+                    4 => HandshakeRejectionReason::InvalidHandshake,
+                    _ => return Err(invalid("invalid handshake rejection reason")),
+                };
+                Ok(Message::HandshakeRejected(HandshakeRejected { reason }))
             }
         }
     }
@@ -400,8 +432,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn core_damage_and_match_results_bump_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 16);
+    fn handshake_rejections_bump_simulation_version() {
+        assert_eq!(SIMULATION_VERSION, 17);
     }
 
     fn destination() -> CommandData {
@@ -442,6 +474,9 @@ mod tests {
             Message::StateChecksum(StateChecksum {
                 tick: Tick::from(60),
                 hash: (0..32).collect(),
+            }),
+            Message::HandshakeRejected(HandshakeRejected {
+                reason: HandshakeRejectionReason::ServerFull,
             }),
         ];
         for message in messages {
