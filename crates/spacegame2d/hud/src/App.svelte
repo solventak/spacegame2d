@@ -21,6 +21,7 @@
   let matchSession: MatchSessionState | undefined;
   let lastMatchSequence: number | undefined;
   let hudPhase: 'join' | 'docking' | 'compact' = 'join';
+  let activeTransition = 0;
   let joinTimer: ReturnType<typeof setTimeout> | undefined;
   let dockTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -53,10 +54,11 @@
     return hours ? `${hours}:${pad(minutes % 60)}:${pad(seconds % 60)}` : `${pad(minutes)}:${pad(seconds % 60)}`;
   };
   const clearHudTimers = () => { if (joinTimer) clearTimeout(joinTimer); if (dockTimer) clearTimeout(dockTimer); joinTimer = undefined; dockTimer = undefined; };
-  const startJoin = (sequence: number) => {
+  const startJoin = () => {
     clearHudTimers(); hudPhase = 'join';
-    joinTimer = setTimeout(() => { if (lastMatchSequence === sequence) hudPhase = 'docking'; }, 700);
-    dockTimer = setTimeout(() => { if (lastMatchSequence === sequence) hudPhase = 'compact'; }, 1300);
+    const transition = ++activeTransition;
+    joinTimer = setTimeout(() => { if (activeTransition === transition) hudPhase = 'docking'; }, 700);
+    dockTimer = setTimeout(() => { if (activeTransition === transition) hudPhase = 'compact'; }, 1300);
   };
 
   const linkLabel = () => {
@@ -111,8 +113,8 @@
         const wasActive = matchSession?.stage === 'active';
         lastMatchSequence = message.state.sequence;
         matchSession = message.state;
-        if (message.state.stage === 'reset') { clearHudTimers(); return; }
-        if (message.state.stage === 'active' && !wasActive) startJoin(message.state.sequence);
+        if (message.state.stage === 'reset') { activeTransition += 1; clearHudTimers(); return; }
+        if (message.state.stage === 'active' && !wasActive) startJoin();
         return;
       }
       const next = message.state;

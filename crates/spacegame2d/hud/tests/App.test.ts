@@ -45,8 +45,13 @@ describe('HUD IPC', () => {
     await publish('connectionStateChanged', { stage: 'connected', requestId: 'request-1', address: 'server:4000', displayName: 'Rook', localPlayer: { schemaVersion: 1, playerSlot: 1, color: 'cyan', colorHex: '#22CFE8' } });
     await publish('matchSessionStateChanged', { stage: 'active', sequence: 2, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'present', presenceRevision: 1, clock: { startedAtTick: 60, currentTick: 120, ticksPerSecond: 60, elapsedWholeSeconds: 1 } });
     expect(screen.getByText('Match accepted')).toBeTruthy(); expect(screen.getByText('Vale')).toBeTruthy();
+    await publish('matchSessionStateChanged', { stage: 'active', sequence: 3, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'present', presenceRevision: 1, clock: { startedAtTick: 60, currentTick: 180, ticksPerSecond: 60, elapsedWholeSeconds: 2 } });
     await vi.advanceTimersByTimeAsync(1300); await tick();
-    expect(screen.getByText('PRESENT')).toBeTruthy(); expect(screen.getByText('00:01')).toBeTruthy();
+    expect(screen.getByText('PRESENT')).toBeTruthy(); expect(screen.getByText('00:02')).toBeTruthy();
+    await publish('matchSessionStateChanged', { stage: 'active', sequence: 4, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'disconnected', presenceRevision: 2, clock: { startedAtTick: 60, currentTick: 240, ticksPerSecond: 60, elapsedWholeSeconds: 3 } });
+    expect(screen.getByText('DISCONNECTED')).toBeTruthy(); expect(screen.getByText('Vale')).toBeTruthy();
+    await publish('matchSessionStateChanged', { stage: 'reset', sequence: 5, reason: 'userDisconnected' });
+    expect(screen.queryByText('Vale')).toBeNull(); expect(screen.getByText('CONNECT TO SERVER')).toBeTruthy();
   });
 
   it('rejects partial match state and accepts versioned directional messages', () => {

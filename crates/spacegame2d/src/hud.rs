@@ -193,15 +193,10 @@ impl HudWebView {
         let Some(started) = self.transition_started else {
             return Ok(());
         };
-        let elapsed = now.saturating_duration_since(started);
-        self.layout = if elapsed < JOIN_HOLD {
-            HudLayout::Join
-        } else if elapsed < JOIN_HOLD + DOCK_DURATION {
-            HudLayout::Docking
-        } else {
+        self.layout = layout_at(started, now);
+        if self.layout == HudLayout::Compact {
             self.transition_started = None;
-            HudLayout::Compact
-        };
+        }
         let bounds = self.current_bounds(window, now);
         if bounds != self.bounds {
             self.webview.set_bounds(bounds.rect())?;
@@ -256,6 +251,17 @@ impl HudWebView {
 fn ease_out(value: f64) -> f64 {
     let t = value.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
+}
+
+fn layout_at(started: std::time::Instant, now: std::time::Instant) -> HudLayout {
+    let elapsed = now.saturating_duration_since(started);
+    if elapsed < JOIN_HOLD {
+        HudLayout::Join
+    } else if elapsed < JOIN_HOLD + DOCK_DURATION {
+        HudLayout::Docking
+    } else {
+        HudLayout::Compact
+    }
 }
 
 fn embedded_asset(path: &str) -> (StatusCode, &'static str, &'static [u8]) {
@@ -345,6 +351,31 @@ mod tests {
                 width: 520.0,
                 height: 180.0,
             }
+        );
+    }
+
+    #[test]
+    fn join_transition_holds_then_docks_and_settles() {
+        let started = std::time::Instant::now();
+        assert_eq!(layout_at(started, started), HudLayout::Join);
+        assert_eq!(
+            layout_at(
+                started,
+                started + JOIN_HOLD - std::time::Duration::from_millis(1)
+            ),
+            HudLayout::Join
+        );
+        assert_eq!(layout_at(started, started + JOIN_HOLD), HudLayout::Docking);
+        assert_eq!(
+            layout_at(
+                started,
+                started + JOIN_HOLD + DOCK_DURATION - std::time::Duration::from_millis(1)
+            ),
+            HudLayout::Docking
+        );
+        assert_eq!(
+            layout_at(started, started + JOIN_HOLD + DOCK_DURATION),
+            HudLayout::Compact
         );
     }
 }

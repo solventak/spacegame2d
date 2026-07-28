@@ -1083,14 +1083,22 @@ impl ApplicationHandler<AppEvent> for App {
             }
             self.next_tick += TICK_DURATION;
         }
-        if let Some(session) = self.network.as_ref()
-            && self
-                .match_session
+        let elapsed_update = self.network.as_ref().map(|session| {
+            self.match_session
                 .update_if_elapsed_changed(session)
-                .unwrap_or(None)
-                .is_some()
-        {
-            self.publish_match_state(event_loop);
+                .map(|state| state.is_some())
+        });
+        match elapsed_update {
+            Some(Ok(true)) => self.publish_match_state(event_loop),
+            Some(Err(error)) => {
+                tracing::error!(event = "match_session_presentation_failed", %error);
+                self.reset_connected_resources();
+                self.lifecycle.session_lost();
+                self.reset_match_session(event_loop, MatchSessionResetReason::SessionLost);
+                self.publish_state(event_loop);
+                return;
+            }
+            _ => {}
         }
         let mut deadline = self
             .lifecycle
