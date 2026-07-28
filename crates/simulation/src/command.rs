@@ -306,6 +306,9 @@ impl World {
     pub(crate) fn allocator_state(&self) -> (u32, bool) {
         (self.next_unit_id, self.unit_id_exhausted)
     }
+    pub(crate) fn set_unit_id_exhausted(&mut self, value: bool) {
+        self.unit_id_exhausted = value;
+    }
     /// Validate an authoritative command against the current world state.
     ///
     /// Ownership rules apply to targeted units and connected players.

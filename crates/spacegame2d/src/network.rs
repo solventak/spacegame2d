@@ -39,6 +39,7 @@ pub struct NetworkSession {
     simulation_config: SimulationConfig,
     checksum_enabled: bool,
     local_tick: Tick,
+    initial_simulation: Option<spacegame2d_simulation::simulation::Simulation>,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
 }
@@ -88,7 +89,7 @@ impl NetworkSession {
         progress(crate::session::ConnectionProgress::Handshaking);
         Message::ClientHello(ClientHello {
             simulation_version: SIMULATION_VERSION,
-            capabilities: vec![Capability::StateChecksums],
+            capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
         })
         .write(&mut stream)?;
         let hello = match Message::read(&mut stream)? {
@@ -102,6 +103,21 @@ impl NetworkSession {
                 config.with_world_radius_meters(f32::from_bits(hello.world_radius_bits))
             })
             .map_err(|error| invalid(&error.to_string()))?;
+        let snapshot = match Message::read(&mut stream)? {
+            Message::InitialWorldState(value) => value,
+            Message::HandshakeRejected(value) => return Err(ConnectError::Rejected(value.reason)),
+            _ => return Err(invalid("expected InitialWorldState").into()),
+        };
+        if snapshot.tick != hello.server_tick {
+            return Err(invalid("server hello and snapshot ticks differ").into());
+        }
+        let initial_simulation =
+            spacegame2d_simulation::simulation::Simulation::restore_initial_world_state(
+                &snapshot,
+                simulation_config.clone(),
+            )
+            .map_err(|error| invalid(&error.to_string()))?;
+        tracing::info!(event = "world_snapshot_restored", tick = ?snapshot.tick, units = snapshot.units.len());
         stream.set_read_timeout(None)?;
         stream.set_write_timeout(None)?;
         stream.set_nonblocking(true)?;
@@ -112,6 +128,7 @@ impl NetworkSession {
             simulation_config,
             checksum_enabled: hello.capabilities.contains(&Capability::StateChecksums),
             local_tick: hello.server_tick,
+            initial_simulation: Some(initial_simulation),
             decoder: spacegame2d_protocol::FrameDecoder::new(),
             outgoing: VecDeque::new(),
         })
@@ -119,6 +136,13 @@ impl NetworkSession {
 
     pub fn simulation_config(&self) -> SimulationConfig {
         self.simulation_config.clone()
+    }
+    pub fn take_initial_simulation(
+        &mut self,
+    ) -> io::Result<spacegame2d_simulation::simulation::Simulation> {
+        self.initial_simulation
+            .take()
+            .ok_or_else(|| invalid("initial simulation already taken"))
     }
 
     pub fn register_player(
@@ -288,6 +312,11 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = Message::read(&mut stream).unwrap();
             response.write(&mut stream).unwrap();
+            if let Message::ServerHello(hello) = response {
+                Message::InitialWorldState(initial_world_state(&hello))
+                    .write(&mut stream)
+                    .unwrap();
+            }
             if disconnect {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             } else {
@@ -306,6 +335,9 @@ mod tests {
             Message::ServerHello(server_hello())
                 .write(&mut stream)
                 .unwrap();
+            Message::InitialWorldState(initial_world_state(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
             Message::AuthoritativeCommand(command)
                 .write(&mut stream)
                 .unwrap();
@@ -321,6 +353,9 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = Message::read(&mut stream).unwrap();
             Message::ServerHello(server_hello())
+                .write(&mut stream)
+                .unwrap();
+            Message::InitialWorldState(initial_world_state(&server_hello()))
                 .write(&mut stream)
                 .unwrap();
             for message in messages {
@@ -341,6 +376,9 @@ mod tests {
             Message::ServerHello(server_hello())
                 .write(&mut stream)
                 .unwrap();
+            Message::InitialWorldState(initial_world_state(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
             let mut messages = Vec::with_capacity(count);
             for _ in 0..count {
                 messages.push(Message::read(&mut stream).unwrap());
@@ -358,8 +396,18 @@ mod tests {
             server_tick: Tick::from(123),
             fleet_size: 30,
             world_radius_bits: 64.0_f32.to_bits(),
-            capabilities: vec![Capability::StateChecksums],
+            capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
         }
+    }
+
+    fn initial_world_state(hello: &ServerHello) -> spacegame2d_protocol::InitialWorldState {
+        let config = SimulationConfig::try_from(hello.fleet_size)
+            .unwrap()
+            .with_world_radius_meters(f32::from_bits(hello.world_radius_bits))
+            .unwrap();
+        let mut simulation = spacegame2d_simulation::simulation::Simulation::new(config);
+        simulation.set_tick(hello.server_tick);
+        simulation.initial_world_state(vec![])
     }
 
     #[test]
@@ -463,7 +511,7 @@ mod tests {
             server_tick: Tick::from(42),
             fleet_size: 30,
             world_radius_bits: 64.0_f32.to_bits(),
-            capabilities: vec![Capability::StateChecksums],
+            capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
         };
         let mut wrong = base.clone();
         wrong.simulation_version += 1;
@@ -497,7 +545,7 @@ mod tests {
                 server_tick: Tick::from(42),
                 fleet_size: 30,
                 world_radius_bits,
-                capabilities: vec![Capability::StateChecksums],
+                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
             };
             assert_eq!(
                 wrong.validate(SIMULATION_HZ).unwrap_err().kind(),

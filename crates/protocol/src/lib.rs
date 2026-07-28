@@ -44,12 +44,41 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 17;
+pub const SIMULATION_VERSION: u32 = 18;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {
     StateChecksums,
+    WorldSnapshots,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldUnit {
+    pub id: u32,
+    pub owner: Option<u32>,
+    pub position_bits: [u32; 2],
+    pub velocity_bits: [u32; 2],
+    pub heading_bits: u32,
+    pub angular_velocity_bits: u32,
+    pub active: bool,
+    pub destination_bits: Option<[u32; 2]>,
+    pub hull_current: u32,
+    pub hull_maximum: u32,
+    pub turret_local_heading_bits: u32,
+    pub turret_target: Option<(u32, u32)>,
+    pub turret_cooldown_ticks_remaining: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InitialWorldState {
+    pub snapshot_format_version: u32,
+    pub simulation_version: u32,
+    pub tick: Tick,
+    pub world_radius_bits: u32,
+    pub next_unit_id: u32,
+    pub unit_id_exhausted: bool,
+    pub units: Vec<WorldUnit>,
+    pub state_hash: Vec<u8>,
+    pub pending_commands: Vec<AuthoritativeCommand>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +121,9 @@ impl ServerHello {
         }
         if !self.capabilities.contains(&Capability::StateChecksums) {
             return Err(invalid("server does not support state checksums"));
+        }
+        if !self.capabilities.contains(&Capability::WorldSnapshots) {
+            return Err(invalid("server does not support world snapshots"));
         }
         Ok(())
     }
@@ -147,6 +179,7 @@ pub enum Message {
     CommandRejected(CommandRejected),
     StateChecksum(StateChecksum),
     HandshakeRejected(HandshakeRejected),
+    InitialWorldState(InitialWorldState),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -158,6 +191,7 @@ fn caps(values: &[i32]) -> Vec<Capability> {
         .iter()
         .filter_map(|v| match *v {
             1 => Some(Capability::StateChecksums),
+            2 => Some(Capability::WorldSnapshots),
             _ => None,
         })
         .collect()
@@ -166,6 +200,7 @@ impl ClientHello {
     pub fn is_compatible(&self) -> bool {
         self.simulation_version == SIMULATION_VERSION
             && self.capabilities.contains(&Capability::StateChecksums)
+            && self.capabilities.contains(&Capability::WorldSnapshots)
     }
 }
 
@@ -206,6 +241,53 @@ impl From<&CommandData> for wire::Command {
         }
     }
 }
+impl From<&WorldUnit> for wire::WorldUnit {
+    fn from(value: &WorldUnit) -> Self {
+        Self {
+            id: value.id,
+            owner: value.owner.unwrap_or_default(),
+            has_owner: value.owner.is_some(),
+            position_x: value.position_bits[0],
+            position_y: value.position_bits[1],
+            velocity_x: value.velocity_bits[0],
+            velocity_y: value.velocity_bits[1],
+            heading: value.heading_bits,
+            angular_velocity: value.angular_velocity_bits,
+            active: value.active,
+            has_destination: value.destination_bits.is_some(),
+            destination_x: value.destination_bits.map_or(0, |v| v[0]),
+            destination_y: value.destination_bits.map_or(0, |v| v[1]),
+            hull_current: value.hull_current,
+            hull_maximum: value.hull_maximum,
+            turret_local_heading: value.turret_local_heading_bits,
+            turret_target_kind: value.turret_target.map_or(0, |v| v.0),
+            turret_target_id: value.turret_target.map_or(0, |v| v.1),
+            turret_cooldown_ticks_remaining: value.turret_cooldown_ticks_remaining,
+        }
+    }
+}
+impl From<wire::WorldUnit> for WorldUnit {
+    fn from(value: wire::WorldUnit) -> Self {
+        Self {
+            id: value.id,
+            owner: value.has_owner.then_some(value.owner),
+            position_bits: [value.position_x, value.position_y],
+            velocity_bits: [value.velocity_x, value.velocity_y],
+            heading_bits: value.heading,
+            angular_velocity_bits: value.angular_velocity,
+            active: value.active,
+            destination_bits: value
+                .has_destination
+                .then_some([value.destination_x, value.destination_y]),
+            hull_current: value.hull_current,
+            hull_maximum: value.hull_maximum,
+            turret_local_heading_bits: value.turret_local_heading,
+            turret_target: (value.turret_target_kind != 0)
+                .then_some((value.turret_target_kind, value.turret_target_id)),
+            turret_cooldown_ticks_remaining: value.turret_cooldown_ticks_remaining,
+        }
+    }
+}
 impl From<&Message> for wire::Envelope {
     fn from(message: &Message) -> Self {
         let payload = match message {
@@ -216,6 +298,7 @@ impl From<&Message> for wire::Envelope {
                     .iter()
                     .map(|c| match c {
                         Capability::StateChecksums => 1,
+                        Capability::WorldSnapshots => 2,
                     })
                     .collect(),
             }),
@@ -231,6 +314,7 @@ impl From<&Message> for wire::Envelope {
                     .iter()
                     .map(|c| match c {
                         Capability::StateChecksums => 1,
+                        Capability::WorldSnapshots => 2,
                     })
                     .collect(),
             }),
@@ -274,6 +358,28 @@ impl From<&Message> for wire::Envelope {
                         HandshakeRejectionReason::MissingRequiredCapability => 3,
                         HandshakeRejectionReason::InvalidHandshake => 4,
                     },
+                })
+            }
+            Message::InitialWorldState(v) => {
+                wire::envelope::Payload::InitialWorldState(wire::InitialWorldState {
+                    snapshot_format_version: v.snapshot_format_version,
+                    simulation_version: v.simulation_version,
+                    tick: v.tick.0,
+                    world_radius_bits: v.world_radius_bits,
+                    next_unit_id: v.next_unit_id,
+                    unit_id_exhausted: v.unit_id_exhausted,
+                    units: v.units.iter().map(Into::into).collect(),
+                    state_hash: v.state_hash.clone(),
+                    pending_commands: v
+                        .pending_commands
+                        .iter()
+                        .map(|command| wire::AuthoritativeCommand {
+                            execute_tick: command.execute_tick.0,
+                            player_slot: command.player_slot,
+                            sequence: command.sequence,
+                            command: Some((&command.command).into()),
+                        })
+                        .collect(),
                 })
             }
         };
@@ -355,6 +461,35 @@ impl TryFrom<wire::Envelope> for Message {
                 };
                 Ok(Message::HandshakeRejected(HandshakeRejected { reason }))
             }
+            wire::envelope::Payload::InitialWorldState(v) => {
+                Ok(Message::InitialWorldState(InitialWorldState {
+                    snapshot_format_version: v.snapshot_format_version,
+                    simulation_version: v.simulation_version,
+                    tick: Tick::from(v.tick),
+                    world_radius_bits: v.world_radius_bits,
+                    next_unit_id: v.next_unit_id,
+                    unit_id_exhausted: v.unit_id_exhausted,
+                    units: v.units.into_iter().map(Into::into).collect(),
+                    state_hash: v.state_hash,
+                    pending_commands: v
+                        .pending_commands
+                        .into_iter()
+                        .map(|command| {
+                            Ok(AuthoritativeCommand {
+                                execute_tick: Tick::from(command.execute_tick),
+                                player_slot: command.player_slot,
+                                sequence: command.sequence,
+                                command: CommandData::try_from(
+                                    command
+                                        .command
+                                        .and_then(|c| c.payload)
+                                        .ok_or_else(|| invalid("missing command payload"))?,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, io::Error>>()?,
+                }))
+            }
         }
     }
 }
@@ -433,7 +568,7 @@ mod tests {
 
     #[test]
     fn handshake_rejections_bump_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 17);
+        assert_eq!(SIMULATION_VERSION, 18);
     }
 
     fn destination() -> CommandData {
@@ -446,7 +581,7 @@ mod tests {
         let messages = [
             Message::ClientHello(ClientHello {
                 simulation_version: SIMULATION_VERSION,
-                capabilities: vec![Capability::StateChecksums],
+                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
             }),
             Message::ServerHello(ServerHello {
                 simulation_version: SIMULATION_VERSION,

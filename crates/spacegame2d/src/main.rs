@@ -72,7 +72,7 @@ enum AppEvent {
     },
     ConnectionFinished {
         attempt_id: RequestId,
-        result: Result<network::NetworkSession, network::ConnectError>,
+        result: Box<Result<network::NetworkSession, network::ConnectError>>,
     },
 }
 #[cfg(test)]
@@ -621,7 +621,7 @@ impl App {
             );
             let _ = proxy.send_event(AppEvent::ConnectionFinished {
                 attempt_id: attempt.id,
-                result,
+                result: Box::new(result),
             });
         });
     }
@@ -773,7 +773,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::ConnectionFinished { attempt_id, result } => {
-                let session = match result {
+                let mut session = match *result {
                     Ok(session) => session,
                     Err(network::ConnectError::Rejected(reason)) => {
                         let reason = match reason {
@@ -814,15 +814,16 @@ impl ApplicationHandler<AppEvent> for App {
                 ) {
                     return;
                 }
-                self.simulation = Simulation::new(session.simulation_config());
+                self.simulation = match session.take_initial_simulation() {
+                    Ok(simulation) => simulation,
+                    Err(error) => {
+                        tracing::error!(event = "snapshot_install_failed", %error);
+                        self.lifecycle.session_lost();
+                        self.publish_state(event_loop);
+                        return;
+                    }
+                };
                 self.camera = Camera::new(self.simulation.world_radius());
-                self.simulation.set_tick(session.server_tick);
-                if let Err(error) = session.register_player(&mut self.simulation) {
-                    tracing::error!(event = "connected_player_registration_failed", %error);
-                    self.lifecycle.session_lost();
-                    self.publish_state(event_loop);
-                    return;
-                }
                 let Some(window) = self.window.clone() else {
                     return;
                 };

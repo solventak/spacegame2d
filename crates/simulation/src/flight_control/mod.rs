@@ -106,7 +106,7 @@ impl<'a> FlightObservation<'a> {
 /// Implementations are held behind a `Box<dyn FlightController>` by the
 /// [`Autopilot`](crate::autopilot::Autopilot) so the controller can be swapped
 /// without changing the autopilot's surface.
-pub trait FlightController: std::fmt::Debug {
+pub trait FlightController: std::fmt::Debug + Send {
     /// Human-readable identifier for this controller, mainly for diagnostics.
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
