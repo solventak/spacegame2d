@@ -27,6 +27,7 @@ struct Client {
     address: SocketAddr,
     slot: u32,
     connected: bool,
+    display_name: Option<String>,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
     checksum_enabled: bool,
@@ -186,6 +187,7 @@ pub async fn run_with_config(
                 address,
                 slot,
                 connected: false,
+                display_name: None,
                 checksum_enabled: false,
                 pending_checksums: VecDeque::new(),
                 seen_checksums: BTreeSet::new(),
@@ -215,6 +217,8 @@ pub async fn run_with_config(
                                 || !hello.capabilities.contains(&Capability::WorldSnapshots)
                             {
                                 Some(HandshakeRejectionReason::MissingRequiredCapability)
+                            } else if hello.display_name().is_err() {
+                                Some(HandshakeRejectionReason::InvalidHandshake)
                             } else {
                                 None
                             };
@@ -226,6 +230,13 @@ pub async fn run_with_config(
                                 client.closing_after_flush = true;
                                 continue;
                             }
+                            client.display_name = Some(
+                                hello
+                                    .display_name()
+                                    .expect("validated display name")
+                                    .as_str()
+                                    .into(),
+                            );
                             client.checksum_enabled = true;
                             client.queue(&Message::ServerHello(
                                 spacegame2d_protocol::ServerHello {
@@ -664,14 +675,16 @@ mod tests {
         assert!(
             ClientHello {
                 simulation_version: SIMULATION_VERSION,
-                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots]
+                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                display_name: "Rook".into(),
             }
             .is_compatible()
         );
         assert!(
             !(ClientHello {
                 simulation_version: SIMULATION_VERSION - 1,
-                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots]
+                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                display_name: "Rook".into(),
             }
             .is_compatible())
         );
@@ -707,6 +720,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn invalid_display_name_is_rejected_before_acceptance() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (address, shutdown, task) = start_server().await;
+                let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+                let hello = Message::ClientHello(ClientHello {
+                    simulation_version: SIMULATION_VERSION,
+                    capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                    display_name: "\u{200d}".into(),
+                });
+                client.write_all(&hello.encode().unwrap()).await.unwrap();
+                assert!(matches!(
+                    read_message(&mut client).await,
+                    Message::HandshakeRejected(HandshakeRejected {
+                        reason: HandshakeRejectionReason::InvalidHandshake
+                    })
+                ));
+                shutdown.send(true).unwrap();
+                task.await.unwrap().unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn real_tcp_handshake_tick_advancement_broadcast_and_disconnect() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -715,6 +752,7 @@ mod tests {
                 let hello = Message::ClientHello(ClientHello {
                     simulation_version: SIMULATION_VERSION,
                     capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                    display_name: "Rook".into(),
                 });
                 first.write_all(&hello.encode().unwrap()).await.unwrap();
                 let Message::ServerHello(first_hello) = read_message(&mut first).await else {
@@ -740,6 +778,11 @@ mod tests {
                 first_hello.validate(SIMULATION_HZ).unwrap();
                 second_hello.validate(SIMULATION_HZ).unwrap();
                 assert!(second_hello.server_tick > first_hello.server_tick);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), try_read_message(&mut first))
+                        .await
+                        .is_err()
+                );
 
                 // Ownership is match state, not connection state: player one
                 // must render player two's fleet as coral before player two has

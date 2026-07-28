@@ -4,7 +4,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const UI_ENGINE_PROTOCOL_VERSION: u16 = 1;
+pub const UI_ENGINE_PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
@@ -109,23 +109,28 @@ pub enum ConnectionStateSnapshot {
     ResolvingHost {
         request_id: RequestId,
         address: String,
+        display_name: String,
     },
     OpeningSocket {
         request_id: RequestId,
         address: String,
+        display_name: String,
     },
     Handshaking {
         request_id: RequestId,
         address: String,
+        display_name: String,
     },
     Connected {
         request_id: RequestId,
         address: String,
+        display_name: String,
         local_player: LocalPlayerHudModel,
     },
     Failed {
         request_id: RequestId,
         address: String,
+        display_name: String,
         reason: ConnectionFailureReason,
     },
 }
@@ -163,6 +168,7 @@ pub enum UiToEngineMessage {
         bridge_id: BridgeId,
         request_id: RequestId,
         address: String,
+        display_name: String,
     },
     ConnectionCancelled {
         protocol_version: u16,
@@ -293,11 +299,15 @@ impl UiToEngineMessage {
             Self::ConnectRequested {
                 request_id,
                 address,
+                display_name,
                 ..
             } => {
                 validate_id("requestId", request_id.as_str())?;
                 if address.trim().is_empty() {
                     return Err(ProtocolValidationError::InvalidId("address"));
+                }
+                if display_name.trim().is_empty() {
+                    return Err(ProtocolValidationError::InvalidId("displayName"));
                 }
             }
             Self::ConnectionCancelled { request_id, .. } => {
@@ -369,11 +379,29 @@ mod tests {
     }
     #[test]
     fn rejects_unsupported_versions() {
-        let raw = r#"{"kind":"uiReady","protocolVersion":2,"bridgeId":"bridge-1"}"#;
+        let raw = r#"{"kind":"uiReady","protocolVersion":3,"bridgeId":"bridge-1"}"#;
         assert!(matches!(
             UiToEngineMessage::decode(raw),
             Err(ProtocolDecodeError::Validation(
-                ProtocolValidationError::UnsupportedVersion(2)
+                ProtocolValidationError::UnsupportedVersion(3)
+            ))
+        ));
+    }
+    #[test]
+    fn connect_requires_a_display_name() {
+        let raw = r#"{"kind":"connectRequested","protocolVersion":2,"bridgeId":"bridge-1","requestId":"request-1","address":"server:4000"}"#;
+        assert!(matches!(
+            UiToEngineMessage::decode(raw),
+            Err(ProtocolDecodeError::Invalid {
+                code: ProtocolErrorCode::MissingRequiredField,
+                ..
+            })
+        ));
+        let raw = r#"{"kind":"connectRequested","protocolVersion":2,"bridgeId":"bridge-1","requestId":"request-1","address":"server:4000","displayName":"   "}"#;
+        assert!(matches!(
+            UiToEngineMessage::decode(raw),
+            Err(ProtocolDecodeError::Validation(
+                ProtocolValidationError::InvalidId("displayName")
             ))
         ));
     }

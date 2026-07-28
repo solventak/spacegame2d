@@ -6,6 +6,9 @@ build = "build.rs"
 
 [dependencies]
 prost = "=0.14.4"
+unicode-general-category = "=1.1.0"
+unicode-normalization = "=0.1.24"
+unicode-segmentation = "=1.12.0"
 
 [build-dependencies]
 prost-build = "=0.14.4"

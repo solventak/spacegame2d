@@ -41,6 +41,9 @@
               "address": {
                 "type": "string"
               },
+              "displayName": {
+                "type": "string"
+              },
               "requestId": {
                 "type": "string"
               },
@@ -52,7 +55,8 @@
             "required": [
               "stage",
               "requestId",
-              "address"
+              "address",
+              "displayName"
             ],
             "type": "object"
           },
@@ -60,6 +64,9 @@
             "additionalProperties": false,
             "properties": {
               "address": {
+                "type": "string"
+              },
+              "displayName": {
                 "type": "string"
               },
               "requestId": {
@@ -73,7 +80,8 @@
             "required": [
               "stage",
               "requestId",
-              "address"
+              "address",
+              "displayName"
             ],
             "type": "object"
           },
@@ -81,6 +89,9 @@
             "additionalProperties": false,
             "properties": {
               "address": {
+                "type": "string"
+              },
+              "displayName": {
                 "type": "string"
               },
               "requestId": {
@@ -94,7 +105,8 @@
             "required": [
               "stage",
               "requestId",
-              "address"
+              "address",
+              "displayName"
             ],
             "type": "object"
           },
@@ -102,6 +114,9 @@
             "additionalProperties": false,
             "properties": {
               "address": {
+                "type": "string"
+              },
+              "displayName": {
                 "type": "string"
               },
               "localPlayer": {
@@ -119,6 +134,7 @@
               "stage",
               "requestId",
               "address",
+              "displayName",
               "localPlayer"
             ],
             "type": "object"
@@ -127,6 +143,9 @@
             "additionalProperties": false,
             "properties": {
               "address": {
+                "type": "string"
+              },
+              "displayName": {
                 "type": "string"
               },
               "reason": {
@@ -144,6 +163,7 @@
               "stage",
               "requestId",
               "address",
+              "displayName",
               "reason"
             ],
             "type": "object"
@@ -298,7 +318,7 @@
     ],
     "title": "EngineToUiMessage"
   },
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "title": "spacegame2d UI-engine IPC",
   "uiToEngine": {
     "$defs": {
@@ -350,6 +370,9 @@
           "bridgeId": {
             "type": "string"
           },
+          "displayName": {
+            "type": "string"
+          },
           "kind": {
             "const": "connectRequested",
             "type": "string"
@@ -369,7 +392,8 @@
           "protocolVersion",
           "bridgeId",
           "requestId",
-          "address"
+          "address",
+          "displayName"
         ],
         "type": "object"
       },

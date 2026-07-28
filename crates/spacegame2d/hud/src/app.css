@@ -91,6 +91,8 @@ button, input { font: inherit; }
 .address-input b, .address-input em { flex: none; font-size: 10px; font-style: normal; font-weight: 600; letter-spacing: 0.14em; }
 .address-input b { color: var(--gray-500); }
 .address-input em { color: var(--cyan-700); }
+.address-input em.error-text, .field-error { color: var(--coral-300); }
+.field-error { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; line-height: 1.1; text-transform: uppercase; }
 .address-input > i { width: 1px; height: 18px; flex: none; background: var(--line-hairline); }
 .address-input input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--gray-100); background: transparent; caret-color: var(--cyan-500); font-family: var(--font-mono); font-size: clamp(16px, 3vw, 28px); font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: 0.02em; line-height: 1.05; text-transform: none; }
 .address-input input::placeholder { color: var(--gray-500); opacity: 1; }

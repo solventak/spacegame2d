@@ -24,7 +24,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
-use spacegame2d_protocol::Tick;
+use spacegame2d_protocol::{DisplayName, Tick};
 use spacegame2d_simulation::{
     SimulationConfig, StaticStructure,
     command::PlayerId,
@@ -611,6 +611,7 @@ impl App {
             let request_id = attempt.id.clone();
             let result = network::NetworkSession::connect_with_timeout_and_progress(
                 &attempt.address,
+                &attempt.display_name,
                 crate::session::CONNECTION_TIMEOUT,
                 move |progress| {
                     let _ = progress_proxy.send_event(AppEvent::ConnectionProgress {
@@ -730,11 +731,20 @@ impl ApplicationHandler<AppEvent> for App {
                 bridge_id,
                 request_id,
                 address,
+                display_name,
                 ..
             }) => {
+                let Ok(display_name) = DisplayName::try_from(display_name) else {
+                    self.publish_protocol_error(event_loop, ProtocolErrorCode::InvalidFieldValue);
+                    return;
+                };
                 if self.bridge.accepts(&bridge_id)
-                    && let Some(attempt) =
-                        self.lifecycle.connect(request_id, address, Instant::now())
+                    && let Some(attempt) = self.lifecycle.connect(
+                        request_id,
+                        address,
+                        display_name.as_str().into(),
+                        Instant::now(),
+                    )
                 {
                     self.publish_state(event_loop);
                     self.start_attempt(attempt);

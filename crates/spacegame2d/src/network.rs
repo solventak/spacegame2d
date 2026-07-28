@@ -50,11 +50,12 @@ impl NetworkSession {
     }
 
     pub fn connect_with_timeout(address: &str, timeout: Duration) -> Result<Self, ConnectError> {
-        Self::connect_with_timeout_and_progress(address, timeout, |_| {})
+        Self::connect_with_timeout_and_progress(address, "Test Player", timeout, |_| {})
     }
 
     pub fn connect_with_timeout_and_progress<F>(
         address: &str,
+        display_name: &str,
         timeout: Duration,
         progress: F,
     ) -> Result<Self, ConnectError>
@@ -90,6 +91,7 @@ impl NetworkSession {
         Message::ClientHello(ClientHello {
             simulation_version: SIMULATION_VERSION,
             capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+            display_name: display_name.into(),
         })
         .write(&mut stream)?;
         let hello = match Message::read(&mut stream)? {
@@ -388,6 +390,27 @@ mod tests {
         (address, receiver)
     }
 
+    fn synthetic_server_capturing_hello() -> (String, mpsc::Receiver<ClientHello>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let Message::ClientHello(hello) = Message::read(&mut stream).unwrap() else {
+                panic!("expected client hello");
+            };
+            sender.send(hello).unwrap();
+            Message::ServerHello(server_hello())
+                .write(&mut stream)
+                .unwrap();
+            Message::InitialWorldState(initial_world_state(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
+            thread::sleep(std::time::Duration::from_millis(100));
+        });
+        (address, receiver)
+    }
+
     fn server_hello() -> ServerHello {
         ServerHello {
             simulation_version: SIMULATION_VERSION,
@@ -417,6 +440,19 @@ mod tests {
         assert_eq!(session.player_slot, 7);
         assert_eq!(session.server_tick, Tick::new(123));
         assert_eq!(session.simulation_config().world_radius_meters(), 64.0);
+    }
+
+    #[test]
+    fn connect_sends_the_frozen_canonical_display_name() {
+        let (address, received) = synthetic_server_capturing_hello();
+        NetworkSession::connect_with_timeout_and_progress(
+            &address,
+            "Café",
+            Duration::from_secs(1),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(received.recv().unwrap().display_name, "Café");
     }
 
     #[test]

@@ -7,11 +7,12 @@ const inboundKinds = new Set(['connectionStateChanged', 'protocolError', 'heartb
 const outboundKinds = new Set(['uiReady', 'connectRequested', 'connectionCancelled', 'heartbeatAcknowledged', 'bridgeFaultReported']);
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isId = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_:-]{1,128}$/.test(value);
-const isVersion = (value: Record<string, unknown>) => value.protocolVersion === 1;
+const isVersion = (value: Record<string, unknown>) => value.protocolVersion === 2;
 const validState = (value: unknown): boolean => {
   if (!isRecord(value) || typeof value.stage !== 'string' || typeof value.address !== 'string') return false;
   if (value.stage === 'idle') return ['startup', 'cancelled', 'sessionLost'].includes(String(value.reason));
   if (!isId(value.requestId)) return false;
+  if (typeof value.displayName !== 'string') return false;
   if (['resolvingHost', 'openingSocket', 'handshaking'].includes(value.stage)) return true;
   if (value.stage === 'connected') return isRecord(value.localPlayer) && value.localPlayer.schemaVersion === 1;
   return value.stage === 'failed' && ['timeout', 'network', 'rejected', 'serverFull', 'versionMismatch'].includes(String(value.reason));
@@ -24,7 +25,7 @@ export function validEngineMessage(value: unknown): value is EngineToUi {
 }
 export function validUiMessage(value: unknown): value is UiToEngine {
   if (!isRecord(value) || !isVersion(value) || !outboundKinds.has(String(value.kind)) || !isId(value.bridgeId)) return false;
-  if (value.kind === 'connectRequested') return isId(value.requestId) && typeof value.address === 'string' && value.address.trim().length > 0;
+  if (value.kind === 'connectRequested') return isId(value.requestId) && typeof value.address === 'string' && value.address.trim().length > 0 && typeof value.displayName === 'string' && value.displayName.trim().length > 0;
   if (value.kind === 'connectionCancelled') return isId(value.requestId);
   return value.kind === 'uiReady' || typeof value.sequence === 'number' || typeof value.code === 'string';
 }

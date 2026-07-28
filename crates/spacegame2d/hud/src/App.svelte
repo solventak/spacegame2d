@@ -12,6 +12,8 @@
 
   let state: ConnectionState | undefined;
   let address = '';
+  let displayName = '';
+  let nameTouched = false;
   let activeRequest: RequestId | undefined;
   let bridgeId: BridgeId = `bridge-${crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '')}`;
   let protocolError: ProtocolErrorCode | undefined;
@@ -19,6 +21,21 @@
   const requestId = (): RequestId => `request-${crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const connecting = () => ['resolvingHost', 'openingSocket', 'handshaking'].includes(state?.stage ?? '');
   const hasAddress = () => address.trim().length > 0;
+  const normalizedName = () => displayName.trim().normalize('NFC');
+  const graphemes = (value: string) => {
+    const segmenter = typeof Intl !== 'undefined' && Intl.Segmenter
+      ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+      : undefined;
+    return segmenter ? Array.from(segmenter.segment(value)).length : Array.from(value).length;
+  };
+  const nameError = () => {
+    const name = normalizedName();
+    if (!name) return 'NAME REQUIRED';
+    if (/[\p{Cc}\p{Cf}]/u.test(name)) return 'CONTROL CHARACTERS NOT ALLOWED';
+    if (graphemes(name) > 24) return 'MAXIMUM 24 CHARACTERS';
+    return undefined;
+  };
+  const hasName = () => !nameError();
   const failed = () => state?.stage === 'failed';
   const idleReason = () => state?.stage === 'idle' ? state.reason : undefined;
 
@@ -71,6 +88,7 @@
       if (next.stage !== 'idle' && activeRequest && next.requestId !== activeRequest) return;
       state = next;
       address = next.address;
+      if (next.stage !== 'idle') displayName = next.displayName;
       if (next.stage === 'idle' || next.stage === 'failed' || next.stage === 'connected') {
         activeRequest = undefined;
       }
@@ -80,9 +98,10 @@
   });
 
   function connect() {
-    if (!hasAddress() || connecting()) return;
+    nameTouched = true;
+    if (!hasAddress() || !hasName() || connecting()) return;
     activeRequest = requestId();
-    send({ kind: 'connectRequested', protocolVersion, bridgeId, requestId: activeRequest, address });
+    send({ kind: 'connectRequested', protocolVersion, bridgeId, requestId: activeRequest, address, displayName: normalizedName() });
   }
 
   function cancel() {
@@ -111,7 +130,7 @@
     <header class="panel-header"><span>LOCAL COMMAND</span><span class="signal-status"><i></i>{state.localPlayer.color.toUpperCase()}</span></header>
     <div class="panel-hairline"></div>
     <div class="readout-row">
-      <section class="readout"><span>PLAYER</span><strong>{String(state.localPlayer.playerSlot).padStart(2, '0')}</strong></section>
+      <section class="readout"><span>CALLSIGN</span><strong>{state.displayName}</strong></section>
       <section class="readout"><span>COLOR</span><strong>{state.localPlayer.color.toUpperCase()}</strong></section>
     </div>
   </main>
@@ -137,6 +156,17 @@
         <header class="panel-header"><span>CONNECT TO SERVER</span><span>DIRECT LINK</span></header>
 
         <label class="address-field">
+          <span>DISPLAY NAME</span>
+          <span class:active={hasName()} class:error={nameTouched && !hasName()} class="address-input">
+            <b>ID</b>
+            <i></i>
+            <input aria-label="Display name" aria-invalid={nameTouched && !hasName()} bind:value={displayName} on:input={() => nameTouched = true} disabled={connecting()} placeholder="Callsign" spellcheck="false" autocomplete="off" />
+            <em class:error-text={graphemes(normalizedName()) > 24}>{graphemes(normalizedName())}/24</em>
+          </span>
+          {#if nameTouched && !hasName()}<small class="field-error">{nameError()}</small>{/if}
+        </label>
+
+        <label class="address-field">
           <span>SERVER ADDRESS</span>
           <span class:active={hasAddress()} class:error={failed()} class="address-input">
             <b>HOST:PORT</b>
@@ -156,7 +186,7 @@
           {#if connecting()}
             <button class="command-button ghost" type="button" on:click={cancel}>ABORT</button>
           {:else}
-            <button class="command-button commit" type="submit" disabled={!hasAddress()}>CONNECT</button>
+            <button class="command-button commit" type="submit" disabled={!hasAddress() || !hasName()}>CONNECT</button>
           {/if}
         </div>
 

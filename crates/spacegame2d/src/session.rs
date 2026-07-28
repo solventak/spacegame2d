@@ -12,6 +12,7 @@ pub const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:4000";
 pub struct ConnectionAttempt {
     pub id: RequestId,
     pub address: String,
+    pub display_name: String,
     pub deadline: Instant,
 }
 
@@ -43,12 +44,14 @@ enum SessionPhase<S> {
     Connected {
         request_id: RequestId,
         address: String,
+        display_name: String,
         player_slot: u32,
         session: S,
     },
     Failed {
         request_id: RequestId,
         address: String,
+        display_name: String,
         reason: ConnectionFailureReason,
     },
 }
@@ -70,6 +73,7 @@ impl<S> SessionLifecycle<S> {
         &mut self,
         id: RequestId,
         address: String,
+        display_name: String,
         now: Instant,
     ) -> Option<ConnectionAttempt> {
         if matches!(
@@ -84,6 +88,7 @@ impl<S> SessionLifecycle<S> {
         let attempt = ConnectionAttempt {
             id,
             address,
+            display_name,
             deadline: now + CONNECTION_TIMEOUT,
         };
         self.phase = SessionPhase::ResolvingHost(attempt.clone());
@@ -144,6 +149,7 @@ impl<S> SessionLifecycle<S> {
         self.phase = SessionPhase::Failed {
             request_id: attempt.id,
             address: attempt.address,
+            display_name: attempt.display_name,
             reason: ConnectionFailureReason::Timeout,
         };
         true
@@ -166,29 +172,34 @@ impl<S> SessionLifecycle<S> {
             } => SessionPhase::Connected {
                 request_id: attempt.id,
                 address: attempt.address,
+                display_name: attempt.display_name,
                 player_slot,
                 session,
             },
             ConnectionOutcome::Rejected(HandshakeOutcome::ServerFull) => SessionPhase::Failed {
                 request_id: attempt.id,
                 address: attempt.address,
+                display_name: attempt.display_name,
                 reason: ConnectionFailureReason::ServerFull,
             },
             ConnectionOutcome::Rejected(HandshakeOutcome::VersionMismatch) => {
                 SessionPhase::Failed {
                     request_id: attempt.id,
                     address: attempt.address,
+                    display_name: attempt.display_name,
                     reason: ConnectionFailureReason::VersionMismatch,
                 }
             }
             ConnectionOutcome::Rejected(HandshakeOutcome::Rejected) => SessionPhase::Failed {
                 request_id: attempt.id,
                 address: attempt.address,
+                display_name: attempt.display_name,
                 reason: ConnectionFailureReason::Rejected,
             },
             ConnectionOutcome::Failed => SessionPhase::Failed {
                 request_id: attempt.id,
                 address: attempt.address,
+                display_name: attempt.display_name,
                 reason: ConnectionFailureReason::Network,
             },
         };
@@ -235,32 +246,39 @@ impl<S> SessionLifecycle<S> {
             SessionPhase::ResolvingHost(attempt) => ConnectionStateSnapshot::ResolvingHost {
                 request_id: attempt.id.clone(),
                 address: attempt.address.clone(),
+                display_name: attempt.display_name.clone(),
             },
             SessionPhase::OpeningSocket(attempt) => ConnectionStateSnapshot::OpeningSocket {
                 request_id: attempt.id.clone(),
                 address: attempt.address.clone(),
+                display_name: attempt.display_name.clone(),
             },
             SessionPhase::Handshaking(attempt) => ConnectionStateSnapshot::Handshaking {
                 request_id: attempt.id.clone(),
                 address: attempt.address.clone(),
+                display_name: attempt.display_name.clone(),
             },
             SessionPhase::Connected {
                 request_id,
                 address,
+                display_name,
                 player_slot,
                 ..
             } => ConnectionStateSnapshot::Connected {
                 request_id: request_id.clone(),
                 address: address.clone(),
+                display_name: display_name.clone(),
                 local_player: local_player(*player_slot),
             },
             SessionPhase::Failed {
                 request_id,
                 address,
+                display_name,
                 reason,
             } => ConnectionStateSnapshot::Failed {
                 request_id: request_id.clone(),
                 address: address.clone(),
+                display_name: display_name.clone(),
                 reason: *reason,
             },
         }
@@ -295,7 +313,9 @@ mod tests {
     fn cancellation_and_stale_completion_are_ignored() {
         let now = Instant::now();
         let mut lifecycle = SessionLifecycle::<()>::new("x");
-        let attempt = lifecycle.connect(id("one"), "a".into(), now).unwrap();
+        let attempt = lifecycle
+            .connect(id("one"), "a".into(), "Rook".into(), now)
+            .unwrap();
         assert!(lifecycle.cancel(&id("one")));
         assert!(!lifecycle.complete(id("one"), ConnectionOutcome::Failed));
         assert!(matches!(
@@ -305,17 +325,44 @@ mod tests {
                 ..
             }
         ));
-        let next = lifecycle.connect(id("two"), "b".into(), now).unwrap();
+        let next = lifecycle
+            .connect(id("two"), "b".into(), "Nova".into(), now)
+            .unwrap();
         assert_ne!(attempt.id, next.id);
     }
     #[test]
     fn progress_is_ordered_and_request_scoped() {
         let now = Instant::now();
         let mut lifecycle = SessionLifecycle::<()>::new("x");
-        lifecycle.connect(id("one"), "a".into(), now);
+        lifecycle.connect(id("one"), "a".into(), "Rook".into(), now);
         assert!(!lifecycle.progress(&id("two"), ConnectionProgress::OpeningSocket));
         assert!(lifecycle.progress(&id("one"), ConnectionProgress::OpeningSocket));
         assert!(lifecycle.progress(&id("one"), ConnectionProgress::Handshaking));
         assert!(!lifecycle.progress(&id("one"), ConnectionProgress::OpeningSocket));
+    }
+
+    #[test]
+    fn display_name_is_retained_for_attempt_failure_and_connection() {
+        let now = Instant::now();
+        let mut lifecycle = SessionLifecycle::<()>::new("x");
+        lifecycle.connect(id("one"), "a".into(), "Café".into(), now);
+        assert!(
+            matches!(lifecycle.ui_state(), ConnectionStateSnapshot::ResolvingHost { display_name, .. } if display_name == "Café")
+        );
+        assert!(lifecycle.timeout(now + CONNECTION_TIMEOUT));
+        assert!(
+            matches!(lifecycle.ui_state(), ConnectionStateSnapshot::Failed { display_name, .. } if display_name == "Café")
+        );
+        lifecycle.connect(id("two"), "a".into(), "Café".into(), now);
+        assert!(lifecycle.complete(
+            id("two"),
+            ConnectionOutcome::Connected {
+                session: (),
+                player_slot: 1
+            }
+        ));
+        assert!(
+            matches!(lifecycle.ui_state(), ConnectionStateSnapshot::Connected { display_name, .. } if display_name == "Café")
+        );
     }
 }

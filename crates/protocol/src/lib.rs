@@ -1,5 +1,8 @@
 use prost::Message as ProstMessage;
 use std::io::{self, Read, Write};
+use unicode_general_category::{GeneralCategory, get_general_category};
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 mod wire {
     include!(concat!(env!("OUT_DIR"), "/spacegame2d.protocol.v1.rs"));
@@ -47,6 +50,56 @@ impl std::ops::Sub for Tick {
 pub const SIMULATION_VERSION: u32 = 18;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
+pub const MAX_DISPLAY_NAME_GRAPHEMES: usize = 24;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayName(String);
+
+impl DisplayName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for DisplayName {
+    type Error = DisplayNameError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let normalized: String = value.trim().nfc().collect();
+        if normalized.is_empty() {
+            return Err(DisplayNameError::Required);
+        }
+        if normalized.chars().any(|character| {
+            matches!(
+                get_general_category(character),
+                GeneralCategory::Control | GeneralCategory::Format
+            )
+        }) {
+            return Err(DisplayNameError::ContainsControlOrFormat);
+        }
+        let graphemes = normalized.graphemes(true).count();
+        if graphemes > MAX_DISPLAY_NAME_GRAPHEMES {
+            return Err(DisplayNameError::TooLong);
+        }
+        Ok(Self(normalized))
+    }
+}
+
+impl TryFrom<String> for DisplayName {
+    type Error = DisplayNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayNameError {
+    Required,
+    ContainsControlOrFormat,
+    TooLong,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {
     StateChecksums,
@@ -90,6 +143,13 @@ pub enum CommandData {
 pub struct ClientHello {
     pub simulation_version: u32,
     pub capabilities: Vec<Capability>,
+    pub display_name: String,
+}
+
+impl ClientHello {
+    pub fn display_name(&self) -> Result<DisplayName, DisplayNameError> {
+        DisplayName::try_from(self.display_name.as_str())
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerHello {
@@ -301,6 +361,7 @@ impl From<&Message> for wire::Envelope {
                         Capability::WorldSnapshots => 2,
                     })
                     .collect(),
+                display_name: v.display_name.clone(),
             }),
             Message::ServerHello(v) => wire::envelope::Payload::ServerHello(wire::ServerHello {
                 simulation_version: v.simulation_version,
@@ -399,6 +460,7 @@ impl TryFrom<wire::Envelope> for Message {
             wire::envelope::Payload::ClientHello(v) => Ok(Message::ClientHello(ClientHello {
                 simulation_version: v.simulation_version,
                 capabilities: caps(&v.supported_capabilities),
+                display_name: v.display_name,
             })),
             wire::envelope::Payload::ServerHello(v) => Ok(Message::ServerHello(ServerHello {
                 simulation_version: v.simulation_version,
@@ -571,6 +633,30 @@ mod tests {
         assert_eq!(SIMULATION_VERSION, 18);
     }
 
+    #[test]
+    fn display_names_are_canonicalized_and_validated() {
+        assert_eq!(
+            DisplayName::try_from("  Cafe\u{301}  ").unwrap().as_str(),
+            "Café"
+        );
+        assert_eq!(
+            DisplayName::try_from("\u{1f680}").unwrap().as_str(),
+            "\u{1f680}"
+        );
+        assert_eq!(
+            DisplayName::try_from("   ").unwrap_err(),
+            DisplayNameError::Required
+        );
+        assert_eq!(
+            DisplayName::try_from("A\u{200d}B").unwrap_err(),
+            DisplayNameError::ContainsControlOrFormat
+        );
+        assert_eq!(
+            DisplayName::try_from("x".repeat(25)).unwrap_err(),
+            DisplayNameError::TooLong
+        );
+    }
+
     fn destination() -> CommandData {
         CommandData::SetDestination {
             destination: [0x8000_0000, 0x0000_0001],
@@ -582,6 +668,7 @@ mod tests {
             Message::ClientHello(ClientHello {
                 simulation_version: SIMULATION_VERSION,
                 capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                display_name: "Rook".into(),
             }),
             Message::ServerHello(ServerHello {
                 simulation_version: SIMULATION_VERSION,
@@ -699,6 +786,7 @@ mod tests {
             payload: Some(wire::envelope::Payload::ClientHello(wire::ClientHello {
                 simulation_version: SIMULATION_VERSION,
                 supported_capabilities: vec![1, 999],
+                display_name: "Rook".into(),
             })),
         };
         let mut body = Vec::new();
@@ -709,7 +797,8 @@ mod tests {
             Message::read(&mut bytes.as_slice()).unwrap(),
             Message::ClientHello(ClientHello {
                 simulation_version: SIMULATION_VERSION,
-                capabilities: vec![Capability::StateChecksums]
+                capabilities: vec![Capability::StateChecksums],
+                display_name: "Rook".into(),
             })
         );
     }
