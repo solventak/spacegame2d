@@ -1,6 +1,6 @@
 {
   "name": "spacegame2d-hud", "private": true, "version": "1.0.0", "type": "module",
-  "scripts": { "dev": "vite", "build": "vite build", "check": "svelte-check --tsconfig ./tsconfig.json", "test": "vitest run" },
+  "scripts": { "dev": "vite", "build": "vite build", "check": "svelte-check --tsconfig ./tsconfig.json", "test": "vitest run", "contract:check": "cargo run --manifest-path ../../ui-protocol/Cargo.toml --bin export-ui-schema -- --check" },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "=6.2.1", "@tailwindcss/vite": "=4.1.17", "@testing-library/svelte": "=5.2.8", "@types/node": "=24.10.1", "jsdom": "=27.1.0", "svelte": "=5.43.7", "svelte-check": "=4.3.4", "tailwindcss": "=4.1.17", "typescript": "=5.9.3", "vite": "=7.2.2", "vitest": "=4.0.8"
   }

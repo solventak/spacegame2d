@@ -7,6 +7,7 @@ edition = "2024"
 spacegame2d-simulation = { path = "../simulation" }
 spacegame2d-protocol = { path = "../protocol" }
 spacegame2d-logging = { path = "../logging" }
+spacegame2d-ui-protocol = { path = "../ui-protocol" }
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 env_logger = "=0.11.11"
 glam = "=0.33.2"
@@ -22,4 +23,3 @@ wry = { version = "=0.55.1", features = ["tracing", "transparent"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "=0.18.2"
-gdkx11 = "=0.18.2"

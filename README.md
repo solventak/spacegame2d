@@ -1,6 +1,6 @@
-# spacegame2d
+# Relay Operations
 
-A 2D space simulation in Rust using wgpu. Drones move under autopilot; collision avoidance via predicted neighbor trajectories is in active development.
+A 2D space simulation in Rust using wgpu. Drones move under autopilot; collision avoidance via predicted neighbor trajectories is in active development. The repository and crate name remain `spacegame2d`.
 
 ## Quick start
 
@@ -46,13 +46,19 @@ See [`docs/QA.md`](./docs/QA.md) for the full interactive QA guide (headless and
 
 ### HUD development and runtime
 
-The connected client embeds its compact local-player HUD from the committed production bundle in `crates/spacegame2d/hud/dist`; it never starts a frontend server. To change it, use Node 22 and run:
+The client embeds its connection screen and compact local-player HUD from the committed production bundle in `crates/spacegame2d/hud/dist`; it never starts a frontend server. On startup it shows an editable connection form and never auto-connects. Development builds prefill `127.0.0.1:4000`; release builds require the public address at compile time:
+
+```sh
+SPACEGAME_RELEASE_ADDRESS=play.example.com:4000 cargo build --release -p spacegame2d
+```
+
+The form address is not persisted. To change the frontend, use Node 22 and run:
 
 ```sh
 ./scripts/qa-hud.sh
 ```
 
-Linux builds need `libwebkit2gtk-4.1-dev` and `pkg-config`; Ubuntu testers need `libwebkit2gtk-4.1-0` and XWayland. Windows testers need the Evergreen WebView2 Runtime. The executable embeds HUD assets, but relies on the platform WebView runtime.
+Linux builds need `libwebkit2gtk-4.1-dev` and `pkg-config`; Ubuntu testers need `libwebkit2gtk-4.1-0` and XWayland. On Linux, Wry hosts the HUD as an X11 child of the Winit game window, so Wayland sessions run through XWayland. Windows testers need the Evergreen WebView2 Runtime. The executable embeds HUD assets, but relies on the platform WebView runtime.
 
 ## Lint and format
 

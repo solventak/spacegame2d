@@ -7,7 +7,8 @@ use std::{
 
 use spacegame2d_protocol::{
     AuthoritativeCommand, Capability, CommandData, CommandRejected, CommandRejectionReason,
-    CommandRequest, Message, SIMULATION_VERSION, StateChecksum, Tick,
+    CommandRequest, HandshakeRejected, HandshakeRejectionReason, Message, SIMULATION_VERSION,
+    StateChecksum, Tick,
 };
 use spacegame2d_simulation::{
     MAX_PLAYERS, SimulationConfig,
@@ -15,6 +16,7 @@ use spacegame2d_simulation::{
     simulation::SIMULATION_HZ,
     simulation::Simulation,
 };
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
@@ -30,6 +32,7 @@ struct Client {
     checksum_enabled: bool,
     pending_checksums: VecDeque<(Tick, Vec<u8>)>,
     seen_checksums: BTreeSet<Tick>,
+    closing_after_flush: bool,
 }
 
 impl Client {
@@ -150,7 +153,7 @@ pub async fn run_with_config(
                 Ok(result) => result?,
                 Err(_) => break,
             };
-            let (stream, address) = accepted;
+            let (mut stream, address) = accepted;
             let Some(slot) = (1..=u32::try_from(MAX_PLAYERS).expect("player count fits u32")).find(
                 |candidate| {
                     clients
@@ -159,6 +162,11 @@ pub async fn run_with_config(
                 },
             ) else {
                 tracing::warn!(event = "client_rejected", address = %address, "player slots exhausted");
+                let frame = Message::HandshakeRejected(HandshakeRejected {
+                    reason: HandshakeRejectionReason::ServerFull,
+                })
+                .encode()?;
+                let _ = stream.write_all(&frame).await;
                 continue;
             };
             let player_id = PlayerId::new(u8::try_from(slot).expect("slot is within u8 range"))
@@ -179,6 +187,7 @@ pub async fn run_with_config(
                 seen_checksums: BTreeSet::new(),
                 decoder: spacegame2d_protocol::FrameDecoder::new(),
                 outgoing: VecDeque::new(),
+                closing_after_flush: false,
             });
         }
         let mut remove = Vec::new();
@@ -190,14 +199,25 @@ pub async fn run_with_config(
                     for message in messages {
                         if !client.connected {
                             let Message::ClientHello(hello) = message else {
-                                remove.push(index);
+                                client.queue(&Message::HandshakeRejected(HandshakeRejected {
+                                    reason: HandshakeRejectionReason::InvalidHandshake,
+                                }))?;
+                                client.closing_after_flush = true;
                                 continue;
                             };
-                            if !hello.is_compatible()
-                                || !hello.capabilities.contains(&Capability::StateChecksums)
-                            {
-                                tracing::warn!(event = "handshake_rejected", address = %client.address, "wrong simulation version");
-                                remove.push(index);
+                            let reason = if hello.simulation_version != SIMULATION_VERSION {
+                                Some(HandshakeRejectionReason::IncompatibleVersion)
+                            } else if !hello.capabilities.contains(&Capability::StateChecksums) {
+                                Some(HandshakeRejectionReason::MissingRequiredCapability)
+                            } else {
+                                None
+                            };
+                            if let Some(reason) = reason {
+                                tracing::warn!(event = "handshake_rejected", address = %client.address, ?reason);
+                                client.queue(&Message::HandshakeRejected(HandshakeRejected {
+                                    reason,
+                                }))?;
+                                client.closing_after_flush = true;
                                 continue;
                             }
                             client.checksum_enabled = true;
@@ -312,6 +332,12 @@ pub async fn run_with_config(
                     tracing::info!(event = "client_disconnected", address = %client.address, reason = %error);
                     remove.push(index);
                 }
+            }
+        }
+        for (index, client) in clients.iter_mut().enumerate() {
+            if client.closing_after_flush && (client.flush().is_err() || client.outgoing.is_empty())
+            {
+                remove.push(index);
             }
         }
         for index in remove.into_iter().rev() {
@@ -857,10 +883,15 @@ mod tests {
 
                 let mut third = tokio::net::TcpStream::connect(address).await.unwrap();
                 third.write_all(&hello.encode().unwrap()).await.unwrap();
-                let third_result =
+                let Message::HandshakeRejected(rejection) =
                     tokio::time::timeout(Duration::from_millis(200), try_read_message(&mut third))
-                        .await;
-                assert!(matches!(third_result, Err(_) | Ok(Err(_))));
+                        .await
+                        .unwrap()
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(rejection.reason, HandshakeRejectionReason::ServerFull);
 
                 first.shutdown().await.unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;

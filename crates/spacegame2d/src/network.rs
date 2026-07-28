@@ -1,15 +1,36 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
+    sync::mpsc,
+    time::{Duration, Instant},
 };
 
 use spacegame2d_protocol::Tick;
 use spacegame2d_protocol::{
     AuthoritativeCommand, Capability, ClientHello, CommandData, CommandRejected, CommandRequest,
-    Message, SIMULATION_VERSION, StateChecksum,
+    HandshakeRejectionReason, Message, SIMULATION_VERSION, StateChecksum,
 };
 use spacegame2d_simulation::{SimulationConfig, simulation::SIMULATION_HZ};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConnectError {
+    #[error("connection rejected: {0:?}")]
+    Rejected(HandshakeRejectionReason),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ConnectError {
+    #[cfg(test)]
+    fn kind(&self) -> io::ErrorKind {
+        match self {
+            Self::Io(error) => error.kind(),
+            Self::Rejected(_) => io::ErrorKind::PermissionDenied,
+        }
+    }
+}
 
 pub struct NetworkSession {
     stream: TcpStream,
@@ -23,9 +44,48 @@ pub struct NetworkSession {
 }
 
 impl NetworkSession {
-    pub fn connect(address: &str) -> io::Result<Self> {
-        let mut stream = TcpStream::connect(address)?;
+    pub fn connect(address: &str) -> Result<Self, ConnectError> {
+        Self::connect_with_timeout(address, Duration::from_secs(5))
+    }
+
+    pub fn connect_with_timeout(address: &str, timeout: Duration) -> Result<Self, ConnectError> {
+        Self::connect_with_timeout_and_progress(address, timeout, |_| {})
+    }
+
+    pub fn connect_with_timeout_and_progress<F>(
+        address: &str,
+        timeout: Duration,
+        progress: F,
+    ) -> Result<Self, ConnectError>
+    where
+        F: Fn(crate::session::ConnectionProgress),
+    {
+        let started = Instant::now();
+        let addresses =
+            resolve_addresses(address.to_owned(), remaining_timeout(started, timeout)?)?;
+        progress(crate::session::ConnectionProgress::OpeningSocket);
+        let mut last_error = None;
+        let mut stream = None;
+        for address in addresses {
+            let remaining = remaining_timeout(started, timeout)?;
+            match TcpStream::connect_timeout(&address, remaining) {
+                Ok(value) => {
+                    stream = Some(value);
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        let mut stream = stream.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "no socket addresses")
+            })
+        })?;
         stream.set_nodelay(true)?;
+        let remaining = remaining_timeout(started, timeout)?;
+        stream.set_read_timeout(Some(remaining))?;
+        stream.set_write_timeout(Some(remaining))?;
+        progress(crate::session::ConnectionProgress::Handshaking);
         Message::ClientHello(ClientHello {
             simulation_version: SIMULATION_VERSION,
             capabilities: vec![Capability::StateChecksums],
@@ -33,7 +93,8 @@ impl NetworkSession {
         .write(&mut stream)?;
         let hello = match Message::read(&mut stream)? {
             Message::ServerHello(value) => value,
-            _ => return Err(invalid("expected ServerHello")),
+            Message::HandshakeRejected(value) => return Err(ConnectError::Rejected(value.reason)),
+            _ => return Err(invalid("expected ServerHello").into()),
         };
         hello.validate(SIMULATION_HZ)?;
         let simulation_config = SimulationConfig::try_from(hello.fleet_size)
@@ -41,6 +102,8 @@ impl NetworkSession {
                 config.with_world_radius_meters(f32::from_bits(hello.world_radius_bits))
             })
             .map_err(|error| invalid(&error.to_string()))?;
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(None)?;
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
@@ -167,6 +230,36 @@ impl NetworkSession {
             }
         }
     }
+}
+
+fn remaining_timeout(started: Instant, timeout: Duration) -> io::Result<Duration> {
+    timeout
+        .checked_sub(started.elapsed())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "connection timed out"))
+}
+
+fn resolve_addresses(address: String, timeout: Duration) -> io::Result<Vec<std::net::SocketAddr>> {
+    resolve_with_timeout(timeout, move || {
+        address.to_socket_addrs().map(Iterator::collect)
+    })
+}
+
+fn resolve_with_timeout<F>(timeout: Duration, resolve: F) -> io::Result<Vec<std::net::SocketAddr>>
+where
+    F: FnOnce() -> io::Result<Vec<std::net::SocketAddr>> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(resolve());
+    });
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                io::Error::new(io::ErrorKind::TimedOut, "DNS lookup timed out")
+            }
+            mpsc::RecvTimeoutError::Disconnected => io::Error::other("DNS lookup worker stopped"),
+        })?
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -303,11 +396,37 @@ mod tests {
     }
 
     #[test]
+    fn connect_returns_typed_handshake_rejection() {
+        let address = synthetic_server(
+            Message::HandshakeRejected(spacegame2d_protocol::HandshakeRejected {
+                reason: HandshakeRejectionReason::ServerFull,
+            }),
+            false,
+        );
+        assert!(matches!(
+            NetworkSession::connect(&address),
+            Err(ConnectError::Rejected(HandshakeRejectionReason::ServerFull))
+        ));
+    }
+
+    #[test]
     fn connect_refused_returns_err() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         drop(listener);
         assert!(NetworkSession::connect(&address).is_err());
+    }
+
+    #[test]
+    fn address_resolution_obeys_the_connection_deadline() {
+        let started = Instant::now();
+        let error = resolve_with_timeout(Duration::from_millis(10), || {
+            thread::sleep(Duration::from_millis(50));
+            Ok(vec![])
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_millis(45));
     }
 
     #[test]
