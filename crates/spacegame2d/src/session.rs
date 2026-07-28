@@ -220,6 +220,21 @@ impl<S> SessionLifecycle<S> {
         };
         true
     }
+    pub fn disconnect(&mut self, id: &RequestId) -> bool {
+        let address = match &self.phase {
+            SessionPhase::Connected {
+                request_id,
+                address,
+                ..
+            } if request_id == id => address.clone(),
+            _ => return false,
+        };
+        self.phase = SessionPhase::Idle {
+            address,
+            reason: DisconnectedReason::UserDisconnected,
+        };
+        true
+    }
     pub fn next_deadline(&self) -> Option<Instant> {
         match &self.phase {
             SessionPhase::ResolvingHost(attempt)
@@ -364,5 +379,28 @@ mod tests {
         assert!(
             matches!(lifecycle.ui_state(), ConnectionStateSnapshot::Connected { display_name, .. } if display_name == "Café")
         );
+    }
+
+    #[test]
+    fn disconnect_is_connected_request_scoped() {
+        let now = Instant::now();
+        let mut lifecycle = SessionLifecycle::<()>::new("x");
+        lifecycle.connect(id("one"), "a".into(), "Rook".into(), now);
+        assert!(lifecycle.complete(
+            id("one"),
+            ConnectionOutcome::Connected {
+                session: (),
+                player_slot: 1,
+            }
+        ));
+        assert!(!lifecycle.disconnect(&id("stale")));
+        assert!(lifecycle.disconnect(&id("one")));
+        assert!(matches!(
+            lifecycle.ui_state(),
+            ConnectionStateSnapshot::Idle {
+                reason: DisconnectedReason::UserDisconnected,
+                ..
+            }
+        ));
     }
 }

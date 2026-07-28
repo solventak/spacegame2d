@@ -6,6 +6,7 @@
     type BridgeId,
     type ConnectionState,
     type EngineToUi,
+    type MatchSessionState,
     type ProtocolErrorCode,
     type RequestId,
   } from './generated/ui-engine-ipc';
@@ -17,6 +18,11 @@
   let activeRequest: RequestId | undefined;
   let bridgeId: BridgeId = `bridge-${crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '')}`;
   let protocolError: ProtocolErrorCode | undefined;
+  let matchSession: MatchSessionState | undefined;
+  let lastMatchSequence: number | undefined;
+  let hudPhase: 'join' | 'docking' | 'compact' = 'join';
+  let joinTimer: ReturnType<typeof setTimeout> | undefined;
+  let dockTimer: ReturnType<typeof setTimeout> | undefined;
 
   const requestId = (): RequestId => `request-${crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const connecting = () => ['resolvingHost', 'openingSocket', 'handshaking'].includes(state?.stage ?? '');
@@ -38,6 +44,20 @@
   const hasName = () => !nameError();
   const failed = () => state?.stage === 'failed';
   const idleReason = () => state?.stage === 'idle' ? state.reason : undefined;
+  const waiting = () => state?.stage === 'connected' && matchSession?.stage === 'waiting';
+  const active = () => state?.stage === 'connected' && matchSession?.stage === 'active';
+  const clock = () => matchSession?.stage === 'active' ? matchSession.clock.elapsedWholeSeconds : 0;
+  const timeLabel = () => {
+    const seconds = clock(); const minutes = Math.floor(seconds / 60); const hours = Math.floor(minutes / 60);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return hours ? `${hours}:${pad(minutes % 60)}:${pad(seconds % 60)}` : `${pad(minutes)}:${pad(seconds % 60)}`;
+  };
+  const clearHudTimers = () => { if (joinTimer) clearTimeout(joinTimer); if (dockTimer) clearTimeout(dockTimer); joinTimer = undefined; dockTimer = undefined; };
+  const startJoin = (sequence: number) => {
+    clearHudTimers(); hudPhase = 'join';
+    joinTimer = setTimeout(() => { if (lastMatchSequence === sequence) hudPhase = 'docking'; }, 700);
+    dockTimer = setTimeout(() => { if (lastMatchSequence === sequence) hudPhase = 'compact'; }, 1300);
+  };
 
   const linkLabel = () => {
     if (state?.stage === 'resolvingHost') return 'RESOLVING HOST';
@@ -53,6 +73,7 @@
       }[state.reason];
     }
     if (idleReason() === 'sessionLost') return 'SESSION LOST';
+    if (idleReason() === 'userDisconnected') return 'DISCONNECTED';
     if (idleReason() === 'cancelled') return 'LINK ABORTED';
     return 'STANDBY';
   };
@@ -68,6 +89,7 @@
     if (state?.stage === 'failed') return 'CHECK ADDRESS AND TRY AGAIN';
     if (idleReason() === 'sessionLost') return 'SESSION LOST — RECONNECT AVAILABLE';
     if (idleReason() === 'cancelled') return 'ATTEMPT ABORTED';
+    if (idleReason() === 'userDisconnected') return 'DISCONNECTED — RECONNECT AVAILABLE';
     return 'ENTER ADDRESS TO CONNECT';
   };
 
@@ -84,6 +106,15 @@
         protocolError = message.code;
         return;
       }
+      if (message.kind === 'matchSessionStateChanged') {
+        if (lastMatchSequence !== undefined && message.state.sequence <= lastMatchSequence) return;
+        const wasActive = matchSession?.stage === 'active';
+        lastMatchSequence = message.state.sequence;
+        matchSession = message.state;
+        if (message.state.stage === 'reset') { clearHudTimers(); return; }
+        if (message.state.stage === 'active' && !wasActive) startJoin(message.state.sequence);
+        return;
+      }
       const next = message.state;
       if (next.stage !== 'idle' && activeRequest && next.requestId !== activeRequest) return;
       state = next;
@@ -94,7 +125,7 @@
       }
     });
     send({ kind: 'uiReady', protocolVersion, bridgeId });
-    return stop;
+    return () => { clearHudTimers(); stop(); };
   });
 
   function connect() {
@@ -113,6 +144,10 @@
   function retry() {
     window.location.reload();
   }
+
+  function disconnect() {
+    if (state?.stage === 'connected') send({ kind: 'disconnectRequested', protocolVersion, bridgeId, requestId: state.requestId });
+  }
 </script>
 
 {#if protocolError}
@@ -125,14 +160,37 @@
       <button class="command-button commit" type="button" on:click={retry}>RETRY</button>
     </section>
   </main>
-{:else if state?.stage === 'connected'}
-  <main class="panel" style:--signal={state.localPlayer.colorHex}>
-    <header class="panel-header"><span>LOCAL COMMAND</span><span class="signal-status"><i></i>{state.localPlayer.color.toUpperCase()}</span></header>
-    <div class="panel-hairline"></div>
-    <div class="readout-row">
-      <section class="readout"><span>CALLSIGN</span><strong>{state.displayName}</strong></section>
-      <section class="readout"><span>COLOR</span><strong>{state.localPlayer.color.toUpperCase()}</strong></section>
-    </div>
+{:else if state?.stage === 'connected' && matchSession?.stage === 'waiting'}
+  <main class="connection-shell">
+    <div class="field-grid" aria-hidden="true"></div><div class="field-lift" aria-hidden="true"></div>
+    <header class="connection-chrome top-chrome"><span>BUILD N/A</span><span class="chrome-link active"><i></i>SESSION ACCEPTED</span></header>
+    <section class="connection-content">
+      <div class="product-lockup"><h1>RELAY OPERATIONS</h1><div><i></i><span>DIRECT LINK ACTIVE</span><i></i></div></div>
+      <section class="connection-panel waiting-panel" aria-live="polite">
+        <header class="panel-header"><span>MATCH SESSION</span><span>STANDBY</span></header><div class="panel-hairline"></div>
+        <p class="waiting-copy">Waiting for opponent…</p>
+        <div class="waiting-identity"><span style:--signal={matchSession.localPlayer.colorHex}><i></i>{matchSession.localPlayer.displayName}</span><em>{matchSession.localPlayer.color.toUpperCase()}</em></div>
+        <div class="link-row"><section class="link-status"><span>LINK STATUS</span><strong class="active">ACCEPTED</strong></section><button class="command-button ghost" type="button" on:click={disconnect}>DISCONNECT</button></div>
+      </section>
+    </section>
+    <footer class="connection-chrome bottom-chrome"><span>CLIENT N/A · UI IPC {protocolVersion}</span><span>WAITING FOR PRESENCE</span></footer>
+  </main>
+{:else if state?.stage === 'connected' && matchSession?.stage === 'active'}
+  <main class:join={hudPhase === 'join'} class:docking={hudPhase === 'docking'} class:compact={hudPhase === 'compact'} class="match-hud" aria-live="polite">
+    {#if hudPhase !== 'compact'}
+      <section class="join-card">
+        <header class="panel-header"><span>Match accepted</span><span>{timeLabel()}</span></header><div class="panel-hairline"></div>
+        <div class="participant-row"><span style:--signal={matchSession.localPlayer.colorHex}><i></i>{matchSession.localPlayer.displayName}</span><em>LOCAL</em></div>
+        <div class="participant-row"><span style:--signal={matchSession.opponentPlayer.colorHex}><i></i>{matchSession.opponentPlayer.displayName}</span><em>{matchSession.opponentPresence.toUpperCase()}</em></div>
+        <button class="command-button ghost" type="button" on:click={disconnect}>DISCONNECT</button>
+      </section>
+    {:else}
+      <section class="status-bar">
+        <div class="status-player" style:--signal={matchSession.localPlayer.colorHex}><i></i><span>{matchSession.localPlayer.displayName}</span></div>
+        <div class="status-player" style:--signal={matchSession.opponentPlayer.colorHex}><i></i><span>{matchSession.opponentPlayer.displayName}</span><em>{matchSession.opponentPresence.toUpperCase()}</em></div>
+        <strong class="match-clock">{timeLabel()}</strong><button class="command-button ghost" type="button" on:click={disconnect}>DISCONNECT</button>
+      </section>
+    {/if}
   </main>
 {:else}
   <main class="connection-shell">

@@ -11,6 +11,7 @@ mod combat_presentation;
 mod combat_rendering;
 mod geometry;
 mod hud;
+mod match_session;
 pub mod network;
 mod player_presentation;
 mod presentation;
@@ -49,6 +50,7 @@ use crate::geometry::{
     Vertex, overlay::ring_vertices, structures::structure_vertices, units::notched_ship_vertices,
 };
 use crate::hud::HudWebView;
+use crate::match_session::MatchSessionPresenter;
 use crate::network::ServerEvent;
 #[cfg(test)]
 use crate::player_presentation::PLAYER_TWO_COLOR;
@@ -60,7 +62,8 @@ use crate::session::{
 };
 use crate::ui_bridge::{BridgeHealthConfig, UiBridge};
 use spacegame2d_ui_protocol::{
-    EngineToUiMessage, ProtocolErrorCode, RequestId, UI_ENGINE_PROTOCOL_VERSION, UiToEngineMessage,
+    EngineToUiMessage, MatchSessionResetReason, ProtocolErrorCode, RequestId,
+    UI_ENGINE_PROTOCOL_VERSION, UiToEngineMessage,
 };
 
 enum AppEvent {
@@ -553,6 +556,7 @@ struct App {
     network: Option<network::NetworkSession>,
     lifecycle: SessionLifecycle<()>,
     bridge: UiBridge,
+    match_session: MatchSessionPresenter,
     proxy: EventLoopProxy<AppEvent>,
     scheduled: std::collections::BTreeMap<Tick, Vec<spacegame2d_protocol::AuthoritativeCommand>>,
     next_sequence: u32,
@@ -576,6 +580,7 @@ impl App {
             network: None,
             lifecycle: SessionLifecycle::new(DEFAULT_SERVER_ADDRESS),
             bridge: UiBridge::new(BridgeHealthConfig::default()),
+            match_session: MatchSessionPresenter::default(),
             proxy,
             scheduled: std::collections::BTreeMap::new(),
             next_sequence: 1,
@@ -602,6 +607,39 @@ impl App {
             tracing::error!(event = "hud_state_publish_failed", %error);
             event_loop.exit();
         }
+    }
+
+    fn publish_match_state(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(hud), Some(window), Some(bridge_id)) = (
+            self.hud.as_mut(),
+            self.window.as_ref(),
+            self.bridge.bridge_id().cloned(),
+        ) else {
+            return;
+        };
+        let message = EngineToUiMessage::MatchSessionStateChanged {
+            protocol_version: UI_ENGINE_PROTOCOL_VERSION,
+            bridge_id,
+            state: self.match_session.state().clone(),
+        };
+        if let Err(error) = hud.publish(window, &message) {
+            tracing::error!(event = "hud_match_session_publish_failed", %error);
+            event_loop.exit();
+        }
+    }
+
+    fn publish_ui_state(&mut self, event_loop: &ActiveEventLoop) {
+        self.publish_state(event_loop);
+        self.publish_match_state(event_loop);
+    }
+
+    fn reset_match_session(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: MatchSessionResetReason,
+    ) {
+        self.match_session.reset(reason);
+        self.publish_match_state(event_loop);
     }
 
     fn start_attempt(&self, attempt: crate::session::ConnectionAttempt) {
@@ -654,6 +692,13 @@ impl App {
         self.combat_presentation.clear();
         self.match_result = None;
         self.next_sequence = 1;
+    }
+
+    fn gameplay_available(&self) -> bool {
+        self.network
+            .as_ref()
+            .and_then(network::NetworkSession::match_started_at)
+            .is_some()
     }
 }
 
@@ -725,7 +770,7 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::ProtocolError(code) => self.publish_protocol_error(event_loop, code),
             AppEvent::UiMessage(UiToEngineMessage::UiReady { bridge_id, .. }) => {
                 self.bridge.ready(bridge_id, Instant::now());
-                self.publish_state(event_loop);
+                self.publish_ui_state(event_loop);
             }
             AppEvent::UiMessage(UiToEngineMessage::ConnectRequested {
                 bridge_id,
@@ -746,6 +791,10 @@ impl ApplicationHandler<AppEvent> for App {
                         Instant::now(),
                     )
                 {
+                    self.reset_match_session(
+                        event_loop,
+                        MatchSessionResetReason::NewConnectionAttempt,
+                    );
                     self.publish_state(event_loop);
                     self.start_attempt(attempt);
                 }
@@ -756,6 +805,17 @@ impl ApplicationHandler<AppEvent> for App {
                 ..
             }) => {
                 if self.bridge.accepts(&bridge_id) && self.lifecycle.cancel(&request_id) {
+                    self.publish_state(event_loop);
+                }
+            }
+            AppEvent::UiMessage(UiToEngineMessage::DisconnectRequested {
+                bridge_id,
+                request_id,
+                ..
+            }) => {
+                if self.bridge.accepts(&bridge_id) && self.lifecycle.disconnect(&request_id) {
+                    self.reset_connected_resources();
+                    self.reset_match_session(event_loop, MatchSessionResetReason::UserDisconnected);
                     self.publish_state(event_loop);
                 }
             }
@@ -859,7 +919,17 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.network = Some(session);
                 self.next_tick = Instant::now() + TICK_DURATION;
-                self.publish_state(event_loop);
+                if let Some(session) = self.network.as_ref()
+                    && let Err(error) = self.match_session.update(session)
+                {
+                    tracing::error!(event = "match_session_presentation_failed", %error);
+                    self.reset_connected_resources();
+                    self.lifecycle.session_lost();
+                    self.reset_match_session(event_loop, MatchSessionResetReason::SessionLost);
+                    self.publish_state(event_loop);
+                    return;
+                }
+                self.publish_ui_state(event_loop);
                 window.request_redraw();
             }
         }
@@ -874,6 +944,13 @@ impl ApplicationHandler<AppEvent> for App {
             gtk::main_iteration_do(false);
         }
         let now = Instant::now();
+        if let (Some(hud), Some(window)) = (self.hud.as_mut(), self.window.as_ref())
+            && let Err(error) = hud.advance(window, now)
+        {
+            tracing::error!(event = "hud_transition_failed", %error);
+            event_loop.exit();
+            return;
+        }
         if let Some(sequence) = self.bridge.due(now)
             && let (Some(hud), Some(window), Some(bridge_id)) = (
                 self.hud.as_mut(),
@@ -925,6 +1002,20 @@ impl ApplicationHandler<AppEvent> for App {
                                     presence = ?snapshot.opponent_presence,
                                     revision = snapshot.presence_revision
                                 );
+                                if let Some(session) = self.network.as_ref()
+                                    && let Err(error) = self.match_session.update(session)
+                                {
+                                    tracing::error!(event = "match_session_presentation_failed", %error);
+                                    self.reset_connected_resources();
+                                    self.lifecycle.session_lost();
+                                    self.reset_match_session(
+                                        event_loop,
+                                        MatchSessionResetReason::SessionLost,
+                                    );
+                                    self.publish_state(event_loop);
+                                    return;
+                                }
+                                self.publish_match_state(event_loop);
                             }
                         }
                     }
@@ -933,6 +1024,7 @@ impl ApplicationHandler<AppEvent> for App {
                     tracing::warn!(event = "server_connection_lost", %error);
                     self.reset_connected_resources();
                     self.lifecycle.session_lost();
+                    self.reset_match_session(event_loop, MatchSessionResetReason::SessionLost);
                     self.publish_state(event_loop);
                     return;
                 }
@@ -991,12 +1083,26 @@ impl ApplicationHandler<AppEvent> for App {
             }
             self.next_tick += TICK_DURATION;
         }
+        if let Some(session) = self.network.as_ref()
+            && self
+                .match_session
+                .update_if_elapsed_changed(session)
+                .unwrap_or(None)
+                .is_some()
+        {
+            self.publish_match_state(event_loop);
+        }
         let mut deadline = self
             .lifecycle
             .next_deadline()
             .into_iter()
             .chain(self.bridge.next_deadline())
             .min();
+        if let Some(hud) = self.hud.as_ref()
+            && let Some(hud_deadline) = hud.next_deadline()
+        {
+            deadline = Some(deadline.map_or(hud_deadline, |value| value.min(hud_deadline)));
+        }
         if self.lifecycle.is_connected() {
             deadline = Some(deadline.map_or(self.next_tick, |value| value.min(self.next_tick)));
         }
@@ -1055,7 +1161,7 @@ impl ApplicationHandler<AppEvent> for App {
                 button: MouseButton::Middle,
                 ..
             } => {
-                if state == ElementState::Pressed {
+                if state == ElementState::Pressed && self.gameplay_available() {
                     if let Some(cursor) = self.cursor_position {
                         self.camera
                             .begin_drag(Vec2::new(cursor.x as f32, cursor.y as f32));
@@ -1069,7 +1175,7 @@ impl ApplicationHandler<AppEvent> for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                if !self.lifecycle.is_connected() {
+                if !self.gameplay_available() {
                     return;
                 }
                 if let (Some(cursor), Some(renderer)) =
@@ -1102,7 +1208,7 @@ impl ApplicationHandler<AppEvent> for App {
                     },
                 ..
             } => {
-                if !self.lifecycle.is_connected() {
+                if !self.gameplay_available() {
                     return;
                 }
                 if let Some(session) = self.network.as_mut() {

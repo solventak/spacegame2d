@@ -209,6 +209,10 @@ impl NetworkSession {
             .map(|ticks| ticks.0 / u64::from(SIMULATION_HZ))
     }
 
+    pub fn local_tick(&self) -> Tick {
+        self.local_tick
+    }
+
     pub fn send_state_checksum(&mut self, tick: Tick, hash: [u8; 32]) -> io::Result<()> {
         if self.checksum_enabled {
             self.outgoing.push_back(
