@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { send, subscribe } from './bridge';
+  import ParticipantIdentity from './components/ParticipantIdentity.svelte';
+  import SelectionBrackets from './components/SelectionBrackets.svelte';
+  import StateDot from './components/StateDot.svelte';
+  import TacticalGlyph from './components/TacticalGlyph.svelte';
   import {
     protocolVersion,
     type BridgeId,
@@ -20,7 +24,7 @@
   let protocolError: ProtocolErrorCode | undefined;
   let matchSession: MatchSessionState | undefined;
   let lastMatchSequence: number | undefined;
-  let hudPhase: 'join' | 'docking' | 'compact' = 'join';
+  let hudPhase: 'reveal' | 'docking' | 'compact' = 'reveal';
   let activeTransition = 0;
   let joinTimer: ReturnType<typeof setTimeout> | undefined;
   let dockTimer: ReturnType<typeof setTimeout> | undefined;
@@ -55,7 +59,7 @@
   };
   const clearHudTimers = () => { if (joinTimer) clearTimeout(joinTimer); if (dockTimer) clearTimeout(dockTimer); joinTimer = undefined; dockTimer = undefined; };
   const startJoin = () => {
-    clearHudTimers(); hudPhase = 'join';
+    clearHudTimers(); hudPhase = 'reveal';
     const transition = ++activeTransition;
     joinTimer = setTimeout(() => { if (activeTransition === transition) hudPhase = 'docking'; }, 700);
     dockTimer = setTimeout(() => { if (activeTransition === transition) hudPhase = 'compact'; }, 1300);
@@ -178,19 +182,40 @@
     <footer class="connection-chrome bottom-chrome"><span>CLIENT N/A · UI IPC {protocolVersion}</span><span>WAITING FOR PRESENCE</span></footer>
   </main>
 {:else if state?.stage === 'connected' && matchSession?.stage === 'active'}
-  <main class:join={hudPhase === 'join'} class:docking={hudPhase === 'docking'} class:compact={hudPhase === 'compact'} class="match-hud" aria-live="polite">
+  <main class:reveal={hudPhase === 'reveal'} class:docking={hudPhase === 'docking'} class:compact={hudPhase === 'compact'} class="match-hud" aria-live="polite">
     {#if hudPhase !== 'compact'}
-      <section class="join-card">
-        <header class="panel-header"><span>Match accepted</span><span>{timeLabel()}</span></header><div class="panel-hairline"></div>
-        <div class="participant-row"><span style:--signal={matchSession.localPlayer.colorHex}><i></i>{matchSession.localPlayer.displayName}</span><em>LOCAL</em></div>
-        <div class="participant-row"><span style:--signal={matchSession.opponentPlayer.colorHex}><i></i>{matchSession.opponentPlayer.displayName}</span><em>{matchSession.opponentPresence.toUpperCase()}</em></div>
-        <button class="command-button ghost" type="button" on:click={disconnect}>DISCONNECT</button>
+      <section class="match-reveal-card" aria-label="Match accepted">
+        <div class="friendly-mark">
+          <svg viewBox="0 0 30 30" aria-hidden="true">
+            <circle class="ring-track" cx="15" cy="15" r="13"></circle>
+            <circle class="ring-draw" cx="15" cy="15" r="13"></circle>
+          </svg>
+          <TacticalGlyph tone="friendly" size={18} />
+        </div>
+        <ParticipantIdentity label="Match accepted" value="Cyan · Windward" tone="friendly" />
+        <div class="reveal-divider"></div>
+        <ParticipantIdentity
+          label="Opponent"
+          value={matchSession.opponentPlayer.displayName}
+          tone="enemy"
+          glyph
+          presence={matchSession.opponentPresence}
+        />
+        <SelectionBrackets />
       </section>
-    {:else}
+    {/if}
+    {#if hudPhase !== 'reveal'}
       <section class="status-bar">
-        <div class="status-player" style:--signal={matchSession.localPlayer.colorHex}><i></i><span>{matchSession.localPlayer.displayName}</span></div>
-        <div class="status-player" style:--signal={matchSession.opponentPlayer.colorHex}><i></i><span>{matchSession.opponentPlayer.displayName}</span><em>{matchSession.opponentPresence.toUpperCase()}</em></div>
-        <strong class="match-clock">{timeLabel()}</strong><button class="command-button ghost" type="button" on:click={disconnect}>DISCONNECT</button>
+        <div class="bar-brand"><strong>FLEET</strong><i></i><span>T+{timeLabel()}</span></div>
+        <div class="bar-local"><TacticalGlyph tone="friendly" framed size={16} /><strong>CYAN · {matchSession.localPlayer.displayName}</strong></div>
+        <div class="bar-opponent">
+          <TacticalGlyph tone="enemy" size={14} />
+          <span>OPP</span>
+          <strong>{matchSession.opponentPlayer.displayName}</strong>
+          <StateDot tone={matchSession.opponentPresence === 'present' ? 'enemy' : 'neutral'} certainty={matchSession.opponentPresence === 'present' ? 'confirmed' : 'stale'} size={5} />
+          <em>{matchSession.opponentPresence.toUpperCase()}</em>
+          <button class="bar-disconnect" type="button" on:click={disconnect}>DISCONNECT</button>
+        </div>
       </section>
     {/if}
   </main>

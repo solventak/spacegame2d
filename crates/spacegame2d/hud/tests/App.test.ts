@@ -10,12 +10,12 @@ const player = (displayName: string, color: 'cyan' | 'coral') => ({ playerSlot: 
 function renderHud() {
   const sendJson = vi.fn(); let listener: ((raw: unknown) => void) | undefined;
   window.__SPACEGAME_HUD__ = { sendJson, subscribe: (next) => { listener = next; return () => {}; } };
-  render(App);
+  const rendered = render(App);
   const currentBridge = JSON.parse(sendJson.mock.calls[0]?.[0] ?? '{}').bridgeId;
   const publish = async (kind: string, state: Record<string, unknown>) => {
     listener?.(JSON.stringify({ kind, protocolVersion: 3, bridgeId: currentBridge, state })); await tick();
   };
-  return { sendJson, publish };
+  return { sendJson, publish, container: rendered.container };
 }
 
 describe('HUD IPC', () => {
@@ -40,18 +40,54 @@ describe('HUD IPC', () => {
     expect(JSON.parse(sendJson.mock.calls.at(-1)?.[0] ?? '{}')).toMatchObject({ kind: 'disconnectRequested', requestId: 'request-1' });
   });
 
-  it('shows match data then docks into the persistent status bar', async () => {
-    vi.useFakeTimers(); const { publish } = renderHud();
+  it('renders the designed reveal before docking into the full status bar', async () => {
+    vi.useFakeTimers(); const { publish, container } = renderHud();
     await publish('connectionStateChanged', { stage: 'connected', requestId: 'request-1', address: 'server:4000', displayName: 'Rook', localPlayer: { schemaVersion: 1, playerSlot: 1, color: 'cyan', colorHex: '#22CFE8' } });
     await publish('matchSessionStateChanged', { stage: 'active', sequence: 2, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'present', presenceRevision: 1, clock: { startedAtTick: 60, currentTick: 120, ticksPerSecond: 60, elapsedWholeSeconds: 1 } });
-    expect(screen.getByText('Match accepted')).toBeTruthy(); expect(screen.getByText('Vale')).toBeTruthy();
+    expect(screen.getByText('Match accepted')).toBeTruthy();
+    expect(screen.getByText('Cyan · Windward')).toBeTruthy();
+    expect(screen.getByText('Vale')).toBeTruthy();
+    expect(screen.getByText('PRESENT')).toBeTruthy();
+    expect(container.querySelector('.match-reveal-card')).toBeTruthy();
+    expect(container.querySelector('.friendly-mark')).toBeTruthy();
+    expect(container.querySelector('.participant.friendly')).toBeTruthy();
+    expect(container.querySelector('.participant.enemy')).toBeTruthy();
+    expect(container.querySelector('.reveal-divider')).toBeTruthy();
+    expect(container.querySelector('.status-bar')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'DISCONNECT' })).toBeNull();
+    expect(screen.queryByText('T+00:01')).toBeNull();
+
     await publish('matchSessionStateChanged', { stage: 'active', sequence: 3, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'present', presenceRevision: 1, clock: { startedAtTick: 60, currentTick: 180, ticksPerSecond: 60, elapsedWholeSeconds: 2 } });
-    await vi.advanceTimersByTimeAsync(1300); await tick();
-    expect(screen.getByText('PRESENT')).toBeTruthy(); expect(screen.getByText('00:02')).toBeTruthy();
+    await vi.advanceTimersByTimeAsync(699); await tick();
+    expect(container.querySelector('.match-hud.reveal')).toBeTruthy();
+    expect(container.querySelector('.status-bar')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1); await tick();
+    expect(container.querySelector('.match-hud.docking')).toBeTruthy();
+    expect(container.querySelector('.match-reveal-card')).toBeTruthy();
+    expect(container.querySelector('.status-bar')).toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(600); await tick();
+    expect(container.querySelector('.match-hud.compact')).toBeTruthy();
+    expect(container.querySelector('.match-reveal-card')).toBeNull();
+    expect(screen.getByText('T+00:02')).toBeTruthy();
+    expect(screen.getByText('CYAN · Rook')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'DISCONNECT' })).toBeTruthy();
+
     await publish('matchSessionStateChanged', { stage: 'active', sequence: 4, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'disconnected', presenceRevision: 2, clock: { startedAtTick: 60, currentTick: 240, ticksPerSecond: 60, elapsedWholeSeconds: 3 } });
-    expect(screen.getByText('DISCONNECTED')).toBeTruthy(); expect(screen.getByText('Vale')).toBeTruthy();
-    await publish('matchSessionStateChanged', { stage: 'reset', sequence: 5, reason: 'userDisconnected' });
-    expect(screen.queryByText('Vale')).toBeNull(); expect(screen.getByText('CONNECT TO SERVER')).toBeTruthy();
+    expect(screen.getByText('DISCONNECTED')).toBeTruthy();
+    expect(screen.getByText('Vale')).toBeTruthy();
+    expect(screen.getByText('T+00:03')).toBeTruthy();
+    expect(container.querySelector('.match-hud.compact')).toBeTruthy();
+
+    await publish('matchSessionStateChanged', { stage: 'active', sequence: 5, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Ash', 'coral'), opponentPresence: 'present', presenceRevision: 3, clock: { startedAtTick: 60, currentTick: 300, ticksPerSecond: 60, elapsedWholeSeconds: 4 } });
+    expect(screen.getByText('Ash')).toBeTruthy();
+    expect(screen.queryByText('Vale')).toBeNull();
+    expect(container.querySelector('.match-hud.compact')).toBeTruthy();
+
+    await publish('matchSessionStateChanged', { stage: 'reset', sequence: 6, reason: 'userDisconnected' });
+    expect(screen.queryByText('Ash')).toBeNull();
+    expect(screen.getByText('CONNECT TO SERVER')).toBeTruthy();
   });
 
   it('rejects partial match state and accepts versioned directional messages', () => {

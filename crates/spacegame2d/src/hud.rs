@@ -10,11 +10,8 @@ use wry::{
 };
 
 const HUD_ORIGIN: &str = "spacegame-hud://localhost";
-const EDGE_INSET: f64 = 14.0;
-const JOIN_WIDTH: f64 = 520.0;
-const JOIN_HEIGHT: f64 = 180.0;
-const PREFERRED_WIDTH: f64 = 760.0;
-const PREFERRED_HEIGHT: f64 = 72.0;
+const REVEAL_BAND_HEIGHT: f64 = 112.0;
+const COMPACT_BAR_HEIGHT: f64 = 34.0;
 const JOIN_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 const DOCK_DURATION: std::time::Duration = std::time::Duration::from_millis(600);
 
@@ -62,22 +59,24 @@ impl HudBounds {
                 height: parent_height.max(1.0),
             };
         }
-        if layout == HudLayout::Join {
-            let width = JOIN_WIDTH.min(parent_width.max(1.0));
-            let height = JOIN_HEIGHT.min(parent_height.max(1.0));
+        if matches!(layout, HudLayout::Join | HudLayout::Docking) {
+            let height = REVEAL_BAND_HEIGHT.min(parent_height.max(1.0));
             return Self {
-                x: ((parent_width - width) / 2.0).max(0.0),
-                y: ((parent_height - height) / 2.0).max(0.0),
-                width,
+                x: 0.0,
+                y: if layout == HudLayout::Join {
+                    ((parent_height - height) / 2.0).max(0.0)
+                } else {
+                    0.0
+                },
+                width: parent_width.max(1.0),
                 height,
             };
         }
-        let width = PREFERRED_WIDTH.min(parent_width.max(1.0));
-        let height = PREFERRED_HEIGHT.min(parent_height.max(1.0));
+        let height = COMPACT_BAR_HEIGHT.min(parent_height.max(1.0));
         Self {
-            x: ((parent_width - width) / 2.0).max(0.0),
-            y: EDGE_INSET.min((parent_height - height).max(0.0)),
-            width,
+            x: 0.0,
+            y: 0.0,
+            width: parent_width.max(1.0),
             height,
         }
     }
@@ -89,13 +88,11 @@ impl HudBounds {
         }
     }
 
-    fn interpolate(from: Self, to: Self, progress: f64) -> Self {
+    fn move_vertical(from: Self, to_y: f64, progress: f64) -> Self {
         let t = progress.clamp(0.0, 1.0);
         Self {
-            x: from.x + (to.x - from.x) * t,
-            y: from.y + (to.y - from.y) * t,
-            width: from.width + (to.width - from.width) * t,
-            height: from.height + (to.height - from.height) * t,
+            y: from.y + (to_y - from.y) * t,
+            ..from
         }
     }
 }
@@ -177,15 +174,25 @@ impl HudWebView {
         window: &Window,
         message: &EngineToUiMessage,
     ) -> Result<(), HudError> {
+        let state = message.encode()?;
+        let argument = serde_json::to_string(&state)?;
+        let match_class_script = match message {
+            EngineToUiMessage::MatchSessionStateChanged {
+                state: MatchSessionState::Active { .. },
+                ..
+            } => "document.documentElement.classList.add('match-active');",
+            EngineToUiMessage::MatchSessionStateChanged { .. } => {
+                "document.documentElement.classList.remove('match-active');"
+            }
+            _ => "",
+        };
+        self.webview.evaluate_script(&format!(
+            "{match_class_script}window.__SPACEGAME_HUD__.receiveJson({argument});"
+        ))?;
         if let EngineToUiMessage::MatchSessionStateChanged { state, .. } = message {
             self.apply_match_state(state);
         }
         self.resize(window)?;
-        let state = message.encode()?;
-        let argument = serde_json::to_string(&state)?;
-        self.webview.evaluate_script(&format!(
-            "window.__SPACEGAME_HUD__.receiveJson({argument});"
-        ))?;
         Ok(())
     }
 
@@ -240,9 +247,9 @@ impl HudWebView {
         let progress =
             elapsed.saturating_sub(JOIN_HOLD).as_secs_f64() / DOCK_DURATION.as_secs_f64();
         let eased = ease_out(progress);
-        HudBounds::interpolate(
+        HudBounds::move_vertical(
             HudBounds::for_window(size, scale, HudLayout::Join),
-            HudBounds::for_window(size, scale, HudLayout::Compact),
+            0.0,
             eased,
         )
     }
@@ -324,10 +331,10 @@ mod tests {
         assert_eq!(
             HudBounds::for_window(PhysicalSize::new(800, 600), 1.0, HudLayout::Compact),
             HudBounds {
-                x: 20.0,
-                y: 14.0,
-                width: 760.0,
-                height: 72.0
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 34.0
             }
         );
         assert_eq!(
@@ -336,22 +343,39 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
                 width: 100.0,
-                height: 50.0
+                height: 34.0
             }
         );
         assert_eq!(
-            HudBounds::for_window(PhysicalSize::new(500, 250), 2.0, HudLayout::Compact).x,
-            0.0
+            HudBounds::for_window(PhysicalSize::new(500, 250), 2.0, HudLayout::Compact).width,
+            250.0
         );
         assert_eq!(
             HudBounds::for_window(PhysicalSize::new(800, 600), 1.0, HudLayout::Join),
             HudBounds {
-                x: 140.0,
-                y: 210.0,
-                width: 520.0,
-                height: 180.0,
+                x: 0.0,
+                y: 244.0,
+                width: 800.0,
+                height: 112.0,
             }
         );
+    }
+
+    #[test]
+    fn docking_moves_the_fixed_reveal_band_without_resizing() {
+        let size = PhysicalSize::new(1600, 900);
+        let join = HudBounds::for_window(size, 1.0, HudLayout::Join);
+        let halfway = HudBounds::move_vertical(join, 0.0, ease_out(0.5));
+        assert_eq!(halfway.x, 0.0);
+        assert_eq!(halfway.width, 1600.0);
+        assert_eq!(halfway.height, REVEAL_BAND_HEIGHT);
+        assert!(halfway.y > 0.0);
+        assert!(halfway.y < join.y);
+
+        let docked = HudBounds::move_vertical(join, 0.0, 1.0);
+        assert_eq!(docked.y, 0.0);
+        assert_eq!(docked.width, join.width);
+        assert_eq!(docked.height, join.height);
     }
 
     #[test]
