@@ -20,6 +20,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
+mod session;
+use session::MatchSession;
+
 pub const COMMAND_INPUT_DELAY: Tick = Tick::new(2);
 
 struct Client {
@@ -136,6 +139,7 @@ pub async fn run_with_config(
     let bound = listener.local_addr()?;
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
+    let mut match_session = MatchSession::default();
     let mut simulation = Simulation::new(config.clone());
     // Fleet ownership is part of the deterministic world, not connection
     // membership. Every client must see slot 1 as blue and slot 2 as coral
@@ -198,6 +202,7 @@ pub async fn run_with_config(
         }
         let mut remove = Vec::new();
         let mut broadcasts = Vec::new();
+        let mut session_deliveries = Vec::new();
         let mut reset_cutover = false;
         for (index, client) in clients.iter_mut().enumerate() {
             match client.read_messages() {
@@ -211,13 +216,14 @@ pub async fn run_with_config(
                                 client.closing_after_flush = true;
                                 continue;
                             };
+                            let display_name = hello.display_name();
                             let reason = if hello.simulation_version != SIMULATION_VERSION {
                                 Some(HandshakeRejectionReason::IncompatibleVersion)
                             } else if !hello.capabilities.contains(&Capability::StateChecksums)
                                 || !hello.capabilities.contains(&Capability::WorldSnapshots)
                             {
                                 Some(HandshakeRejectionReason::MissingRequiredCapability)
-                            } else if hello.display_name().is_err() {
+                            } else if display_name.is_err() {
                                 Some(HandshakeRejectionReason::InvalidHandshake)
                             } else {
                                 None
@@ -230,13 +236,11 @@ pub async fn run_with_config(
                                 client.closing_after_flush = true;
                                 continue;
                             }
-                            client.display_name = Some(
-                                hello
-                                    .display_name()
-                                    .expect("validated display name")
-                                    .as_str()
-                                    .into(),
-                            );
+                            let display_name: String = display_name
+                                .expect("validated display name")
+                                .as_str()
+                                .into();
+                            client.display_name = Some(display_name.clone());
                             client.checksum_enabled = true;
                             client.queue(&Message::ServerHello(
                                 spacegame2d_protocol::ServerHello {
@@ -260,6 +264,11 @@ pub async fn run_with_config(
                             tracing::info!(event = "world_snapshot_queued", tick = ?initial_world.tick, slot = client.slot, units = initial_world.units.len());
                             client.queue(&Message::InitialWorldState(initial_world))?;
                             client.connected = true;
+                            session_deliveries.extend(
+                                match_session
+                                    .accept(client.slot, display_name, simulation.tick())
+                                    .map_err(io::Error::other)?,
+                            );
                         } else if let Message::StateChecksum(StateChecksum { tick, hash }) = message
                         {
                             if client.checksum_enabled {
@@ -367,10 +376,23 @@ pub async fn run_with_config(
                 remove.push(index);
             }
         }
+        remove.sort_unstable();
+        remove.dedup();
         for index in remove.into_iter().rev() {
             let client = clients.remove(index);
+            if client.connected {
+                session_deliveries.extend(match_session.depart(client.slot));
+            }
             if let Some(player_id) = PlayerId::new(u8::try_from(client.slot).unwrap_or(0)) {
                 simulation.world.disconnect_player(player_id);
+            }
+        }
+        for delivery in session_deliveries {
+            if let Some(client) = clients
+                .iter_mut()
+                .find(|client| client.connected && client.slot == delivery.recipient_slot)
+            {
+                client.queue(&Message::SessionSnapshot(delivery.snapshot))?;
             }
         }
         for (encoded, cmd, address, slot) in broadcasts {
@@ -380,9 +402,26 @@ pub async fn run_with_config(
             }
             tracing::info!(event = "command_broadcast_queued", cmd = %cmd, recipients, address = %address, slot);
         }
-        for client in &mut clients {
+        let mut flush_failed = Vec::new();
+        for (index, client) in clients.iter_mut().enumerate() {
             if client.flush().is_err() {
-                client.connected = false;
+                flush_failed.push(index);
+            }
+        }
+        for index in flush_failed.into_iter().rev() {
+            let client = clients.remove(index);
+            if client.connected {
+                for delivery in match_session.depart(client.slot) {
+                    if let Some(peer) = clients
+                        .iter_mut()
+                        .find(|peer| peer.connected && peer.slot == delivery.recipient_slot)
+                    {
+                        peer.queue(&Message::SessionSnapshot(delivery.snapshot))?;
+                    }
+                }
+            }
+            if let Some(player_id) = PlayerId::new(u8::try_from(client.slot).unwrap_or(0)) {
+                simulation.world.disconnect_player(player_id);
             }
         }
         if let Some(commands) = scheduled.remove(&simulation.tick()) {
@@ -762,14 +801,33 @@ mod tests {
                 else {
                     panic!()
                 };
+                let Message::SessionSnapshot(first_session) = read_message(&mut first).await else {
+                    panic!()
+                };
+                assert!(matches!(
+                    first_session.opponent_presence,
+                    spacegame2d_protocol::OpponentPresence::Waiting
+                ));
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let mut second = tokio::net::TcpStream::connect(address).await.unwrap();
-                second.write_all(&hello.encode().unwrap()).await.unwrap();
+                let second_hello_request = Message::ClientHello(ClientHello {
+                    simulation_version: SIMULATION_VERSION,
+                    capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                    display_name: "Cafe\u{301}".into(),
+                });
+                second
+                    .write_all(&second_hello_request.encode().unwrap())
+                    .await
+                    .unwrap();
                 let Message::ServerHello(second_hello) = read_message(&mut second).await else {
                     panic!()
                 };
                 let Message::InitialWorldState(second_snapshot) = read_message(&mut second).await
+                else {
+                    panic!()
+                };
+                let Message::SessionSnapshot(second_session) = read_message(&mut second).await
                 else {
                     panic!()
                 };
@@ -778,11 +836,26 @@ mod tests {
                 first_hello.validate(SIMULATION_HZ).unwrap();
                 second_hello.validate(SIMULATION_HZ).unwrap();
                 assert!(second_hello.server_tick > first_hello.server_tick);
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(50), try_read_message(&mut first))
+                let Message::SessionSnapshot(first_update) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
                         .await
-                        .is_err()
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(first_update.participants, second_session.participants);
+                assert_eq!(
+                    first_update
+                        .participants
+                        .iter()
+                        .map(|participant| participant.display_name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["Rook", "Café"]
                 );
+                assert!(matches!(
+                    first_update.opponent_presence,
+                    spacegame2d_protocol::OpponentPresence::Present
+                ));
 
                 // Ownership is match state, not connection state: player one
                 // must render player two's fleet as coral before player two has
@@ -974,6 +1047,12 @@ mod tests {
                     panic!()
                 };
                 assert_eq!(recycled_hello.player_slot, 1);
+                let Message::InitialWorldState(_) = read_message(&mut recycled).await else {
+                    panic!()
+                };
+                let Message::SessionSnapshot(_) = read_message(&mut recycled).await else {
+                    panic!()
+                };
 
                 second
                     .write_all(
@@ -986,13 +1065,19 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let Message::AuthoritativeCommand(command_after_disconnect) =
-                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut second))
-                        .await
-                        .unwrap()
-                else {
-                    panic!()
-                };
+                let mut command_after_disconnect = None;
+                for _ in 0..3 {
+                    let message =
+                        tokio::time::timeout(Duration::from_secs(1), read_message(&mut second))
+                            .await
+                            .unwrap();
+                    if let Message::AuthoritativeCommand(command) = message {
+                        command_after_disconnect = Some(command);
+                        break;
+                    }
+                }
+                let command_after_disconnect =
+                    command_after_disconnect.expect("reset command broadcast");
                 assert_eq!(command_after_disconnect.sequence, 8);
 
                 shutdown.send(true).unwrap();

@@ -919,6 +919,13 @@ impl ApplicationHandler<AppEvent> for App {
                             ServerEvent::Rejected(rejection) => {
                                 self.presentation.rejected(&rejection, Instant::now());
                             }
+                            ServerEvent::SessionStateChanged(snapshot) => {
+                                tracing::info!(
+                                    event = "session_state_changed",
+                                    presence = ?snapshot.opponent_presence,
+                                    revision = snapshot.presence_revision
+                                );
+                            }
                         }
                     }
                 }

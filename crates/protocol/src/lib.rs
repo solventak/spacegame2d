@@ -47,7 +47,7 @@ impl std::ops::Sub for Tick {
     }
 }
 
-pub const SIMULATION_VERSION: u32 = 18;
+pub const SIMULATION_VERSION: u32 = 19;
 pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
 pub const MAX_DISPLAY_NAME_GRAPHEMES: usize = 24;
@@ -161,6 +161,87 @@ pub struct ServerHello {
     pub world_radius_bits: u32,
     pub capabilities: Vec<Capability>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerColor {
+    Cyan,
+    Coral,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpponentPresence {
+    Waiting,
+    Present,
+    Disconnected,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MatchTiming {
+    Inactive,
+    Active { started_at_tick: Tick },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionParticipant {
+    pub player_slot: u32,
+    pub display_name: String,
+    pub color: PlayerColor,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    pub local_player_slot: u32,
+    pub participants: Vec<SessionParticipant>,
+    pub opponent_presence: OpponentPresence,
+    pub presence_revision: u64,
+    pub match_timing: MatchTiming,
+}
+impl SessionSnapshot {
+    pub fn validate(&self) -> io::Result<()> {
+        if !(1..=2).contains(&self.local_player_slot)
+            || self.participants.is_empty()
+            || self.participants.len() > 2
+        {
+            return Err(invalid("invalid session roster"));
+        }
+        let mut previous = 0;
+        let mut local_count = 0;
+        for participant in &self.participants {
+            if !(1..=2).contains(&participant.player_slot) || participant.player_slot <= previous {
+                return Err(invalid("invalid session participant slots"));
+            }
+            previous = participant.player_slot;
+            if DisplayName::try_from(participant.display_name.as_str())
+                .map_err(|_| invalid("invalid session display name"))?
+                .as_str()
+                != participant.display_name
+            {
+                return Err(invalid("noncanonical session display name"));
+            }
+            let expected = if participant.player_slot == 1 {
+                PlayerColor::Cyan
+            } else {
+                PlayerColor::Coral
+            };
+            if participant.color != expected {
+                return Err(invalid("invalid session participant color"));
+            }
+            local_count += usize::from(participant.player_slot == self.local_player_slot);
+        }
+        if local_count != 1 {
+            return Err(invalid("session local player missing"));
+        }
+        let active = matches!(self.match_timing, MatchTiming::Active { .. });
+        match self.opponent_presence {
+            OpponentPresence::Waiting if self.participants.len() == 1 && !active => Ok(()),
+            OpponentPresence::Present if self.participants.len() == 2 && active => Ok(()),
+            OpponentPresence::Disconnected if self.participants.len() == 1 && active => Ok(()),
+            _ => Err(invalid("inconsistent session state")),
+        }
+    }
+
+    pub fn local_participant(&self) -> &SessionParticipant {
+        self.participants
+            .iter()
+            .find(|participant| participant.player_slot == self.local_player_slot)
+            .expect("validated session snapshot has local participant")
+    }
+}
 impl ServerHello {
     pub fn validate(&self, simulation_hz: u32) -> io::Result<()> {
         if self.simulation_version != SIMULATION_VERSION {
@@ -240,6 +321,7 @@ pub enum Message {
     StateChecksum(StateChecksum),
     HandshakeRejected(HandshakeRejected),
     InitialWorldState(InitialWorldState),
+    SessionSnapshot(SessionSnapshot),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -443,6 +525,42 @@ impl From<&Message> for wire::Envelope {
                         .collect(),
                 })
             }
+            Message::SessionSnapshot(v) => {
+                let match_timing = match &v.match_timing {
+                    MatchTiming::Inactive => {
+                        wire::match_timing::State::Inactive(wire::MatchTimingInactive {})
+                    }
+                    MatchTiming::Active { started_at_tick } => {
+                        wire::match_timing::State::Active(wire::ActiveMatchTiming {
+                            started_at_tick: started_at_tick.0,
+                        })
+                    }
+                };
+                wire::envelope::Payload::SessionSnapshot(wire::SessionSnapshot {
+                    local_player_slot: v.local_player_slot,
+                    participants: v
+                        .participants
+                        .iter()
+                        .map(|participant| wire::SessionParticipant {
+                            player_slot: participant.player_slot,
+                            display_name: participant.display_name.clone(),
+                            color: match participant.color {
+                                PlayerColor::Cyan => 1,
+                                PlayerColor::Coral => 2,
+                            },
+                        })
+                        .collect(),
+                    opponent_presence: match v.opponent_presence {
+                        OpponentPresence::Waiting => 1,
+                        OpponentPresence::Present => 2,
+                        OpponentPresence::Disconnected => 3,
+                    },
+                    presence_revision: v.presence_revision,
+                    match_timing: Some(wire::MatchTiming {
+                        state: Some(match_timing),
+                    }),
+                })
+            }
         };
         Self {
             payload: Some(payload),
@@ -552,6 +670,49 @@ impl TryFrom<wire::Envelope> for Message {
                         .collect::<Result<Vec<_>, io::Error>>()?,
                 }))
             }
+            wire::envelope::Payload::SessionSnapshot(v) => {
+                let opponent_presence = match v.opponent_presence {
+                    1 => OpponentPresence::Waiting,
+                    2 => OpponentPresence::Present,
+                    3 => OpponentPresence::Disconnected,
+                    _ => return Err(invalid("invalid opponent presence")),
+                };
+                let match_timing = match v
+                    .match_timing
+                    .and_then(|timing| timing.state)
+                    .ok_or_else(|| invalid("missing match timing"))?
+                {
+                    wire::match_timing::State::Inactive(_) => MatchTiming::Inactive,
+                    wire::match_timing::State::Active(active) => MatchTiming::Active {
+                        started_at_tick: Tick::from(active.started_at_tick),
+                    },
+                };
+                let participants = v
+                    .participants
+                    .into_iter()
+                    .map(|participant| {
+                        let color = match participant.color {
+                            1 => PlayerColor::Cyan,
+                            2 => PlayerColor::Coral,
+                            _ => return Err(invalid("invalid player color")),
+                        };
+                        Ok(SessionParticipant {
+                            player_slot: participant.player_slot,
+                            display_name: participant.display_name,
+                            color,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, io::Error>>()?;
+                let snapshot = SessionSnapshot {
+                    local_player_slot: v.local_player_slot,
+                    participants,
+                    opponent_presence,
+                    presence_revision: v.presence_revision,
+                    match_timing,
+                };
+                snapshot.validate()?;
+                Ok(Message::SessionSnapshot(snapshot))
+            }
         }
     }
 }
@@ -630,7 +791,7 @@ mod tests {
 
     #[test]
     fn handshake_rejections_bump_simulation_version() {
-        assert_eq!(SIMULATION_VERSION, 18);
+        assert_eq!(SIMULATION_VERSION, 19);
     }
 
     #[test]
@@ -700,12 +861,48 @@ mod tests {
             Message::HandshakeRejected(HandshakeRejected {
                 reason: HandshakeRejectionReason::ServerFull,
             }),
+            Message::SessionSnapshot(SessionSnapshot {
+                local_player_slot: 1,
+                participants: vec![SessionParticipant {
+                    player_slot: 1,
+                    display_name: "Rook".into(),
+                    color: PlayerColor::Cyan,
+                }],
+                opponent_presence: OpponentPresence::Waiting,
+                presence_revision: 0,
+                match_timing: MatchTiming::Inactive,
+            }),
         ];
         for message in messages {
             let mut bytes = Vec::new();
             message.write(&mut bytes).unwrap();
             assert_eq!(Message::read(&mut bytes.as_slice()).unwrap(), message);
         }
+    }
+
+    #[test]
+    fn session_snapshot_rejects_noncanonical_or_inconsistent_state() {
+        let mut snapshot = SessionSnapshot {
+            local_player_slot: 1,
+            participants: vec![SessionParticipant {
+                player_slot: 1,
+                display_name: "Cafe\u{301}".into(),
+                color: PlayerColor::Cyan,
+            }],
+            opponent_presence: OpponentPresence::Waiting,
+            presence_revision: 0,
+            match_timing: MatchTiming::Inactive,
+        };
+        assert_eq!(
+            snapshot.validate().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        snapshot.participants[0].display_name = "Café".into();
+        snapshot.opponent_presence = OpponentPresence::Present;
+        assert_eq!(
+            snapshot.validate().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
     #[test]
     fn fragmented_and_multiple_frames_decode() {
