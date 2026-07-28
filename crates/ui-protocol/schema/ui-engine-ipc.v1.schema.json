@@ -527,6 +527,14 @@
   "title": "spacegame2d UI-engine IPC",
   "uiToEngine": {
     "$defs": {
+      "HudLayoutPhase": {
+        "enum": [
+          "join",
+          "docking",
+          "compact"
+        ],
+        "type": "string"
+      },
       "ProtocolErrorCode": {
         "enum": [
           "malformedJson",
@@ -713,6 +721,43 @@
           "protocolVersion",
           "bridgeId",
           "code"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "hudLayoutRequested",
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/$defs/HudLayoutPhase"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transitionDurationMs": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "phase"
         ],
         "type": "object"
       }

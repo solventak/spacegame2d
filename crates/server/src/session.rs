@@ -10,6 +10,12 @@ pub(crate) struct SessionDelivery {
     pub snapshot: SessionSnapshot,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct SessionDeparture {
+    pub deliveries: Vec<SessionDelivery>,
+    pub active_match_ended: bool,
+}
+
 #[derive(Debug)]
 struct ParticipantState {
     display_name: String,
@@ -57,14 +63,18 @@ impl MatchSession {
         }
     }
 
-    pub(crate) fn depart(&mut self, slot: u32) -> Vec<SessionDelivery> {
+    pub(crate) fn depart(&mut self, slot: u32) -> SessionDeparture {
         if self.participants.remove(&slot).is_none() {
-            return Vec::new();
+            return SessionDeparture::default();
         }
         match self.participants.len() {
             0 => {
+                let active_match_ended = self.match_started_at.is_some();
                 self.match_started_at = None;
-                Vec::new()
+                SessionDeparture {
+                    deliveries: Vec::new(),
+                    active_match_ended,
+                }
             }
             1 => {
                 let survivor = *self.participants.keys().next().expect("one participant");
@@ -72,7 +82,10 @@ impl MatchSession {
                     .get_mut(&survivor)
                     .expect("survivor")
                     .presence_revision += 1;
-                vec![self.delivery(survivor).expect("valid survivor snapshot")]
+                SessionDeparture {
+                    deliveries: vec![self.delivery(survivor).expect("valid survivor snapshot")],
+                    active_match_ended: false,
+                }
             }
             _ => unreachable!("two-player session has at most two participants"),
         }
@@ -125,6 +138,71 @@ impl MatchSession {
 mod tests {
     use super::*;
 
+    fn active_anchor(deliveries: &[SessionDelivery]) -> Tick {
+        let anchors = deliveries
+            .iter()
+            .map(|delivery| match delivery.snapshot.match_timing {
+                MatchTiming::Active { started_at_tick } => started_at_tick,
+                MatchTiming::Inactive => panic!("expected active match timing"),
+            })
+            .collect::<Vec<_>>();
+        assert!(!anchors.is_empty());
+        assert!(anchors.iter().all(|anchor| *anchor == anchors[0]));
+        anchors[0]
+    }
+
+    #[test]
+    fn active_match_ends_when_the_last_participant_departs() {
+        let mut session = MatchSession::default();
+        session.accept(1, "Rook".into(), Tick::from(10)).unwrap();
+        let joined = session.accept(2, "Nova".into(), Tick::from(20)).unwrap();
+        assert_eq!(active_anchor(&joined), Tick::from(20));
+
+        let survivor = session.depart(2);
+        assert_eq!(active_anchor(&survivor.deliveries), Tick::from(20));
+        assert_eq!(session.match_started_at, Some(Tick::from(20)));
+
+        let ended = session.depart(1);
+        assert!(ended.deliveries.is_empty());
+        assert!(ended.active_match_ended);
+        assert!(session.participants.is_empty());
+        assert_eq!(session.match_started_at, None);
+    }
+
+    #[test]
+    fn replacement_preserves_the_active_match_start_anchor() {
+        let mut session = MatchSession::default();
+        session.accept(1, "Rook".into(), Tick::from(10)).unwrap();
+        let joined = session.accept(2, "Nova".into(), Tick::from(20)).unwrap();
+        let original_anchor = active_anchor(&joined);
+
+        session.depart(2);
+        let replacement = session.accept(2, "Echo".into(), Tick::from(140)).unwrap();
+        assert_eq!(active_anchor(&replacement), original_anchor);
+        assert_eq!(Tick::from(140) - original_anchor, Tick::from(120));
+    }
+
+    #[test]
+    fn next_two_player_match_receives_a_new_start_anchor() {
+        let mut session = MatchSession::default();
+        session.accept(1, "Rook".into(), Tick::from(10)).unwrap();
+        let first_match = session.accept(2, "Nova".into(), Tick::from(20)).unwrap();
+        let first_anchor = active_anchor(&first_match);
+
+        session.depart(2);
+        session.depart(1);
+
+        let waiting = session.accept(1, "Rook".into(), Tick::from(40)).unwrap();
+        assert!(matches!(
+            waiting[0].snapshot.match_timing,
+            MatchTiming::Inactive
+        ));
+        let next_match = session.accept(2, "Nova".into(), Tick::from(50)).unwrap();
+        let next_anchor = active_anchor(&next_match);
+        assert_eq!(next_anchor, Tick::from(50));
+        assert_ne!(next_anchor, first_anchor);
+    }
+
     #[test]
     fn join_depart_and_replacement_preserve_authoritative_state() {
         let mut session = MatchSession::default();
@@ -142,7 +220,7 @@ mod tests {
         )));
         let departed = session.depart(2);
         assert_eq!(
-            departed[0].snapshot.opponent_presence,
+            departed.deliveries[0].snapshot.opponent_presence,
             OpponentPresence::Disconnected
         );
         let replacement = session.accept(2, "Echo".into(), Tick::from(30)).unwrap();

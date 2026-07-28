@@ -130,6 +130,14 @@ pub enum MatchSessionResetReason {
     SessionLost,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HudLayoutPhase {
+    Join,
+    Docking,
+    Compact,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "stage",
@@ -254,6 +262,12 @@ pub enum UiToEngineMessage {
         bridge_id: BridgeId,
         code: ProtocolErrorCode,
     },
+    HudLayoutRequested {
+        protocol_version: u16,
+        bridge_id: BridgeId,
+        phase: HudLayoutPhase,
+        transition_duration_ms: Option<u16>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -308,6 +322,9 @@ impl VersionedMessage for UiToEngineMessage {
                 protocol_version, ..
             }
             | Self::BridgeFaultReported {
+                protocol_version, ..
+            }
+            | Self::HudLayoutRequested {
                 protocol_version, ..
             } => *protocol_version,
         }
@@ -372,7 +389,8 @@ impl UiToEngineMessage {
             | Self::ConnectionCancelled { bridge_id, .. }
             | Self::DisconnectRequested { bridge_id, .. }
             | Self::HeartbeatAcknowledged { bridge_id, .. }
-            | Self::BridgeFaultReported { bridge_id, .. } => {
+            | Self::BridgeFaultReported { bridge_id, .. }
+            | Self::HudLayoutRequested { bridge_id, .. } => {
                 validate_id("bridgeId", bridge_id.as_str())?
             }
         }
@@ -395,6 +413,18 @@ impl UiToEngineMessage {
             | Self::DisconnectRequested { request_id, .. } => {
                 validate_id("requestId", request_id.as_str())?
             }
+            Self::HudLayoutRequested {
+                phase,
+                transition_duration_ms,
+                ..
+            } => match (phase, transition_duration_ms) {
+                (HudLayoutPhase::Docking, Some(duration)) if *duration > 0 => {}
+                (HudLayoutPhase::Docking, _) => {
+                    return Err(ProtocolValidationError::InvalidId("transitionDurationMs"));
+                }
+                (_, None) => {}
+                _ => return Err(ProtocolValidationError::InvalidId("transitionDurationMs")),
+            },
             _ => {}
         }
         Ok(())
@@ -491,5 +521,17 @@ mod tests {
                 ProtocolValidationError::InvalidId("displayName")
             ))
         ));
+    }
+
+    #[test]
+    fn layout_requests_require_a_docking_duration_only_while_docking() {
+        let docking = r#"{"kind":"hudLayoutRequested","protocolVersion":3,"bridgeId":"bridge-1","phase":"docking","transitionDurationMs":600}"#;
+        assert!(UiToEngineMessage::decode(docking).is_ok());
+
+        let missing_duration = r#"{"kind":"hudLayoutRequested","protocolVersion":3,"bridgeId":"bridge-1","phase":"docking"}"#;
+        assert!(UiToEngineMessage::decode(missing_duration).is_err());
+
+        let join_with_duration = r#"{"kind":"hudLayoutRequested","protocolVersion":3,"bridgeId":"bridge-1","phase":"join","transitionDurationMs":600}"#;
+        assert!(UiToEngineMessage::decode(join_with_duration).is_err());
     }
 }

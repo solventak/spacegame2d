@@ -834,6 +834,19 @@ impl ApplicationHandler<AppEvent> for App {
                     self.publish_protocol_error(event_loop, code);
                 }
             }
+            AppEvent::UiMessage(UiToEngineMessage::HudLayoutRequested {
+                bridge_id,
+                phase,
+                transition_duration_ms,
+                ..
+            }) => {
+                if self.bridge.accepts(&bridge_id)
+                    && let (Some(hud), Some(window)) = (self.hud.as_mut(), self.window.as_ref())
+                    && let Err(error) = hud.set_layout(window, phase, transition_duration_ms)
+                {
+                    tracing::error!(event = "hud_layout_change_failed", ?phase, %error);
+                }
+            }
             AppEvent::ConnectionProgress {
                 attempt_id,
                 progress,

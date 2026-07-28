@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use spacegame2d_ui_protocol::{EngineToUiMessage, MatchSessionState};
+use spacegame2d_ui_protocol::{EngineToUiMessage, HudLayoutPhase, MatchSessionState};
 use thiserror::Error;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::window::Window;
@@ -12,8 +12,6 @@ use wry::{
 const HUD_ORIGIN: &str = "spacegame-hud://localhost";
 const REVEAL_BAND_HEIGHT: f64 = 112.0;
 const COMPACT_BAR_HEIGHT: f64 = 34.0;
-const JOIN_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
-const DOCK_DURATION: std::time::Duration = std::time::Duration::from_millis(600);
 
 const INDEX_HTML: &[u8] = include_bytes!("../hud/dist/index.html");
 const HUD_JS: &[u8] = include_bytes!("../hud/dist/assets/hud.js");
@@ -103,6 +101,7 @@ pub struct HudWebView {
     bounds: HudBounds,
     layout: HudLayout,
     transition_started: Option<std::time::Instant>,
+    dock_duration: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Error)]
@@ -157,6 +156,7 @@ impl HudWebView {
             bounds,
             layout,
             transition_started: None,
+            dock_duration: None,
         })
     }
 
@@ -200,9 +200,11 @@ impl HudWebView {
         let Some(started) = self.transition_started else {
             return Ok(());
         };
-        self.layout = layout_at(started, now);
-        if self.layout == HudLayout::Compact {
+        let duration = self.dock_duration.unwrap_or_default();
+        if now.saturating_duration_since(started) >= duration {
+            self.layout = HudLayout::Compact;
             self.transition_started = None;
+            self.dock_duration = None;
         }
         let bounds = self.current_bounds(window, now);
         if bounds != self.bounds {
@@ -213,25 +215,46 @@ impl HudWebView {
     }
 
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.transition_started.map(|started| {
-            if self.layout == HudLayout::Join {
-                started + JOIN_HOLD
-            } else {
-                std::time::Instant::now() + std::time::Duration::from_millis(16)
+        self.transition_started
+            .map(|_| std::time::Instant::now() + std::time::Duration::from_millis(16))
+    }
+
+    pub fn set_layout(
+        &mut self,
+        window: &Window,
+        phase: HudLayoutPhase,
+        transition_duration_ms: Option<u16>,
+    ) -> Result<(), HudError> {
+        match phase {
+            HudLayoutPhase::Join => {
+                self.layout = HudLayout::Join;
+                self.transition_started = None;
+                self.dock_duration = None;
             }
-        })
+            HudLayoutPhase::Docking => {
+                self.layout = HudLayout::Docking;
+                self.transition_started = Some(std::time::Instant::now());
+                self.dock_duration = transition_duration_ms
+                    .map(u64::from)
+                    .map(std::time::Duration::from_millis);
+            }
+            HudLayoutPhase::Compact => {
+                self.layout = HudLayout::Compact;
+                self.transition_started = None;
+                self.dock_duration = None;
+            }
+        }
+        self.resize(window)
     }
 
     fn apply_match_state(&mut self, state: &MatchSessionState) {
         match state {
-            MatchSessionState::Active { .. } if self.layout == HudLayout::Pregame => {
-                self.layout = HudLayout::Join;
-                self.transition_started = Some(std::time::Instant::now());
-            }
             MatchSessionState::Reset { .. } | MatchSessionState::Waiting { .. } => {
                 self.layout = HudLayout::Pregame;
                 self.transition_started = None;
+                self.dock_duration = None;
             }
+            // The HUD owns match-introduction timing and requests its layout explicitly.
             MatchSessionState::Active { .. } => {}
         }
     }
@@ -243,9 +266,11 @@ impl HudWebView {
             return HudBounds::for_window(size, scale, self.layout);
         }
         let started = self.transition_started.unwrap_or(now);
+        let duration = self
+            .dock_duration
+            .unwrap_or(std::time::Duration::from_millis(1));
         let elapsed = now.saturating_duration_since(started);
-        let progress =
-            elapsed.saturating_sub(JOIN_HOLD).as_secs_f64() / DOCK_DURATION.as_secs_f64();
+        let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
         let eased = ease_out(progress);
         HudBounds::move_vertical(
             HudBounds::for_window(size, scale, HudLayout::Join),
@@ -258,17 +283,6 @@ impl HudWebView {
 fn ease_out(value: f64) -> f64 {
     let t = value.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
-}
-
-fn layout_at(started: std::time::Instant, now: std::time::Instant) -> HudLayout {
-    let elapsed = now.saturating_duration_since(started);
-    if elapsed < JOIN_HOLD {
-        HudLayout::Join
-    } else if elapsed < JOIN_HOLD + DOCK_DURATION {
-        HudLayout::Docking
-    } else {
-        HudLayout::Compact
-    }
 }
 
 fn embedded_asset(path: &str) -> (StatusCode, &'static str, &'static [u8]) {
@@ -379,27 +393,8 @@ mod tests {
     }
 
     #[test]
-    fn join_transition_holds_then_docks_and_settles() {
-        let started = std::time::Instant::now();
-        assert_eq!(layout_at(started, started), HudLayout::Join);
-        assert_eq!(
-            layout_at(
-                started,
-                started + JOIN_HOLD - std::time::Duration::from_millis(1)
-            ),
-            HudLayout::Join
-        );
-        assert_eq!(layout_at(started, started + JOIN_HOLD), HudLayout::Docking);
-        assert_eq!(
-            layout_at(
-                started,
-                started + JOIN_HOLD + DOCK_DURATION - std::time::Duration::from_millis(1)
-            ),
-            HudLayout::Docking
-        );
-        assert_eq!(
-            layout_at(started, started + JOIN_HOLD + DOCK_DURATION),
-            HudLayout::Compact
-        );
+    fn docking_progress_is_clamped() {
+        assert_eq!(ease_out(-1.0), 0.0);
+        assert_eq!(ease_out(2.0), 1.0);
     }
 }

@@ -28,6 +28,8 @@
   let activeTransition = 0;
   let joinTimer: ReturnType<typeof setTimeout> | undefined;
   let dockTimer: ReturnType<typeof setTimeout> | undefined;
+  const matchRevealDurationMs = 4000;
+  const matchDockDurationMs = 600;
 
   const requestId = (): RequestId => `request-${crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const connecting = () => ['resolvingHost', 'openingSocket', 'handshaking'].includes(state?.stage ?? '');
@@ -61,8 +63,17 @@
   const startJoin = () => {
     clearHudTimers(); hudPhase = 'reveal';
     const transition = ++activeTransition;
-    joinTimer = setTimeout(() => { if (activeTransition === transition) hudPhase = 'docking'; }, 700);
-    dockTimer = setTimeout(() => { if (activeTransition === transition) hudPhase = 'compact'; }, 1300);
+    send({ kind: 'hudLayoutRequested', protocolVersion, bridgeId, phase: 'join' });
+    joinTimer = setTimeout(() => {
+      if (activeTransition !== transition) return;
+      hudPhase = 'docking';
+      send({ kind: 'hudLayoutRequested', protocolVersion, bridgeId, phase: 'docking', transitionDurationMs: matchDockDurationMs });
+      dockTimer = setTimeout(() => {
+        if (activeTransition !== transition) return;
+        hudPhase = 'compact';
+        send({ kind: 'hudLayoutRequested', protocolVersion, bridgeId, phase: 'compact' });
+      }, matchDockDurationMs);
+    }, matchRevealDurationMs);
   };
 
   const linkLabel = () => {
@@ -100,6 +111,8 @@
   };
 
   const progressStage = () => state?.stage ?? 'idle';
+  const toneForColor = (color: 'cyan' | 'coral') => color === 'cyan' ? 'friendly' : 'enemy';
+  const colorLabel = (color: 'cyan' | 'coral') => `${color[0].toUpperCase()}${color.slice(1)}`;
 
   onMount(() => {
     const stop = subscribe((message: EngineToUi) => {
@@ -185,34 +198,34 @@
   <main class:reveal={hudPhase === 'reveal'} class:docking={hudPhase === 'docking'} class:compact={hudPhase === 'compact'} class="match-hud" aria-live="polite">
     {#if hudPhase !== 'compact'}
       <section class="match-reveal-card" aria-label="Match accepted">
-        <div class="friendly-mark">
+        <div class:enemy={matchSession.localPlayer.color === 'coral'} class="friendly-mark">
           <svg viewBox="0 0 30 30" aria-hidden="true">
             <circle class="ring-track" cx="15" cy="15" r="13"></circle>
             <circle class="ring-draw" cx="15" cy="15" r="13"></circle>
           </svg>
-          <TacticalGlyph tone="friendly" size={18} />
+          <TacticalGlyph tone={toneForColor(matchSession.localPlayer.color)} size={18} />
         </div>
-        <ParticipantIdentity label="Match accepted" value="Cyan · Windward" tone="friendly" />
+        <ParticipantIdentity label="Match accepted" value={`${colorLabel(matchSession.localPlayer.color)} · ${matchSession.localPlayer.displayName}`} tone={toneForColor(matchSession.localPlayer.color)} />
         <div class="reveal-divider"></div>
         <ParticipantIdentity
           label="Opponent"
           value={matchSession.opponentPlayer.displayName}
-          tone="enemy"
+          tone={toneForColor(matchSession.opponentPlayer.color)}
           glyph
           presence={matchSession.opponentPresence}
         />
-        <SelectionBrackets />
+        <SelectionBrackets tone={toneForColor(matchSession.localPlayer.color)} />
       </section>
     {/if}
     {#if hudPhase !== 'reveal'}
       <section class="status-bar">
         <div class="bar-brand"><strong>FLEET</strong><i></i><span>T+{timeLabel()}</span></div>
-        <div class="bar-local"><TacticalGlyph tone="friendly" framed size={16} /><strong>CYAN · {matchSession.localPlayer.displayName}</strong></div>
+        <div class:enemy={matchSession.localPlayer.color === 'coral'} class="bar-local"><TacticalGlyph tone={toneForColor(matchSession.localPlayer.color)} framed size={16} /><strong>{matchSession.localPlayer.color.toUpperCase()} · {matchSession.localPlayer.displayName}</strong></div>
         <div class="bar-opponent">
-          <TacticalGlyph tone="enemy" size={14} />
+          <TacticalGlyph tone={toneForColor(matchSession.opponentPlayer.color)} size={14} />
           <span>OPP</span>
           <strong>{matchSession.opponentPlayer.displayName}</strong>
-          <StateDot tone={matchSession.opponentPresence === 'present' ? 'enemy' : 'neutral'} certainty={matchSession.opponentPresence === 'present' ? 'confirmed' : 'stale'} size={5} />
+          <StateDot tone={matchSession.opponentPresence === 'present' ? toneForColor(matchSession.opponentPlayer.color) : 'neutral'} certainty={matchSession.opponentPresence === 'present' ? 'confirmed' : 'stale'} size={5} />
           <em>{matchSession.opponentPresence.toUpperCase()}</em>
           <button class="bar-disconnect" type="button" on:click={disconnect}>DISCONNECT</button>
         </div>

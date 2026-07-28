@@ -4,7 +4,7 @@ interface HudBridge { subscribe(listener: (raw: unknown) => void): () => void; s
 declare global { interface Window { __SPACEGAME_HUD__?: HudBridge; } }
 
 const inboundKinds = new Set(['connectionStateChanged', 'matchSessionStateChanged', 'protocolError', 'heartbeat']);
-const outboundKinds = new Set(['uiReady', 'connectRequested', 'connectionCancelled', 'disconnectRequested', 'heartbeatAcknowledged', 'bridgeFaultReported']);
+const outboundKinds = new Set(['uiReady', 'connectRequested', 'connectionCancelled', 'disconnectRequested', 'heartbeatAcknowledged', 'bridgeFaultReported', 'hudLayoutRequested']);
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isId = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_:-]{1,128}$/.test(value);
 const isInteger = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -39,6 +39,7 @@ export function validUiMessage(value: unknown): value is UiToEngine {
   if (!isRecord(value) || !isVersion(value) || !outboundKinds.has(String(value.kind)) || !isId(value.bridgeId)) return false;
   if (value.kind === 'connectRequested') return isId(value.requestId) && typeof value.address === 'string' && value.address.trim().length > 0 && typeof value.displayName === 'string' && value.displayName.trim().length > 0;
   if (value.kind === 'connectionCancelled' || value.kind === 'disconnectRequested') return isId(value.requestId);
+  if (value.kind === 'hudLayoutRequested') return ['join', 'compact'].includes(String(value.phase)) ? value.transitionDurationMs === undefined : value.phase === 'docking' && isInteger(value.transitionDurationMs) && Number(value.transitionDurationMs) > 0;
   return value.kind === 'uiReady' || isInteger(value.sequence) || typeof value.code === 'string';
 }
 export function subscribe(listener: (message: EngineToUi) => void): () => void {

@@ -587,6 +587,26 @@ mod tests {
     }
 
     #[test]
+    fn poll_events_rejects_a_malformed_session_snapshot_before_stale_revision_filtering() {
+        let malformed = SessionSnapshot {
+            local_player_slot: 1,
+            participants: vec![SessionParticipant {
+                player_slot: 1,
+                display_name: "Rook".into(),
+                color: PlayerColor::Coral,
+            }],
+            opponent_presence: OpponentPresence::Waiting,
+            presence_revision: 0,
+            match_timing: MatchTiming::Inactive,
+        };
+        let address = synthetic_server_with_messages(vec![Message::SessionSnapshot(malformed)]);
+        let mut session = NetworkSession::connect(&address).unwrap();
+
+        let error = session.poll_events().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn connect_returns_typed_handshake_rejection() {
         let address = synthetic_server(
             Message::HandshakeRejected(spacegame2d_protocol::HandshakeRejected {

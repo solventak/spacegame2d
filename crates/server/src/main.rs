@@ -203,6 +203,7 @@ pub async fn run_with_config(
         let mut remove = Vec::new();
         let mut broadcasts = Vec::new();
         let mut session_deliveries = Vec::new();
+        let mut active_match_ended = false;
         let mut reset_cutover = false;
         for (index, client) in clients.iter_mut().enumerate() {
             match client.read_messages() {
@@ -381,11 +382,20 @@ pub async fn run_with_config(
         for index in remove.into_iter().rev() {
             let client = clients.remove(index);
             if client.connected {
-                session_deliveries.extend(match_session.depart(client.slot));
+                let departure = match_session.depart(client.slot);
+                active_match_ended |= departure.active_match_ended;
+                session_deliveries.extend(departure.deliveries);
             }
             if let Some(player_id) = PlayerId::new(u8::try_from(client.slot).unwrap_or(0)) {
                 simulation.world.disconnect_player(player_id);
             }
+        }
+        if active_match_ended {
+            scheduled.clear();
+            broadcasts.clear();
+            simulation.reset_match().map_err(io::Error::other)?;
+            state_hashes.clear();
+            active_match_ended = false;
         }
         for delivery in session_deliveries {
             if let Some(client) = clients
@@ -411,7 +421,9 @@ pub async fn run_with_config(
         for index in flush_failed.into_iter().rev() {
             let client = clients.remove(index);
             if client.connected {
-                for delivery in match_session.depart(client.slot) {
+                let departure = match_session.depart(client.slot);
+                active_match_ended |= departure.active_match_ended;
+                for delivery in departure.deliveries {
                     if let Some(peer) = clients
                         .iter_mut()
                         .find(|peer| peer.connected && peer.slot == delivery.recipient_slot)
@@ -423,6 +435,11 @@ pub async fn run_with_config(
             if let Some(player_id) = PlayerId::new(u8::try_from(client.slot).unwrap_or(0)) {
                 simulation.world.disconnect_player(player_id);
             }
+        }
+        if active_match_ended {
+            scheduled.clear();
+            simulation.reset_match().map_err(io::Error::other)?;
+            state_hashes.clear();
         }
         if let Some(commands) = scheduled.remove(&simulation.tick()) {
             for command in commands {
@@ -703,6 +720,49 @@ mod tests {
         (address, shutdown, task)
     }
 
+    async fn connect_client(
+        address: SocketAddr,
+        display_name: &str,
+    ) -> (
+        tokio::net::TcpStream,
+        spacegame2d_protocol::ServerHello,
+        spacegame2d_protocol::InitialWorldState,
+        spacegame2d_protocol::SessionSnapshot,
+    ) {
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                &Message::ClientHello(ClientHello {
+                    simulation_version: SIMULATION_VERSION,
+                    capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+                    display_name: display_name.into(),
+                })
+                .encode()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let Message::ServerHello(hello) = read_message(&mut stream).await else {
+            panic!("expected server hello");
+        };
+        let Message::InitialWorldState(initial_world) = read_message(&mut stream).await else {
+            panic!("expected initial world state");
+        };
+        let Message::SessionSnapshot(session) = read_message(&mut stream).await else {
+            panic!("expected session snapshot");
+        };
+        (stream, hello, initial_world, session)
+    }
+
+    fn active_anchor(snapshot: &spacegame2d_protocol::SessionSnapshot) -> Tick {
+        match snapshot.match_timing {
+            spacegame2d_protocol::MatchTiming::Active { started_at_tick } => started_at_tick,
+            spacegame2d_protocol::MatchTiming::Inactive => {
+                panic!("expected active match timing")
+            }
+        }
+    }
+
     fn build_mirror(tick: Tick) -> Simulation {
         let mut sim = Simulation::default();
         sim.world.assign_mirror_owners();
@@ -776,6 +836,126 @@ mod tests {
                         reason: HandshakeRejectionReason::InvalidHandshake
                     })
                 ));
+                shutdown.send(true).unwrap();
+                task.await.unwrap().unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tcp_match_lifecycle_preserves_then_replaces_the_start_anchor() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (address, shutdown, task) = start_server().await;
+
+                let (mut first, _, _, first_waiting) = connect_client(address, "Rook").await;
+                assert!(matches!(
+                    first_waiting.match_timing,
+                    spacegame2d_protocol::MatchTiming::Inactive
+                ));
+
+                let (mut second, _, _, second_active) = connect_client(address, "Nova").await;
+                let Message::SessionSnapshot(first_active) = read_message(&mut first).await else {
+                    panic!("expected first participant's active snapshot");
+                };
+                let original_anchor = active_anchor(&second_active);
+                assert_eq!(active_anchor(&first_active), original_anchor);
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                second.shutdown().await.unwrap();
+                let Message::SessionSnapshot(first_disconnected) =
+                    tokio::time::timeout(Duration::from_secs(1), read_message(&mut first))
+                        .await
+                        .unwrap()
+                else {
+                    panic!("expected survivor's disconnected snapshot");
+                };
+                assert_eq!(active_anchor(&first_disconnected), original_anchor);
+
+                let (mut replacement, replacement_hello, _, replacement_active) =
+                    connect_client(address, "Echo").await;
+                let Message::SessionSnapshot(first_reconnected) = read_message(&mut first).await
+                else {
+                    panic!("expected survivor's replacement snapshot");
+                };
+                assert_eq!(active_anchor(&replacement_active), original_anchor);
+                assert_eq!(active_anchor(&first_reconnected), original_anchor);
+                assert!(replacement_hello.server_tick > original_anchor);
+                assert!(replacement_hello.server_tick - original_anchor > Tick::from(0));
+
+                first.shutdown().await.unwrap();
+                replacement.shutdown().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                let (mut next_first, _, _, next_waiting) = connect_client(address, "Rook").await;
+                assert!(matches!(
+                    next_waiting.match_timing,
+                    spacegame2d_protocol::MatchTiming::Inactive
+                ));
+                let (mut next_second, _, _, next_second_active) =
+                    connect_client(address, "Nova").await;
+                let Message::SessionSnapshot(next_first_active) =
+                    read_message(&mut next_first).await
+                else {
+                    panic!("expected next match snapshot");
+                };
+                let next_anchor = active_anchor(&next_second_active);
+                assert_eq!(active_anchor(&next_first_active), next_anchor);
+                assert!(next_anchor > original_anchor);
+
+                next_first.shutdown().await.unwrap();
+                next_second.shutdown().await.unwrap();
+                shutdown.send(true).unwrap();
+                task.await.unwrap().unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tcp_all_departures_reset_the_world_before_the_next_match() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (address, shutdown, task) = start_server().await;
+                let (mut first, _, _, _) = connect_client(address, "Rook").await;
+                let (mut second, _, _, _) = connect_client(address, "Nova").await;
+                let Message::SessionSnapshot(_) = read_message(&mut first).await else {
+                    panic!("expected first participant's active snapshot");
+                };
+
+                first
+                    .write_all(
+                        &Message::CommandRequest(CommandRequest {
+                            sequence: 1,
+                            command: CommandData::SetDestination {
+                                destination: [40.0f32.to_bits(), 10.0f32.to_bits()],
+                            },
+                        })
+                        .encode()
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let Message::AuthoritativeCommand(_) = read_message(&mut first).await else {
+                    panic!("expected command broadcast to first participant");
+                };
+                let Message::AuthoritativeCommand(_) = read_message(&mut second).await else {
+                    panic!("expected command broadcast to second participant");
+                };
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                first.shutdown().await.unwrap();
+                second.shutdown().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                let (mut next_first, _, next_world, _) = connect_client(address, "Rook").await;
+                assert!(
+                    next_world
+                        .units
+                        .iter()
+                        .all(|unit| unit.destination_bits.is_none())
+                );
+
+                next_first.shutdown().await.unwrap();
                 shutdown.send(true).unwrap();
                 task.await.unwrap().unwrap();
             })

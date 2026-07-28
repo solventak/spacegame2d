@@ -5,6 +5,7 @@ export type RequestId = string;
 export type BridgeId = string;
 export type PlayerColor = 'cyan' | 'coral';
 export type OpponentPresence = 'waiting' | 'present' | 'disconnected';
+export type HudLayoutPhase = 'join' | 'docking' | 'compact';
 export type LocalPlayer = { schemaVersion: 1; playerSlot: number; color: PlayerColor; colorHex: string };
 export type MatchParticipant = { playerSlot: number; displayName: string; color: PlayerColor; colorHex: string };
 export type MatchClock = { startedAtTick: number; currentTick: number; ticksPerSecond: number; elapsedWholeSeconds: number };
@@ -23,7 +24,8 @@ export type UiToEngine =
   | { kind: 'connectionCancelled'; protocolVersion: 3; bridgeId: BridgeId; requestId: RequestId }
   | { kind: 'disconnectRequested'; protocolVersion: 3; bridgeId: BridgeId; requestId: RequestId }
   | { kind: 'heartbeatAcknowledged'; protocolVersion: 3; bridgeId: BridgeId; sequence: number }
-  | { kind: 'bridgeFaultReported'; protocolVersion: 3; bridgeId: BridgeId; code: ProtocolErrorCode };
+  | { kind: 'bridgeFaultReported'; protocolVersion: 3; bridgeId: BridgeId; code: ProtocolErrorCode }
+  | { kind: 'hudLayoutRequested'; protocolVersion: 3; bridgeId: BridgeId; phase: HudLayoutPhase; transitionDurationMs?: number };
 export type EngineToUi =
   | { kind: 'connectionStateChanged'; protocolVersion: 3; bridgeId: BridgeId; state: ConnectionState }
   | { kind: 'matchSessionStateChanged'; protocolVersion: 3; bridgeId: BridgeId; state: MatchSessionState }
