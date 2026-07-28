@@ -25,13 +25,6 @@ impl PlayerColor {
             Self::Coral => PLAYER_TWO_COLOR,
         }
     }
-
-    pub const fn css_hex(self) -> &'static str {
-        match self {
-            Self::Cyan => "#22CFE8",
-            Self::Coral => "#FF6A47",
-        }
-    }
 }
 
 #[cfg(test)]
@@ -45,7 +38,5 @@ mod tests {
         assert_eq!(PlayerColor::for_slot(0), PlayerColor::Cyan);
         assert_eq!(PlayerColor::Cyan.render_rgba(), PLAYER_ONE_COLOR);
         assert_eq!(PlayerColor::Coral.render_rgba(), PLAYER_TWO_COLOR);
-        assert_eq!(PlayerColor::Cyan.css_hex(), "#22CFE8");
-        assert_eq!(PlayerColor::Coral.css_hex(), "#FF6A47");
     }
 }

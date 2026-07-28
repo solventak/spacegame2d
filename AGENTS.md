@@ -4,7 +4,7 @@
 
 ## Project
 
-`spacegame2d` — a 2D space simulation in Rust using wgpu. Drones move under autopilot and (currently in active development) avoid collisions via local predicted neighbor avoidance. The release branch is `main`; day-to-day development happens on `dev`.
+**Relay Operations** (`spacegame2d`) — a 2D space simulation in Rust using wgpu. Drones move under autopilot and (currently in active development) avoid collisions via local predicted neighbor avoidance. The release branch is `main`; day-to-day development happens on `dev`.
 
 ## Toolchain
 

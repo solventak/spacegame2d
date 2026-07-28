@@ -1,4 +1,4 @@
-# QA Guide — spacegame2d
+# QA Guide — Relay Operations
 
 This document describes how to bring the application to an interactive state and exercise it end-to-end. It covers both a **headless path** (no GPU or display required, suitable for CI and autonomous agents) and a **GUI path** (requires a desktop display).
 

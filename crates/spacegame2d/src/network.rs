@@ -49,9 +49,21 @@ impl NetworkSession {
     }
 
     pub fn connect_with_timeout(address: &str, timeout: Duration) -> Result<Self, ConnectError> {
+        Self::connect_with_timeout_and_progress(address, timeout, |_| {})
+    }
+
+    pub fn connect_with_timeout_and_progress<F>(
+        address: &str,
+        timeout: Duration,
+        progress: F,
+    ) -> Result<Self, ConnectError>
+    where
+        F: Fn(crate::session::ConnectionProgress),
+    {
         let started = Instant::now();
         let addresses =
             resolve_addresses(address.to_owned(), remaining_timeout(started, timeout)?)?;
+        progress(crate::session::ConnectionProgress::OpeningSocket);
         let mut last_error = None;
         let mut stream = None;
         for address in addresses {
@@ -73,6 +85,7 @@ impl NetworkSession {
         let remaining = remaining_timeout(started, timeout)?;
         stream.set_read_timeout(Some(remaining))?;
         stream.set_write_timeout(Some(remaining))?;
+        progress(crate::session::ConnectionProgress::Handshaking);
         Message::ClientHello(ClientHello {
             simulation_version: SIMULATION_VERSION,
             capabilities: vec![Capability::StateChecksums],

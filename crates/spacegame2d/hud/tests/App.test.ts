@@ -1,76 +1,99 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 import App from '../src/App.svelte';
-import { readState, validState } from '../src/bridge';
+import { validEngineMessage, validUiMessage } from '../src/bridge';
 
-const connected = { schemaVersion: 1 as const, kind: 'connected' as const, address: 'localhost:4000', localPlayer: { schemaVersion: 1 as const, playerSlot: 1, color: 'cyan' as const, colorHex: '#22CFE8' } };
-const disconnected = { schemaVersion: 1 as const, kind: 'disconnected' as const, address: 'localhost:4000', reason: 'startup' as const };
+const bridgeId = 'bridge-test';
+const ready = () => ({ kind: 'uiReady' as const, protocolVersion: 1 as const, bridgeId });
 
-describe('HUD', () => {
-  afterEach(() => { cleanup(); window.__SPACEGAME_HUD__ = undefined; });
-  it('renders the connected compact player model', () => {
-    render(App, { initialState: connected });
+function renderHud() {
+  const sendJson = vi.fn();
+  let listener: ((raw: unknown) => void) | undefined;
+  window.__SPACEGAME_HUD__ = {
+    sendJson,
+    subscribe: (next) => {
+      listener = next;
+      return () => {};
+    },
+  };
+  render(App);
+  const readyMessage = JSON.parse(sendJson.mock.calls[0]?.[0] ?? '{}');
+  const publish = async (state: Record<string, unknown>) => {
+    listener?.(JSON.stringify({
+      kind: 'connectionStateChanged',
+      protocolVersion: 1,
+      bridgeId: readyMessage.bridgeId,
+      state,
+    }));
+    await tick();
+  };
+  return { sendJson, publish };
+}
+
+describe('HUD IPC', () => {
+  afterEach(() => {
+    cleanup();
+    window.__SPACEGAME_HUD__ = undefined;
+  });
+
+  it('sends uiReady after subscribing and renders the connected compact HUD', async () => {
+    const { sendJson, publish } = renderHud();
+    expect(JSON.parse(sendJson.mock.calls[0]?.[0] ?? '{}').kind).toBe('uiReady');
+    await publish({
+      stage: 'connected',
+      requestId: 'request-1',
+      address: 'server.example:4000',
+      localPlayer: { schemaVersion: 1, playerSlot: 1, color: 'cyan', colorHex: '#22CFE8' },
+    });
     expect(screen.getByText('LOCAL COMMAND')).toBeTruthy();
-    expect(screen.getByText('01')).toBeTruthy();
-    expect(screen.getAllByText('CYAN')).toHaveLength(2);
   });
 
-  it('renders an editable connection form and sends Connect', async () => {
-    const send = vi.fn();
-    window.__SPACEGAME_HUD__ = { getState: () => disconnected, subscribe: () => () => {}, send };
-    render(App, { initialState: disconnected });
+  it('uses a hostname-safe address field and sends a request-scoped connect command', async () => {
+    const { sendJson } = renderHud();
     const input = screen.getByLabelText('Server address');
+    const connect = screen.getByRole('button', { name: 'CONNECT' });
+    expect(connect).toHaveProperty('disabled', true);
     await fireEvent.input(input, { target: { value: 'play.example:4000' } });
-    await fireEvent.click(screen.getByText('Connect'));
-    expect(send).toHaveBeenCalledWith({ schemaVersion: 1, kind: 'connect', address: 'play.example:4000' });
+    expect(screen.getByText('READY')).toBeTruthy();
+    await fireEvent.click(connect);
+    const message = JSON.parse(sendJson.mock.calls.at(-1)?.[0] ?? '{}');
+    expect(message.kind).toBe('connectRequested');
+    expect(message.address).toBe('play.example:4000');
+    expect(message.requestId).toMatch(/^request-/);
   });
 
-  it('renders Connecting with disabled address and Cancel', () => {
-    render(App, { initialState: { schemaVersion: 1, kind: 'connecting', address: 'localhost:4000' } });
-    expect((screen.getByLabelText('Server address') as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText('Cancel')).toBeTruthy();
-  });
-
-  it('renders useful messages for every failed connection outcome', () => {
-    for (const [state, message] of [
-      [{ schemaVersion: 1, kind: 'connectionFailed', address: 'x', reason: 'timeout' }, 'Connection failed. Check the address and try again.'],
-      [{ schemaVersion: 1, kind: 'rejected', address: 'x' }, 'The server rejected this connection.'],
-      [{ schemaVersion: 1, kind: 'serverFull', address: 'x' }, 'The server is full. Try again later.'],
-      [{ schemaVersion: 1, kind: 'versionMismatch', address: 'x' }, 'Client and server versions do not match. Update the client.'],
-    ] as const) {
-      const view = render(App, { initialState: state });
-      expect(view.getByText(message)).toBeTruthy();
-      expect(view.getByText('Connect')).toBeTruthy();
-      view.unmount();
+  it('maps each in-progress state to an instrument status and enables abort', async () => {
+    const { publish } = renderHud();
+    for (const [stage, label] of [
+      ['resolvingHost', 'RESOLVING HOST'],
+      ['openingSocket', 'OPENING SOCKET'],
+      ['handshaking', 'HANDSHAKING'],
+    ]) {
+      await publish({ stage, requestId: 'request-1', address: 'server.example:4000' });
+      expect(screen.getByText(label)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'ABORT' })).toBeTruthy();
     }
   });
 
-  it('renders each disconnected reason as an editable form', () => {
-    for (const [reason, message] of [
-      ['startup', 'Enter a server address to join.'],
-      ['cancelled', 'Enter a server address to join.'],
-      ['sessionLost', 'Disconnected from the server.'],
-    ] as const) {
-      const view = render(App, { initialState: { schemaVersion: 1, kind: 'disconnected', address: 'x', reason } });
-      expect(view.getByText(message)).toBeTruthy();
-      expect((view.getByLabelText('Server address') as HTMLInputElement).disabled).toBe(false);
-      expect(view.getByText('Connect')).toBeTruthy();
-      view.unmount();
-    }
+  it.each([
+    ['timeout', 'NO RESPONSE'],
+    ['network', 'NETWORK UNAVAILABLE'],
+    ['rejected', 'LINK REJECTED'],
+    ['serverFull', 'SERVER FULL'],
+    ['versionMismatch', 'VERSION MISMATCH'],
+  ])('renders the %s failure without inventing telemetry', async (reason, label) => {
+    const { publish } = renderHud();
+    await publish({ stage: 'failed', requestId: 'request-1', address: 'server.example:4000', reason });
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByText('RTT N/A')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'CONNECT' })).toBeTruthy();
   });
 
-  it('accepts every supported bridge state', () => {
-    window.__SPACEGAME_HUD__ = { getState: () => disconnected, subscribe: () => () => {}, send: () => {} };
-    expect(readState()).toEqual(disconnected);
-    for (const state of [
-      disconnected,
-      { schemaVersion: 1, kind: 'connecting', address: 'x' },
-      connected,
-      { schemaVersion: 1, kind: 'connectionFailed', address: 'x', reason: 'timeout' },
-      { schemaVersion: 1, kind: 'rejected', address: 'x' },
-      { schemaVersion: 1, kind: 'serverFull', address: 'x' },
-      { schemaVersion: 1, kind: 'versionMismatch', address: 'x' },
-    ] as const) expect(validState(state)).toBe(true);
-    expect(validState({ schemaVersion: 2, kind: 'disconnected', address: 'x' })).toBe(false);
+  it('validates strict directional messages', () => {
+    expect(validEngineMessage({ kind: 'heartbeat', protocolVersion: 1, bridgeId, sequence: 1 })).toBe(true);
+    expect(validEngineMessage({ kind: 'uiReady', protocolVersion: 1, bridgeId })).toBe(false);
+    expect(validUiMessage(ready())).toBe(true);
+    expect(validUiMessage({ kind: 'connectionStateChanged', protocolVersion: 1, bridgeId, state: {} })).toBe(false);
   });
 });
