@@ -10,7 +10,40 @@ message Envelope {
     CommandRejected command_rejected = 5;
     StateChecksum state_checksum = 6;
     HandshakeRejected handshake_rejected = 7;
+    InitialWorldState initial_world_state = 8;
   }
+}
+message InitialWorldState {
+  uint32 snapshot_format_version = 1;
+  uint32 simulation_version = 2;
+  uint64 tick = 3;
+  uint32 world_radius_bits = 4;
+  uint32 next_unit_id = 5;
+  bool unit_id_exhausted = 6;
+  repeated WorldUnit units = 7;
+  bytes state_hash = 8;
+  repeated AuthoritativeCommand pending_commands = 9;
+}
+message WorldUnit {
+  uint32 id = 1;
+  uint32 owner = 2;
+  bool has_owner = 3;
+  fixed32 position_x = 4;
+  fixed32 position_y = 5;
+  fixed32 velocity_x = 6;
+  fixed32 velocity_y = 7;
+  fixed32 heading = 8;
+  fixed32 angular_velocity = 9;
+  bool active = 10;
+  bool has_destination = 11;
+  fixed32 destination_x = 12;
+  fixed32 destination_y = 13;
+  uint32 hull_current = 14;
+  uint32 hull_maximum = 15;
+  fixed32 turret_local_heading = 16;
+  uint32 turret_target_kind = 17;
+  uint32 turret_target_id = 18;
+  uint32 turret_cooldown_ticks_remaining = 19;
 }
 
 message ClientHello {
@@ -80,4 +113,5 @@ enum CommandRejectionReason {
 enum Capability {
   CAPABILITY_UNSPECIFIED = 0;
   CAPABILITY_STATE_CHECKSUMS = 1;
+  CAPABILITY_WORLD_SNAPSHOTS = 2;
 }

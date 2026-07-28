@@ -136,6 +136,10 @@ pub async fn run_with_config(
     tracing::info!(event = "server_listening", address = %bound, "server listening");
     let mut clients = Vec::new();
     let mut simulation = Simulation::new(config.clone());
+    // Fleet ownership is part of the deterministic world, not connection
+    // membership. Every client must see slot 1 as blue and slot 2 as coral
+    // from its first snapshot; connection state still gates command validity.
+    simulation.world.assign_mirror_owners();
     let mut scheduled = BTreeMap::<Tick, Vec<AuthoritativeCommand>>::new();
     let mut state_hashes = BTreeMap::<Tick, [u8; 32]>::new();
     let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / SIMULATION_HZ as f64));
@@ -207,7 +211,9 @@ pub async fn run_with_config(
                             };
                             let reason = if hello.simulation_version != SIMULATION_VERSION {
                                 Some(HandshakeRejectionReason::IncompatibleVersion)
-                            } else if !hello.capabilities.contains(&Capability::StateChecksums) {
+                            } else if !hello.capabilities.contains(&Capability::StateChecksums)
+                                || !hello.capabilities.contains(&Capability::WorldSnapshots)
+                            {
                                 Some(HandshakeRejectionReason::MissingRequiredCapability)
                             } else {
                                 None
@@ -229,9 +235,19 @@ pub async fn run_with_config(
                                     server_tick: simulation.tick(),
                                     fleet_size: config.fleet_size(),
                                     world_radius_bits: config.world_radius_meters().to_bits(),
-                                    capabilities: vec![Capability::StateChecksums],
+                                    capabilities: vec![
+                                        Capability::StateChecksums,
+                                        Capability::WorldSnapshots,
+                                    ],
                                 },
                             ))?;
+                            let pending_commands = scheduled
+                                .range(simulation.tick()..)
+                                .flat_map(|(_, commands)| commands.iter().cloned())
+                                .collect();
+                            let initial_world = simulation.initial_world_state(pending_commands);
+                            tracing::info!(event = "world_snapshot_queued", tick = ?initial_world.tick, slot = client.slot, units = initial_world.units.len());
+                            client.queue(&Message::InitialWorldState(initial_world))?;
                             client.connected = true;
                         } else if let Message::StateChecksum(StateChecksum { tick, hash }) = message
                         {
@@ -648,14 +664,14 @@ mod tests {
         assert!(
             ClientHello {
                 simulation_version: SIMULATION_VERSION,
-                capabilities: vec![Capability::StateChecksums]
+                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots]
             }
             .is_compatible()
         );
         assert!(
             !(ClientHello {
                 simulation_version: SIMULATION_VERSION - 1,
-                capabilities: vec![Capability::StateChecksums]
+                capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots]
             }
             .is_compatible())
         );
@@ -698,10 +714,14 @@ mod tests {
                 let mut first = tokio::net::TcpStream::connect(address).await.unwrap();
                 let hello = Message::ClientHello(ClientHello {
                     simulation_version: SIMULATION_VERSION,
-                    capabilities: vec![Capability::StateChecksums],
+                    capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
                 });
                 first.write_all(&hello.encode().unwrap()).await.unwrap();
                 let Message::ServerHello(first_hello) = read_message(&mut first).await else {
+                    panic!()
+                };
+                let Message::InitialWorldState(first_snapshot) = read_message(&mut first).await
+                else {
                     panic!()
                 };
 
@@ -711,21 +731,43 @@ mod tests {
                 let Message::ServerHello(second_hello) = read_message(&mut second).await else {
                     panic!()
                 };
+                let Message::InitialWorldState(second_snapshot) = read_message(&mut second).await
+                else {
+                    panic!()
+                };
                 assert_eq!(first_hello.player_slot, 1);
                 assert_eq!(second_hello.player_slot, 2);
                 first_hello.validate(SIMULATION_HZ).unwrap();
                 second_hello.validate(SIMULATION_HZ).unwrap();
                 assert!(second_hello.server_tick > first_hello.server_tick);
 
-                // Late-joiner receives the same deterministic 60-unit layout and
-                // ownership as the first client.
-                let first_client_mirror = build_mirror(first_hello.server_tick);
-                let late_joiner_mirror = build_mirror(second_hello.server_tick);
-                assert_eq!(late_joiner_mirror.world.units.len(), MAX_UNITS);
-                assert_eq!(
-                    late_joiner_mirror.world.units.len(),
-                    first_client_mirror.world.units.len()
+                // Ownership is match state, not connection state: player one
+                // must render player two's fleet as coral before player two has
+                // connected, otherwise the two simulations diverge.
+                let first_client_mirror = Simulation::restore_initial_world_state(
+                    &first_snapshot,
+                    SimulationConfig::default(),
+                )
+                .unwrap();
+                assert!(
+                    first_client_mirror.world.units[..FLEET_SIZE]
+                        .iter()
+                        .all(|unit| unit.owner == Some(PlayerId(1)))
                 );
+                assert!(
+                    first_client_mirror.world.units[FLEET_SIZE..]
+                        .iter()
+                        .all(|unit| unit.owner == Some(PlayerId(2)))
+                );
+
+                // The late joiner restores the authoritative state instead of a
+                // locally generated default world.
+                let late_joiner_mirror = Simulation::restore_initial_world_state(
+                    &second_snapshot,
+                    SimulationConfig::default(),
+                )
+                .unwrap();
+                assert_eq!(late_joiner_mirror.world.units.len(), MAX_UNITS);
                 assert!(
                     late_joiner_mirror.world.units[..FLEET_SIZE]
                         .iter()
@@ -736,19 +778,6 @@ mod tests {
                         .iter()
                         .all(|unit| unit.owner == Some(PlayerId(2)))
                 );
-                let first_layout: Vec<_> = first_client_mirror
-                    .world
-                    .units
-                    .iter()
-                    .map(|unit| (unit.id, unit.owner, unit.state))
-                    .collect();
-                let late_layout: Vec<_> = late_joiner_mirror
-                    .world
-                    .units
-                    .iter()
-                    .map(|unit| (unit.id, unit.owner, unit.state))
-                    .collect();
-                assert_eq!(first_layout, late_layout);
 
                 let owned_request = Message::CommandRequest(CommandRequest {
                     sequence: 6,

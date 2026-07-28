@@ -58,6 +58,10 @@ impl Autopilot {
         self.destination = None;
         self.active = false;
     }
+    pub(crate) fn restore_destination(&mut self, destination: Option<Vec2>, active: bool) {
+        self.destination = destination;
+        self.active = active;
+    }
     pub fn is_active(&self) -> bool {
         self.active
     }

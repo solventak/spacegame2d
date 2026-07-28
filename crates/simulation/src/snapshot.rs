@@ -7,9 +7,11 @@ use crate::{
     simulation::Simulation,
     structure::{HomeObjectivePair, StaticStructure},
 };
+use glam::Vec2;
 use spacegame2d_protocol::Tick;
+use thiserror::Error;
 
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 7;
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 8;
 pub const STATE_HASH_BYTES: usize = 32;
 pub type StateHash = [u8; STATE_HASH_BYTES];
 
@@ -111,6 +113,150 @@ impl Simulation {
     pub fn state_hash(&self) -> StateHash {
         self.snapshot().state_hash()
     }
+
+    pub fn initial_world_state(
+        &self,
+        pending_commands: Vec<spacegame2d_protocol::AuthoritativeCommand>,
+    ) -> spacegame2d_protocol::InitialWorldState {
+        let snapshot = self.snapshot();
+        spacegame2d_protocol::InitialWorldState {
+            snapshot_format_version: u32::from(snapshot.format_version),
+            simulation_version: snapshot.simulation_version,
+            tick: snapshot.tick,
+            world_radius_bits: snapshot.world_radius_bits,
+            next_unit_id: snapshot.next_unit_id,
+            unit_id_exhausted: snapshot.unit_id_exhausted,
+            state_hash: self.state_hash().to_vec(),
+            pending_commands,
+            units: snapshot
+                .units
+                .into_iter()
+                .map(|unit| spacegame2d_protocol::WorldUnit {
+                    id: unit.id,
+                    owner: unit.owner.map(u32::from),
+                    position_bits: unit.position_bits,
+                    velocity_bits: unit.velocity_bits,
+                    heading_bits: unit.heading_bits,
+                    angular_velocity_bits: unit.angular_velocity_bits,
+                    active: unit.active,
+                    destination_bits: unit.destination_bits,
+                    hull_current: unit.hull_current,
+                    hull_maximum: unit.hull_maximum,
+                    turret_local_heading_bits: unit.turret_local_heading_bits,
+                    turret_target: unit.turret_target.map(|(kind, id)| (u32::from(kind), id)),
+                    turret_cooldown_ticks_remaining: unit.turret_cooldown_ticks_remaining,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn restore_initial_world_state(
+        state: &spacegame2d_protocol::InitialWorldState,
+        config: crate::config::SimulationConfig,
+    ) -> Result<Self, SnapshotRestoreError> {
+        if state.snapshot_format_version != u32::from(SNAPSHOT_FORMAT_VERSION) {
+            return Err(SnapshotRestoreError::FormatVersion);
+        }
+        if state.simulation_version != spacegame2d_protocol::SIMULATION_VERSION {
+            return Err(SnapshotRestoreError::SimulationVersion);
+        }
+        if state.world_radius_bits != config.world_radius_meters().to_bits() {
+            return Err(SnapshotRestoreError::WorldRadius);
+        }
+        if state.state_hash.len() != STATE_HASH_BYTES {
+            return Err(SnapshotRestoreError::HashLength);
+        }
+        let mut simulation = Self::new(config);
+        simulation.set_tick(state.tick);
+        simulation.world.units.clear();
+        for snapshot in &state.units {
+            let owner = snapshot
+                .owner
+                .map(|owner| {
+                    crate::command::PlayerId::try_from(owner)
+                        .map_err(|_| SnapshotRestoreError::InvalidPlayer)
+                })
+                .transpose()?;
+            let mut unit = crate::command::Unit::with_avoidance(
+                crate::command::UnitId(snapshot.id),
+                owner,
+                crate::simulation::ShipState {
+                    position: Vec2::new(
+                        f32::from_bits(snapshot.position_bits[0]),
+                        f32::from_bits(snapshot.position_bits[1]),
+                    ),
+                    velocity: Vec2::new(
+                        f32::from_bits(snapshot.velocity_bits[0]),
+                        f32::from_bits(snapshot.velocity_bits[1]),
+                    ),
+                    heading_radians: f32::from_bits(snapshot.heading_bits),
+                    angular_velocity_radians_per_second: f32::from_bits(
+                        snapshot.angular_velocity_bits,
+                    ),
+                },
+                simulation.config().avoidance(),
+            );
+            unit.autopilot.restore_destination(
+                snapshot
+                    .destination_bits
+                    .map(|d| Vec2::new(f32::from_bits(d[0]), f32::from_bits(d[1]))),
+                snapshot.active,
+            );
+            unit.combat.hull.current = snapshot.hull_current;
+            unit.combat.hull.maximum = snapshot.hull_maximum;
+            unit.combat.turret.local_heading_radians =
+                f32::from_bits(snapshot.turret_local_heading_bits);
+            unit.combat.turret.target = snapshot
+                .turret_target
+                .map(|(kind, id)| match kind {
+                    1 => Ok(crate::combat::CombatTargetId::Unit(crate::command::UnitId(
+                        id,
+                    ))),
+                    2 => Ok(crate::combat::CombatTargetId::CommandCore(
+                        crate::structure::StaticStructureId(id),
+                    )),
+                    _ => Err(SnapshotRestoreError::InvalidTarget),
+                })
+                .transpose()?;
+            unit.combat.turret.cooldown_ticks_remaining = snapshot.turret_cooldown_ticks_remaining;
+            simulation.world.units.push(unit);
+        }
+        simulation.world.next_unit_id = state.next_unit_id;
+        simulation
+            .world
+            .set_unit_id_exhausted(state.unit_id_exhausted);
+        for command in &state.pending_commands {
+            if command.execute_tick < state.tick
+                || !simulation.schedule_authoritative_trusted(command)
+            {
+                return Err(SnapshotRestoreError::InvalidCommand);
+            }
+        }
+        if simulation.state_hash().as_slice() != state.state_hash.as_slice() {
+            return Err(SnapshotRestoreError::HashMismatch);
+        }
+        Ok(simulation)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum SnapshotRestoreError {
+    #[error("unsupported snapshot format")]
+    FormatVersion,
+    #[error("simulation version mismatch")]
+    SimulationVersion,
+    #[error("world radius mismatch")]
+    WorldRadius,
+    #[error("invalid state hash length")]
+    HashLength,
+    #[error("invalid player in snapshot")]
+    InvalidPlayer,
+    #[error("invalid turret target in snapshot")]
+    InvalidTarget,
+    #[error("invalid pending command in snapshot")]
+    InvalidCommand,
+    #[error("snapshot state hash mismatch")]
+    HashMismatch,
 }
 
 impl SimulationSnapshot {
@@ -509,5 +655,35 @@ mod tests {
             simulation.step().unwrap();
         }
         assert_eq!(left.state_hash(), right.state_hash());
+    }
+
+    #[test]
+    fn moving_world_restores_with_an_identical_hash_and_positions() {
+        use spacegame2d_protocol::{AuthoritativeCommand, CommandData};
+
+        let mut authoritative = Simulation::default();
+        authoritative.world.assign_mirror_owners();
+        let command = AuthoritativeCommand {
+            execute_tick: Tick::default(),
+            player_slot: 1,
+            sequence: 1,
+            command: CommandData::SetDestination {
+                destination: [0.0f32.to_bits(), 20.0f32.to_bits()],
+            },
+        };
+        assert!(authoritative.schedule_authoritative_trusted(&command));
+        for _ in 0..8 {
+            authoritative.step().unwrap();
+        }
+
+        let snapshot = authoritative.initial_world_state(vec![]);
+        let restored =
+            Simulation::restore_initial_world_state(&snapshot, authoritative.config()).unwrap();
+
+        assert_eq!(restored.state_hash(), authoritative.state_hash());
+        assert_eq!(
+            restored.world.units[0].state.position,
+            authoritative.world.units[0].state.position
+        );
     }
 }
