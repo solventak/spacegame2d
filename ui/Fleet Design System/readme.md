@@ -1,6 +1,6 @@
 # Fleet — Design System
 
-**Fleet** (working name; the game is currently unnamed) is a competitive 2D real-time strategy game about
+The **Fleet Design System** is the interface language for **Relay Operations**, a competitive 2D real-time strategy game about
 commanding a massive space fleet. Thousands of autonomous drones flow and fight around a small number of
 powerful capital ships, and a few well-chosen commands translate strategic intent into action at enormous
 scale. A match is decided by the **Shield Relay** — an 8-second capture objective that drops the opposing

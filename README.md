@@ -1,6 +1,6 @@
-# spacegame2d
+# Relay Operations
 
-A 2D space simulation in Rust using wgpu. Drones move under autopilot; collision avoidance via predicted neighbor trajectories is in active development.
+A 2D space simulation in Rust using wgpu. Drones move under autopilot; collision avoidance via predicted neighbor trajectories is in active development. The repository and crate name remain `spacegame2d`.
 
 ## Quick start
 
