@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use spacegame2d_ui_protocol::{ConnectionStateSnapshot, EngineToUiMessage};
+use spacegame2d_ui_protocol::{EngineToUiMessage, HudLayoutPhase, MatchSessionState};
 use thiserror::Error;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::window::Window;
@@ -10,10 +10,8 @@ use wry::{
 };
 
 const HUD_ORIGIN: &str = "spacegame-hud://localhost";
-const EDGE_INSET: f64 = 14.0;
-const PREFERRED_WIDTH: f64 = 224.0;
-// The Fleet panel uses 12px frame padding above and below its header/readout stack.
-const PREFERRED_HEIGHT: f64 = 88.0;
+const REVEAL_BAND_HEIGHT: f64 = 112.0;
+const COMPACT_BAR_HEIGHT: f64 = 34.0;
 
 const INDEX_HTML: &[u8] = include_bytes!("../hud/dist/index.html");
 const HUD_JS: &[u8] = include_bytes!("../hud/dist/assets/hud.js");
@@ -33,17 +31,9 @@ fn initialization_script() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HudLayout {
     Pregame,
+    Join,
+    Docking,
     Compact,
-}
-
-impl HudLayout {
-    fn for_state(state: &ConnectionStateSnapshot) -> Self {
-        if state.is_connected() {
-            Self::Compact
-        } else {
-            Self::Pregame
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,12 +57,24 @@ impl HudBounds {
                 height: parent_height.max(1.0),
             };
         }
-        let width = PREFERRED_WIDTH.min(parent_width.max(1.0));
-        let height = PREFERRED_HEIGHT.min(parent_height.max(1.0));
+        if matches!(layout, HudLayout::Join | HudLayout::Docking) {
+            let height = REVEAL_BAND_HEIGHT.min(parent_height.max(1.0));
+            return Self {
+                x: 0.0,
+                y: if layout == HudLayout::Join {
+                    ((parent_height - height) / 2.0).max(0.0)
+                } else {
+                    0.0
+                },
+                width: parent_width.max(1.0),
+                height,
+            };
+        }
+        let height = COMPACT_BAR_HEIGHT.min(parent_height.max(1.0));
         Self {
-            x: EDGE_INSET.min((parent_width - width).max(0.0)),
-            y: EDGE_INSET.min((parent_height - height).max(0.0)),
-            width,
+            x: 0.0,
+            y: 0.0,
+            width: parent_width.max(1.0),
             height,
         }
     }
@@ -83,6 +85,14 @@ impl HudBounds {
             size: LogicalSize::new(self.width, self.height).into(),
         }
     }
+
+    fn move_vertical(from: Self, to_y: f64, progress: f64) -> Self {
+        let t = progress.clamp(0.0, 1.0);
+        Self {
+            y: from.y + (to_y - from.y) * t,
+            ..from
+        }
+    }
 }
 
 pub struct HudWebView {
@@ -90,6 +100,8 @@ pub struct HudWebView {
     webview: WebView,
     bounds: HudBounds,
     layout: HudLayout,
+    transition_started: Option<std::time::Instant>,
+    dock_duration: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Error)]
@@ -143,11 +155,13 @@ impl HudWebView {
             webview,
             bounds,
             layout,
+            transition_started: None,
+            dock_duration: None,
         })
     }
 
     pub fn resize(&mut self, window: &Window) -> Result<(), HudError> {
-        let bounds = HudBounds::for_window(window.inner_size(), window.scale_factor(), self.layout);
+        let bounds = self.current_bounds(window, std::time::Instant::now());
         if bounds != self.bounds {
             self.webview.set_bounds(bounds.rect())?;
         }
@@ -160,17 +174,115 @@ impl HudWebView {
         window: &Window,
         message: &EngineToUiMessage,
     ) -> Result<(), HudError> {
-        if let EngineToUiMessage::ConnectionStateChanged { state, .. } = message {
-            self.layout = HudLayout::for_state(state);
-        }
-        self.resize(window)?;
         let state = message.encode()?;
         let argument = serde_json::to_string(&state)?;
+        let match_class_script = match message {
+            EngineToUiMessage::MatchSessionStateChanged {
+                state: MatchSessionState::Active { .. },
+                ..
+            } => "document.documentElement.classList.add('match-active');",
+            EngineToUiMessage::MatchSessionStateChanged { .. } => {
+                "document.documentElement.classList.remove('match-active');"
+            }
+            _ => "",
+        };
         self.webview.evaluate_script(&format!(
-            "window.__SPACEGAME_HUD__.receiveJson({argument});"
+            "{match_class_script}window.__SPACEGAME_HUD__.receiveJson({argument});"
         ))?;
+        if let EngineToUiMessage::MatchSessionStateChanged { state, .. } = message {
+            self.apply_match_state(state);
+        }
+        self.resize(window)?;
         Ok(())
     }
+
+    pub fn advance(&mut self, window: &Window, now: std::time::Instant) -> Result<(), HudError> {
+        let Some(started) = self.transition_started else {
+            return Ok(());
+        };
+        let duration = self.dock_duration.unwrap_or_default();
+        if now.saturating_duration_since(started) >= duration {
+            self.layout = HudLayout::Compact;
+            self.transition_started = None;
+            self.dock_duration = None;
+        }
+        let bounds = self.current_bounds(window, now);
+        if bounds != self.bounds {
+            self.webview.set_bounds(bounds.rect())?;
+            self.bounds = bounds;
+        }
+        Ok(())
+    }
+
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.transition_started
+            .map(|_| std::time::Instant::now() + std::time::Duration::from_millis(16))
+    }
+
+    pub fn set_layout(
+        &mut self,
+        window: &Window,
+        phase: HudLayoutPhase,
+        transition_duration_ms: Option<u16>,
+    ) -> Result<(), HudError> {
+        match phase {
+            HudLayoutPhase::Join => {
+                self.layout = HudLayout::Join;
+                self.transition_started = None;
+                self.dock_duration = None;
+            }
+            HudLayoutPhase::Docking => {
+                self.layout = HudLayout::Docking;
+                self.transition_started = Some(std::time::Instant::now());
+                self.dock_duration = transition_duration_ms
+                    .map(u64::from)
+                    .map(std::time::Duration::from_millis);
+            }
+            HudLayoutPhase::Compact => {
+                self.layout = HudLayout::Compact;
+                self.transition_started = None;
+                self.dock_duration = None;
+            }
+        }
+        self.resize(window)
+    }
+
+    fn apply_match_state(&mut self, state: &MatchSessionState) {
+        match state {
+            MatchSessionState::Reset { .. } | MatchSessionState::Waiting { .. } => {
+                self.layout = HudLayout::Pregame;
+                self.transition_started = None;
+                self.dock_duration = None;
+            }
+            // The HUD owns match-introduction timing and requests its layout explicitly.
+            MatchSessionState::Active { .. } => {}
+        }
+    }
+
+    fn current_bounds(&self, window: &Window, now: std::time::Instant) -> HudBounds {
+        let size = window.inner_size();
+        let scale = window.scale_factor();
+        if self.layout != HudLayout::Docking {
+            return HudBounds::for_window(size, scale, self.layout);
+        }
+        let started = self.transition_started.unwrap_or(now);
+        let duration = self
+            .dock_duration
+            .unwrap_or(std::time::Duration::from_millis(1));
+        let elapsed = now.saturating_duration_since(started);
+        let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
+        let eased = ease_out(progress);
+        HudBounds::move_vertical(
+            HudBounds::for_window(size, scale, HudLayout::Join),
+            0.0,
+            eased,
+        )
+    }
+}
+
+fn ease_out(value: f64) -> f64 {
+    let t = value.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
 }
 
 fn embedded_asset(path: &str) -> (StatusCode, &'static str, &'static [u8]) {
@@ -233,10 +345,10 @@ mod tests {
         assert_eq!(
             HudBounds::for_window(PhysicalSize::new(800, 600), 1.0, HudLayout::Compact),
             HudBounds {
-                x: 14.0,
-                y: 14.0,
-                width: 224.0,
-                height: 88.0
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 34.0
             }
         );
         assert_eq!(
@@ -245,12 +357,44 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
                 width: 100.0,
-                height: 50.0
+                height: 34.0
             }
         );
         assert_eq!(
-            HudBounds::for_window(PhysicalSize::new(500, 250), 2.0, HudLayout::Compact).x,
-            14.0
+            HudBounds::for_window(PhysicalSize::new(500, 250), 2.0, HudLayout::Compact).width,
+            250.0
         );
+        assert_eq!(
+            HudBounds::for_window(PhysicalSize::new(800, 600), 1.0, HudLayout::Join),
+            HudBounds {
+                x: 0.0,
+                y: 244.0,
+                width: 800.0,
+                height: 112.0,
+            }
+        );
+    }
+
+    #[test]
+    fn docking_moves_the_fixed_reveal_band_without_resizing() {
+        let size = PhysicalSize::new(1600, 900);
+        let join = HudBounds::for_window(size, 1.0, HudLayout::Join);
+        let halfway = HudBounds::move_vertical(join, 0.0, ease_out(0.5));
+        assert_eq!(halfway.x, 0.0);
+        assert_eq!(halfway.width, 1600.0);
+        assert_eq!(halfway.height, REVEAL_BAND_HEIGHT);
+        assert!(halfway.y > 0.0);
+        assert!(halfway.y < join.y);
+
+        let docked = HudBounds::move_vertical(join, 0.0, 1.0);
+        assert_eq!(docked.y, 0.0);
+        assert_eq!(docked.width, join.width);
+        assert_eq!(docked.height, join.height);
+    }
+
+    #[test]
+    fn docking_progress_is_clamped() {
+        assert_eq!(ease_out(-1.0), 0.0);
+        assert_eq!(ease_out(2.0), 1.0);
     }
 }

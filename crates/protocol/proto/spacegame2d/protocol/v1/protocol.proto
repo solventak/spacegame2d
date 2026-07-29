@@ -11,6 +11,7 @@ message Envelope {
     StateChecksum state_checksum = 6;
     HandshakeRejected handshake_rejected = 7;
     InitialWorldState initial_world_state = 8;
+    SessionSnapshot session_snapshot = 9;
   }
 }
 message InitialWorldState {
@@ -59,6 +60,39 @@ message ServerHello {
   repeated Capability enabled_capabilities = 5;
   uint32 fleet_size = 6;
   uint32 world_radius_bits = 7;
+}
+message SessionSnapshot {
+  uint32 local_player_slot = 1;
+  repeated SessionParticipant participants = 2;
+  OpponentPresence opponent_presence = 3;
+  uint64 presence_revision = 4;
+  MatchTiming match_timing = 5;
+}
+message SessionParticipant {
+  uint32 player_slot = 1;
+  string display_name = 2;
+  PlayerColor color = 3;
+}
+enum PlayerColor {
+  PLAYER_COLOR_UNSPECIFIED = 0;
+  PLAYER_COLOR_CYAN = 1;
+  PLAYER_COLOR_CORAL = 2;
+}
+enum OpponentPresence {
+  OPPONENT_PRESENCE_UNSPECIFIED = 0;
+  OPPONENT_PRESENCE_WAITING = 1;
+  OPPONENT_PRESENCE_PRESENT = 2;
+  OPPONENT_PRESENCE_DISCONNECTED = 3;
+}
+message MatchTiming {
+  oneof state {
+    MatchTimingInactive inactive = 1;
+    ActiveMatchTiming active = 2;
+  }
+}
+message MatchTimingInactive {}
+message ActiveMatchTiming {
+  uint64 started_at_tick = 1;
 }
 message CommandRequest {
   uint32 sequence = 1;

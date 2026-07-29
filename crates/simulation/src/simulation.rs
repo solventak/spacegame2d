@@ -131,6 +131,13 @@ impl Simulation {
     pub fn config(&self) -> SimulationConfig {
         self.world.config()
     }
+
+    /// Restore the canonical match world while preserving the monotonic simulation tick.
+    pub fn reset_match(&mut self) -> Result<(), crate::command::CommandExecutionError> {
+        self.commands.clear_pending();
+        self.world.reset_match()
+    }
+
     pub fn world(&self) -> &World {
         &self.world
     }

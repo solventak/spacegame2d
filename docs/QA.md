@@ -103,10 +103,10 @@ For the embedded HUD on Ubuntu, install `libwebkit2gtk-4.1-0` and `xwayland`; bu
 1. Start the client without a server. Confirm the opaque connection form appears, its address is editable, and it does not auto-connect.
 2. Submit an unreachable address. Within five seconds the editable form returns with a connection-failed message.
 3. Start an attempt and select Cancel. The form is immediately editable again; a late result must not replace it.
-4. Start the server and connect. Confirm the existing native window remains open and the WebView shrinks to the compact player panel; player 1 reports `01` / `CYAN` and player 2 reports `02` / `CORAL`.
+4. Start the server and connect two clients. Confirm the existing native windows remain open, each client shows the centered horizontal match-accepted reveal, and the reveal docks into the 34-logical-pixel full-width top bar without clipping.
 5. Stop the server during play. Confirm the client returns to the full connection form instead of exiting.
-6. Resize, maximize/restore, and change display scale in both pregame and connected modes. The pregame form fills the window and the compact panel stays 14 logical pixels from the upper-left; no independent GTK host window or stale gray surface appears.
-7. Outside the compact panel, verify right-click destination, middle-drag camera, keyboard controls, and close behavior still work.
+6. Resize, maximize/restore, and change display scale in both pregame and connected modes. The pregame form fills the window, the reveal stays centered, and the compact bar remains full-width at the top edge; no independent GTK host window, stale connection surface, or cropped transition frame appears.
+7. Outside the narrow reveal band or compact top bar, verify right-click destination, middle-drag camera, keyboard controls, and close behavior still work.
 8. On an Ubuntu Wayland desktop, confirm logs record `display_backend="x11"` and the client is hosted through XWayland.
 
 A window titled "Spacegame 2D" opens showing a black background with a subtle ring (the default 64 m death boundary) and the deterministic fleet spawned for the connected player and mirrored fleets received from the server.

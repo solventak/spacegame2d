@@ -174,6 +174,7 @@
         "enum": [
           "startup",
           "cancelled",
+          "userDisconnected",
           "sessionLost"
         ],
         "type": "string"
@@ -206,6 +207,182 @@
           "colorHex"
         ],
         "type": "object"
+      },
+      "MatchClockHudModel": {
+        "additionalProperties": false,
+        "properties": {
+          "currentTick": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "elapsedWholeSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "startedAtTick": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ticksPerSecond": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "startedAtTick",
+          "currentTick",
+          "ticksPerSecond",
+          "elapsedWholeSeconds"
+        ],
+        "type": "object"
+      },
+      "MatchParticipantHudModel": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "$ref": "#/$defs/PlayerColor"
+          },
+          "colorHex": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "playerSlot": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "playerSlot",
+          "displayName",
+          "color",
+          "colorHex"
+        ],
+        "type": "object"
+      },
+      "MatchSessionResetReason": {
+        "enum": [
+          "startup",
+          "newConnectionAttempt",
+          "userDisconnected",
+          "sessionLost"
+        ],
+        "type": "string"
+      },
+      "MatchSessionState": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "$ref": "#/$defs/MatchSessionResetReason"
+              },
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stage": {
+                "const": "reset",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "sequence",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "localPlayer": {
+                "$ref": "#/$defs/MatchParticipantHudModel"
+              },
+              "opponentPresence": {
+                "$ref": "#/$defs/OpponentPresence"
+              },
+              "presenceRevision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stage": {
+                "const": "waiting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "sequence",
+              "localPlayer",
+              "opponentPresence",
+              "presenceRevision"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "clock": {
+                "$ref": "#/$defs/MatchClockHudModel"
+              },
+              "localPlayer": {
+                "$ref": "#/$defs/MatchParticipantHudModel"
+              },
+              "opponentPlayer": {
+                "$ref": "#/$defs/MatchParticipantHudModel"
+              },
+              "opponentPresence": {
+                "$ref": "#/$defs/OpponentPresence"
+              },
+              "presenceRevision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stage": {
+                "const": "active",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stage",
+              "sequence",
+              "localPlayer",
+              "opponentPlayer",
+              "opponentPresence",
+              "presenceRevision",
+              "clock"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "OpponentPresence": {
+        "enum": [
+          "waiting",
+          "present",
+          "disconnected"
+        ],
+        "type": "string"
       },
       "PlayerColor": {
         "enum": [
@@ -247,6 +424,34 @@
           },
           "state": {
             "$ref": "#/$defs/ConnectionStateSnapshot"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "state"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "matchSessionStateChanged",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/$defs/MatchSessionState"
           }
         },
         "required": [
@@ -318,10 +523,18 @@
     ],
     "title": "EngineToUiMessage"
   },
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "title": "spacegame2d UI-engine IPC",
   "uiToEngine": {
     "$defs": {
+      "HudLayoutPhase": {
+        "enum": [
+          "join",
+          "docking",
+          "compact"
+        ],
+        "type": "string"
+      },
       "ProtocolErrorCode": {
         "enum": [
           "malformedJson",
@@ -432,6 +645,34 @@
             "type": "string"
           },
           "kind": {
+            "const": "disconnectRequested",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
             "const": "heartbeatAcknowledged",
             "type": "string"
           },
@@ -480,6 +721,43 @@
           "protocolVersion",
           "bridgeId",
           "code"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bridgeId": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "hudLayoutRequested",
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/$defs/HudLayoutPhase"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transitionDurationMs": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "protocolVersion",
+          "bridgeId",
+          "phase"
         ],
         "type": "object"
       }

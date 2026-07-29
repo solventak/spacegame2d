@@ -9,7 +9,8 @@ use std::{
 use spacegame2d_protocol::Tick;
 use spacegame2d_protocol::{
     AuthoritativeCommand, Capability, ClientHello, CommandData, CommandRejected, CommandRequest,
-    HandshakeRejectionReason, Message, SIMULATION_VERSION, StateChecksum,
+    HandshakeRejectionReason, MatchTiming, Message, OpponentPresence, SIMULATION_VERSION,
+    SessionParticipant, SessionSnapshot, StateChecksum,
 };
 use spacegame2d_simulation::{SimulationConfig, simulation::SIMULATION_HZ};
 use thiserror::Error;
@@ -40,6 +41,7 @@ pub struct NetworkSession {
     checksum_enabled: bool,
     local_tick: Tick,
     initial_simulation: Option<spacegame2d_simulation::simulation::Simulation>,
+    session_snapshot: SessionSnapshot,
     decoder: spacegame2d_protocol::FrameDecoder,
     outgoing: VecDeque<Vec<u8>>,
 }
@@ -119,6 +121,14 @@ impl NetworkSession {
                 simulation_config.clone(),
             )
             .map_err(|error| invalid(&error.to_string()))?;
+        let session_snapshot = match Message::read(&mut stream)? {
+            Message::SessionSnapshot(value) => value,
+            Message::HandshakeRejected(value) => return Err(ConnectError::Rejected(value.reason)),
+            _ => return Err(invalid("expected SessionSnapshot").into()),
+        };
+        if session_snapshot.local_player_slot != hello.player_slot {
+            return Err(invalid("server hello and session local slot differ").into());
+        }
         tracing::info!(event = "world_snapshot_restored", tick = ?snapshot.tick, units = snapshot.units.len());
         stream.set_read_timeout(None)?;
         stream.set_write_timeout(None)?;
@@ -131,6 +141,7 @@ impl NetworkSession {
             checksum_enabled: hello.capabilities.contains(&Capability::StateChecksums),
             local_tick: hello.server_tick,
             initial_simulation: Some(initial_simulation),
+            session_snapshot,
             decoder: spacegame2d_protocol::FrameDecoder::new(),
             outgoing: VecDeque::new(),
         })
@@ -168,6 +179,38 @@ impl NetworkSession {
 
     pub fn set_local_tick(&mut self, tick: Tick) {
         self.local_tick = tick;
+    }
+
+    pub fn session_snapshot(&self) -> &SessionSnapshot {
+        &self.session_snapshot
+    }
+
+    pub fn local_participant(&self) -> &SessionParticipant {
+        self.session_snapshot.local_participant()
+    }
+
+    pub fn opponent_presence(&self) -> OpponentPresence {
+        self.session_snapshot.opponent_presence
+    }
+
+    pub fn match_started_at(&self) -> Option<Tick> {
+        match self.session_snapshot.match_timing {
+            MatchTiming::Inactive => None,
+            MatchTiming::Active { started_at_tick } => Some(started_at_tick),
+        }
+    }
+
+    pub fn elapsed_match_ticks(&self) -> Option<Tick> {
+        self.match_started_at().map(|tick| self.local_tick - tick)
+    }
+
+    pub fn elapsed_match_seconds(&self) -> Option<u64> {
+        self.elapsed_match_ticks()
+            .map(|ticks| ticks.0 / u64::from(SIMULATION_HZ))
+    }
+
+    pub fn local_tick(&self) -> Tick {
+        self.local_tick
     }
 
     pub fn send_state_checksum(&mut self, tick: Tick, hash: [u8; 32]) -> io::Result<()> {
@@ -247,6 +290,17 @@ impl NetworkSession {
                                 tracing::warn!(event = "command_rejection_received", local_tick = ?self.local_tick, sequence = rejection.sequence, reason = ?rejection.reason);
                                 result.push(ServerEvent::Rejected(rejection));
                             }
+                            Message::SessionSnapshot(snapshot) => {
+                                if snapshot.local_player_slot != self.player_slot {
+                                    return Err(invalid("session update local slot differs"));
+                                }
+                                if snapshot.presence_revision
+                                    > self.session_snapshot.presence_revision
+                                {
+                                    self.session_snapshot = snapshot.clone();
+                                    result.push(ServerEvent::SessionStateChanged(snapshot));
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -292,6 +346,7 @@ where
 pub enum ServerEvent {
     Authoritative(AuthoritativeCommand),
     Rejected(CommandRejected),
+    SessionStateChanged(SessionSnapshot),
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -301,7 +356,7 @@ fn invalid(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spacegame2d_protocol::ServerHello;
+    use spacegame2d_protocol::{PlayerColor, ServerHello};
     use std::collections::BTreeMap;
     use std::net::TcpListener;
     use std::sync::mpsc;
@@ -316,6 +371,9 @@ mod tests {
             response.write(&mut stream).unwrap();
             if let Message::ServerHello(hello) = response {
                 Message::InitialWorldState(initial_world_state(&hello))
+                    .write(&mut stream)
+                    .unwrap();
+                Message::SessionSnapshot(session_snapshot(&hello))
                     .write(&mut stream)
                     .unwrap();
             }
@@ -340,6 +398,9 @@ mod tests {
             Message::InitialWorldState(initial_world_state(&server_hello()))
                 .write(&mut stream)
                 .unwrap();
+            Message::SessionSnapshot(session_snapshot(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
             Message::AuthoritativeCommand(command)
                 .write(&mut stream)
                 .unwrap();
@@ -358,6 +419,9 @@ mod tests {
                 .write(&mut stream)
                 .unwrap();
             Message::InitialWorldState(initial_world_state(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
+            Message::SessionSnapshot(session_snapshot(&server_hello()))
                 .write(&mut stream)
                 .unwrap();
             for message in messages {
@@ -379,6 +443,9 @@ mod tests {
                 .write(&mut stream)
                 .unwrap();
             Message::InitialWorldState(initial_world_state(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
+            Message::SessionSnapshot(session_snapshot(&server_hello()))
                 .write(&mut stream)
                 .unwrap();
             let mut messages = Vec::with_capacity(count);
@@ -406,6 +473,9 @@ mod tests {
             Message::InitialWorldState(initial_world_state(&server_hello()))
                 .write(&mut stream)
                 .unwrap();
+            Message::SessionSnapshot(session_snapshot(&server_hello()))
+                .write(&mut stream)
+                .unwrap();
             thread::sleep(std::time::Duration::from_millis(100));
         });
         (address, receiver)
@@ -415,11 +485,48 @@ mod tests {
         ServerHello {
             simulation_version: SIMULATION_VERSION,
             simulation_hz: SIMULATION_HZ,
-            player_slot: 7,
+            player_slot: 1,
             server_tick: Tick::from(123),
             fleet_size: 30,
             world_radius_bits: 64.0_f32.to_bits(),
             capabilities: vec![Capability::StateChecksums, Capability::WorldSnapshots],
+        }
+    }
+
+    fn session_snapshot(hello: &ServerHello) -> SessionSnapshot {
+        SessionSnapshot {
+            local_player_slot: hello.player_slot,
+            participants: vec![SessionParticipant {
+                player_slot: hello.player_slot,
+                display_name: "Test Player".into(),
+                color: PlayerColor::Cyan,
+            }],
+            opponent_presence: OpponentPresence::Waiting,
+            presence_revision: 0,
+            match_timing: MatchTiming::Inactive,
+        }
+    }
+
+    fn active_session_snapshot(revision: u64) -> SessionSnapshot {
+        SessionSnapshot {
+            local_player_slot: 1,
+            participants: vec![
+                SessionParticipant {
+                    player_slot: 1,
+                    display_name: "Rook".into(),
+                    color: PlayerColor::Cyan,
+                },
+                SessionParticipant {
+                    player_slot: 2,
+                    display_name: "Nova".into(),
+                    color: PlayerColor::Coral,
+                },
+            ],
+            opponent_presence: OpponentPresence::Present,
+            presence_revision: revision,
+            match_timing: MatchTiming::Active {
+                started_at_tick: Tick::from(100),
+            },
         }
     }
 
@@ -437,7 +544,7 @@ mod tests {
     fn connect_returns_slot_and_tick() {
         let address = synthetic_server(Message::ServerHello(server_hello()), false);
         let session = NetworkSession::connect(&address).unwrap();
-        assert_eq!(session.player_slot, 7);
+        assert_eq!(session.player_slot, 1);
         assert_eq!(session.server_tick, Tick::new(123));
         assert_eq!(session.simulation_config().world_radius_meters(), 64.0);
     }
@@ -476,6 +583,26 @@ mod tests {
             Ok(_) => panic!("wrong frequency was accepted"),
             Err(error) => error,
         };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn poll_events_rejects_a_malformed_session_snapshot_before_stale_revision_filtering() {
+        let malformed = SessionSnapshot {
+            local_player_slot: 1,
+            participants: vec![SessionParticipant {
+                player_slot: 1,
+                display_name: "Rook".into(),
+                color: PlayerColor::Coral,
+            }],
+            opponent_presence: OpponentPresence::Waiting,
+            presence_revision: 0,
+            match_timing: MatchTiming::Inactive,
+        };
+        let address = synthetic_server_with_messages(vec![Message::SessionSnapshot(malformed)]);
+        let mut session = NetworkSession::connect(&address).unwrap();
+
+        let error = session.poll_events().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
@@ -637,7 +764,7 @@ mod tests {
     fn poll_events_returns_authoritative_and_rejected_messages_and_ignores_others() {
         let authoritative = AuthoritativeCommand {
             execute_tick: Tick::from(9),
-            player_slot: 7,
+            player_slot: 1,
             sequence: 3,
             command: CommandData::ResetSimulation,
         };
@@ -673,6 +800,34 @@ mod tests {
     }
 
     #[test]
+    fn session_updates_ignore_stale_revisions_and_derive_elapsed_seconds() {
+        let newer = active_session_snapshot(2);
+        let stale = active_session_snapshot(1);
+        let address = synthetic_server_with_messages(vec![
+            Message::SessionSnapshot(newer.clone()),
+            Message::SessionSnapshot(stale),
+        ]);
+        let mut session = NetworkSession::connect(&address).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut events = Vec::new();
+        while std::time::Instant::now() < deadline {
+            events.extend(session.poll_events().unwrap());
+            if !events.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(events, vec![ServerEvent::SessionStateChanged(newer)]);
+        assert_eq!(session.session_snapshot().presence_revision, 2);
+        session.set_local_tick(Tick::from(159));
+        assert_eq!(session.elapsed_match_seconds(), Some(0));
+        session.set_local_tick(Tick::from(160));
+        assert_eq!(session.elapsed_match_seconds(), Some(1));
+        session.set_local_tick(Tick::from(219));
+        assert_eq!(session.elapsed_match_seconds(), Some(1));
+    }
+
+    #[test]
     fn apply_due_commands_only_at_matching_tick() {
         let mut simulation = spacegame2d_simulation::simulation::Simulation::default();
         simulation.world.units[0].owner = Some(spacegame2d_simulation::command::PlayerId(1));
@@ -698,7 +853,7 @@ mod tests {
     fn late_arrival_through_network_session_applies_overdue_command() {
         let command = AuthoritativeCommand {
             execute_tick: Tick::default(),
-            player_slot: 7,
+            player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [0.0f32.to_bits(), 100.0f32.to_bits()],
@@ -708,7 +863,7 @@ mod tests {
         let mut session = NetworkSession::connect(&address).unwrap();
         let mut simulation = spacegame2d_simulation::simulation::Simulation::with_world_radius(1.0);
         simulation.world.units.truncate(1);
-        simulation.world.units[0].owner = Some(spacegame2d_simulation::command::PlayerId(7));
+        simulation.world.units[0].owner = Some(spacegame2d_simulation::command::PlayerId(1));
         simulation.world.units[0].state.position = glam::Vec2::new(0.0, 0.9);
         simulation.world.units[0].state.heading_radians = 0.0;
         simulation.set_tick(Tick::from(1));

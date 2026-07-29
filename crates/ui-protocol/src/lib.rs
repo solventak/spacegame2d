@@ -4,7 +4,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const UI_ENGINE_PROTOCOL_VERSION: u16 = 2;
+pub const UI_ENGINE_PROTOCOL_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
@@ -65,6 +65,7 @@ pub enum ProtocolErrorCode {
 pub enum DisconnectedReason {
     Startup,
     Cancelled,
+    UserDisconnected,
     SessionLost,
 }
 
@@ -85,6 +86,14 @@ pub enum PlayerColor {
     Coral,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum OpponentPresence {
+    Waiting,
+    Present,
+    Disconnected,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalPlayerHudModel {
@@ -92,6 +101,69 @@ pub struct LocalPlayerHudModel {
     pub player_slot: u32,
     pub color: PlayerColor,
     pub color_hex: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MatchParticipantHudModel {
+    pub player_slot: u32,
+    pub display_name: String,
+    pub color: PlayerColor,
+    pub color_hex: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MatchClockHudModel {
+    pub started_at_tick: u64,
+    pub current_tick: u64,
+    pub ticks_per_second: u32,
+    pub elapsed_whole_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum MatchSessionResetReason {
+    Startup,
+    NewConnectionAttempt,
+    UserDisconnected,
+    SessionLost,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HudLayoutPhase {
+    Join,
+    Docking,
+    Compact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "stage",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum MatchSessionState {
+    Reset {
+        sequence: u64,
+        reason: MatchSessionResetReason,
+    },
+    Waiting {
+        sequence: u64,
+        local_player: MatchParticipantHudModel,
+        opponent_presence: OpponentPresence,
+        presence_revision: u64,
+    },
+    Active {
+        sequence: u64,
+        local_player: MatchParticipantHudModel,
+        opponent_player: MatchParticipantHudModel,
+        opponent_presence: OpponentPresence,
+        presence_revision: u64,
+        clock: MatchClockHudModel,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -175,6 +247,11 @@ pub enum UiToEngineMessage {
         bridge_id: BridgeId,
         request_id: RequestId,
     },
+    DisconnectRequested {
+        protocol_version: u16,
+        bridge_id: BridgeId,
+        request_id: RequestId,
+    },
     HeartbeatAcknowledged {
         protocol_version: u16,
         bridge_id: BridgeId,
@@ -184,6 +261,12 @@ pub enum UiToEngineMessage {
         protocol_version: u16,
         bridge_id: BridgeId,
         code: ProtocolErrorCode,
+    },
+    HudLayoutRequested {
+        protocol_version: u16,
+        bridge_id: BridgeId,
+        phase: HudLayoutPhase,
+        transition_duration_ms: Option<u16>,
     },
 }
 
@@ -199,6 +282,11 @@ pub enum EngineToUiMessage {
         protocol_version: u16,
         bridge_id: BridgeId,
         state: ConnectionStateSnapshot,
+    },
+    MatchSessionStateChanged {
+        protocol_version: u16,
+        bridge_id: BridgeId,
+        state: MatchSessionState,
     },
     ProtocolError {
         protocol_version: u16,
@@ -227,10 +315,16 @@ impl VersionedMessage for UiToEngineMessage {
             | Self::ConnectionCancelled {
                 protocol_version, ..
             }
+            | Self::DisconnectRequested {
+                protocol_version, ..
+            }
             | Self::HeartbeatAcknowledged {
                 protocol_version, ..
             }
             | Self::BridgeFaultReported {
+                protocol_version, ..
+            }
+            | Self::HudLayoutRequested {
                 protocol_version, ..
             } => *protocol_version,
         }
@@ -240,6 +334,9 @@ impl VersionedMessage for EngineToUiMessage {
     fn protocol_version(&self) -> u16 {
         match self {
             Self::ConnectionStateChanged {
+                protocol_version, ..
+            }
+            | Self::MatchSessionStateChanged {
                 protocol_version, ..
             }
             | Self::ProtocolError {
@@ -290,8 +387,10 @@ impl UiToEngineMessage {
             Self::UiReady { bridge_id, .. }
             | Self::ConnectRequested { bridge_id, .. }
             | Self::ConnectionCancelled { bridge_id, .. }
+            | Self::DisconnectRequested { bridge_id, .. }
             | Self::HeartbeatAcknowledged { bridge_id, .. }
-            | Self::BridgeFaultReported { bridge_id, .. } => {
+            | Self::BridgeFaultReported { bridge_id, .. }
+            | Self::HudLayoutRequested { bridge_id, .. } => {
                 validate_id("bridgeId", bridge_id.as_str())?
             }
         }
@@ -310,9 +409,22 @@ impl UiToEngineMessage {
                     return Err(ProtocolValidationError::InvalidId("displayName"));
                 }
             }
-            Self::ConnectionCancelled { request_id, .. } => {
+            Self::ConnectionCancelled { request_id, .. }
+            | Self::DisconnectRequested { request_id, .. } => {
                 validate_id("requestId", request_id.as_str())?
             }
+            Self::HudLayoutRequested {
+                phase,
+                transition_duration_ms,
+                ..
+            } => match (phase, transition_duration_ms) {
+                (HudLayoutPhase::Docking, Some(duration)) if *duration > 0 => {}
+                (HudLayoutPhase::Docking, _) => {
+                    return Err(ProtocolValidationError::InvalidId("transitionDurationMs"));
+                }
+                (_, None) => {}
+                _ => return Err(ProtocolValidationError::InvalidId("transitionDurationMs")),
+            },
             _ => {}
         }
         Ok(())
@@ -328,9 +440,14 @@ fn classify_decode_error(raw: &str, detail: &str) -> ProtocolErrorCode {
     if serde_json::from_str::<serde_json::Value>(raw).is_err() {
         return ProtocolErrorCode::MalformedJson;
     }
-    if ["connectionStateChanged", "protocolError", "heartbeat"]
-        .iter()
-        .any(|kind| raw.contains(&format!("\"kind\":\"{kind}\"")))
+    if [
+        "connectionStateChanged",
+        "matchSessionStateChanged",
+        "protocolError",
+        "heartbeat",
+    ]
+    .iter()
+    .any(|kind| raw.contains(&format!("\"kind\":\"{kind}\"")))
     {
         return ProtocolErrorCode::WrongDirection;
     }
@@ -379,17 +496,17 @@ mod tests {
     }
     #[test]
     fn rejects_unsupported_versions() {
-        let raw = r#"{"kind":"uiReady","protocolVersion":3,"bridgeId":"bridge-1"}"#;
+        let raw = r#"{"kind":"uiReady","protocolVersion":4,"bridgeId":"bridge-1"}"#;
         assert!(matches!(
             UiToEngineMessage::decode(raw),
             Err(ProtocolDecodeError::Validation(
-                ProtocolValidationError::UnsupportedVersion(3)
+                ProtocolValidationError::UnsupportedVersion(4)
             ))
         ));
     }
     #[test]
     fn connect_requires_a_display_name() {
-        let raw = r#"{"kind":"connectRequested","protocolVersion":2,"bridgeId":"bridge-1","requestId":"request-1","address":"server:4000"}"#;
+        let raw = r#"{"kind":"connectRequested","protocolVersion":3,"bridgeId":"bridge-1","requestId":"request-1","address":"server:4000"}"#;
         assert!(matches!(
             UiToEngineMessage::decode(raw),
             Err(ProtocolDecodeError::Invalid {
@@ -397,12 +514,24 @@ mod tests {
                 ..
             })
         ));
-        let raw = r#"{"kind":"connectRequested","protocolVersion":2,"bridgeId":"bridge-1","requestId":"request-1","address":"server:4000","displayName":"   "}"#;
+        let raw = r#"{"kind":"connectRequested","protocolVersion":3,"bridgeId":"bridge-1","requestId":"request-1","address":"server:4000","displayName":"   "}"#;
         assert!(matches!(
             UiToEngineMessage::decode(raw),
             Err(ProtocolDecodeError::Validation(
                 ProtocolValidationError::InvalidId("displayName")
             ))
         ));
+    }
+
+    #[test]
+    fn layout_requests_require_a_docking_duration_only_while_docking() {
+        let docking = r#"{"kind":"hudLayoutRequested","protocolVersion":3,"bridgeId":"bridge-1","phase":"docking","transitionDurationMs":600}"#;
+        assert!(UiToEngineMessage::decode(docking).is_ok());
+
+        let missing_duration = r#"{"kind":"hudLayoutRequested","protocolVersion":3,"bridgeId":"bridge-1","phase":"docking"}"#;
+        assert!(UiToEngineMessage::decode(missing_duration).is_err());
+
+        let join_with_duration = r#"{"kind":"hudLayoutRequested","protocolVersion":3,"bridgeId":"bridge-1","phase":"join","transitionDurationMs":600}"#;
+        assert!(UiToEngineMessage::decode(join_with_duration).is_err());
     }
 }
