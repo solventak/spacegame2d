@@ -5,6 +5,7 @@
 *.tfplan
 *.tfvars
 !*.tfvars.example
+gha-creds-*.json
 crates/spacegame2d/hud/node_modules/
 crates/spacegame2d/hud/.svelte-kit/
 *.log

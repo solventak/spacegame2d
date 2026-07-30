@@ -12,13 +12,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  authenticate:
+  apply:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Check out main
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Read Terraform version
+        id: terraform-version
+        run: echo "value=$(tr -d '\n' < .terraform-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ steps.terraform-version.outputs.value }}
+          terraform_wrapper: false
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -34,3 +51,78 @@ jobs:
         run: |
           test "$(gcloud config get-value account)" = "${{ vars.GCP_TERRAFORM_APPLY_SERVICE_ACCOUNT }}"
           gcloud auth print-access-token >/dev/null
+
+      - name: Validate production infrastructure
+        run: |
+          terraform -chdir=infra init -input=false
+          terraform -chdir=infra validate
+
+      - name: Create the production plan
+        id: plan
+        run: |
+          terraform -chdir=infra plan \
+            -out="$RUNNER_TEMP/production.tfplan" \
+            -input=false \
+            -lock-timeout=5m \
+            -no-color
+
+      - name: Write the planned changes to the job summary
+        if: steps.plan.outcome == 'success'
+        run: |
+          {
+            echo "## Production Terraform plan"
+            echo
+            echo '```text'
+            terraform -chdir=infra show -no-color "$RUNNER_TEMP/production.tfplan"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply the exact production plan
+        id: apply
+        if: steps.plan.outcome == 'success'
+        run: terraform -chdir=infra apply -input=false -auto-approve "$RUNNER_TEMP/production.tfplan"
+
+      - name: Report safe Terraform outputs
+        if: steps.apply.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          outputs="$RUNNER_TEMP/terraform-outputs.json"
+          terraform -chdir=infra output -json > "$outputs"
+          chmod 600 "$outputs"
+
+          {
+            echo "## Production outputs"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          reported=false
+          for name in server_endpoint game_port vm_name vm_zone; do
+            if jq -e --arg name "$name" \
+              '.[$name] != null and .[$name].sensitive == false' "$outputs" >/dev/null; then
+              value=$(jq -r --arg name "$name" \
+                '.[$name].value | if type == "string" then . else tojson end' "$outputs")
+              printf -- '- `%s`: `%s`\n' "$name" "$value" >> "$GITHUB_STEP_SUMMARY"
+              reported=true
+            fi
+          done
+
+          if [ "$reported" = false ]; then
+            echo "No allowlisted non-sensitive outputs are defined yet." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Summarize apply result
+        if: always()
+        run: |
+          {
+            echo "## Terraform apply result"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Plan: \`${{ steps.plan.outcome }}\`"
+            echo "- Apply: \`${{ steps.apply.outcome }}\`"
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary Terraform files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/production.tfplan" "$RUNNER_TEMP/terraform-outputs.json"

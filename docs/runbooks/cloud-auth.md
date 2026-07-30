@@ -88,9 +88,9 @@ provider: deleted identifiers can remain unavailable during the recovery period.
 saved GitHub environment configuration with the GitHub API if its protection policy needs to be
 reverted.
 
-## Handoff to SWA-67
+## Terraform state and infrastructure delivery
 
-SWA-67 creates the GCS backend, migrates `infra/bootstrap/identity` state with
-`terraform init -migrate-state`, grants the plan/apply identities their state and infrastructure
-permissions, and fills in the Terraform workflow behavior. It must preserve the provider names,
-service-account emails, and workflow filenames created here.
+SWA-67 keeps the identity root on remote GCS state, supplies the protected Terraform plan/apply
+workflows, and preserves the provider names, service-account emails, and workflow filenames
+created here. Follow [the Terraform state and delivery runbook](terraform.md) for bucket
+bootstrap, state migration, normal CI delivery, and recovery.
