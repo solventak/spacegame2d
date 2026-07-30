@@ -1,0 +1,200 @@
+# Terraform state and delivery runbook
+
+SWA-67 keeps Terraform state in a recoverable Cloud Storage backend and uses keyless GitHub
+Actions identities for infrastructure planning and production applies. Use this runbook for the
+one-time backend bootstrap, normal administration, and recovery.
+
+## Guardrails
+
+- The state bucket is `relayoperations-terraform-state-926404861741` in `us-west1`.
+- The bucket is created manually with Alex's Google identity; it is not a Terraform resource.
+- Do not create or download service-account JSON keys.
+- Do not commit a state file, `*.tfvars`, `*.tfplan`, or `gha-creds-*.json` file.
+- Do not run a local plan or apply while the GitHub Terraform workflow is active.
+- The production apply workflow manages only `infra/`. Keep
+  `infra/bootstrap/identity/` personal-ADC administered so the production identity cannot
+  modify its own Workload Identity Federation trust.
+
+## One-time bucket bootstrap
+
+Set the values below in a shell that is authenticated as Alex. The bucket name is globally
+unique because it includes the Google Cloud project number; stop if Cloud Storage reports that
+it belongs to another project.
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud auth application-default set-quota-project relayoperations
+
+STATE_BUCKET=relayoperations-terraform-state-926404861741
+GCP_PROJECT=relayoperations
+PLAN_SERVICE_ACCOUNT=gha-tf-plan@relayoperations.iam.gserviceaccount.com
+APPLY_SERVICE_ACCOUNT=gha-tf-apply@relayoperations.iam.gserviceaccount.com
+
+gcloud storage buckets create "gs://${STATE_BUCKET}" \
+  --project="${GCP_PROJECT}" \
+  --location=us-west1 \
+  --uniform-bucket-level-access \
+  --public-access-prevention
+
+gcloud storage buckets update "gs://${STATE_BUCKET}" --versioning
+```
+
+The new bucket has no lifecycle rule by default. Do not add a lifecycle `Delete` rule for
+state objects or noncurrent object versions. Leave Cloud Storage soft delete enabled as the
+additional bounded recovery mechanism for accidental bucket deletion; Object Versioning is the
+mechanism that retains replaced and deleted state-object versions indefinitely.
+
+Grant only the backend object permissions needed by CI:
+
+```bash
+gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --member="serviceAccount:${PLAN_SERVICE_ACCOUNT}" \
+  --role=roles/storage.objectViewer
+
+gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --member="serviceAccount:${APPLY_SERVICE_ACCOUNT}" \
+  --role=roles/storage.objectAdmin
+```
+
+Do not grant either CI service account `roles/storage.admin`: neither needs permission to
+delete, reconfigure, or change IAM on the state bucket.
+
+Verify the completed bucket before migrating state:
+
+```bash
+gcloud storage buckets describe "gs://${STATE_BUCKET}" \
+  --format='yaml(location,storageClass,iamConfiguration,versioning,lifecycle,softDeletePolicy)'
+gcloud storage buckets get-iam-policy "gs://${STATE_BUCKET}"
+```
+
+Confirm that the location is `US-WEST1`, Object Versioning is enabled, uniform bucket-level
+access and public-access prevention are enabled, no lifecycle delete rule is present, and the
+two CI bindings have only the roles above.
+
+## Initialize and migrate Terraform state
+
+The repository uses independent state prefixes in the same bucket:
+
+| Root | GCS prefix | Administration path |
+| --- | --- | --- |
+| `infra/` | `production` | Protected GitHub apply workflow or Alex ADC |
+| `infra/bootstrap/identity/` | `bootstrap/identity` | Alex ADC only |
+
+First initialize the production root. It has no infrastructure resources until SWA-62, but
+this verifies that the backend is reachable without an out-of-band state file.
+
+```bash
+terraform -chdir=infra init
+terraform -chdir=infra validate
+```
+
+The SWA-64 identity root currently has local state. Before migration, secure a local backup
+outside the repository and confirm it is mode `0600` or otherwise inaccessible to other users.
+Then migrate it interactively with ADC:
+
+```bash
+terraform -chdir=infra/bootstrap/identity init -migrate-state
+terraform -chdir=infra/bootstrap/identity plan \
+  -var-file=terraform.tfvars \
+  -detailed-exitcode
+```
+
+The final command must exit `0` before local state remnants are removed. After migration,
+confirm that both roots can initialize from a fresh clone with no copied state file.
+
+## Pull-request planning
+
+The `Terraform Plan` workflow runs only when Terraform source, the Terraform version file, or
+Terraform workflow definitions change.
+
+- A fork PR receives `terraform fmt -check` and `terraform validate` only. Its workflow has no
+  OIDC token permission and never receives Google credentials.
+- A same-repository PR additionally authenticates as `gha-tf-plan`, reads the remote state, and
+  publishes speculative plans for both roots to the Actions job summary.
+- The plan uses `-lock=false` because its state identity is intentionally read-only. The shared
+  `terraform-production` concurrency group prevents it from overlapping a CI apply.
+- Review the plan in the job summary. No PR comment or binary plan artifact is created.
+
+For the identity root, the plan identity has only the read roles required to inspect service
+accounts, Workload Identity pools, Service Usage, and IAM policy. The first no-change cloud
+plan is the verification that these bindings are sufficient.
+
+## Production apply
+
+Run `Terraform Apply` manually from `main` only. The job enters the protected `production`
+environment before it receives the apply Workload Identity Federation token.
+
+After approval, it:
+
+1. checks out the dispatched `main` SHA;
+2. creates a fresh, state-locked production plan;
+3. writes its human-readable form to the job summary;
+4. applies that exact saved plan in the same job; and
+5. deletes its temporary plan file before the runner exits.
+
+The job summary reports the run, commit, plan/apply result, and only the following outputs when
+they exist and Terraform marks them non-sensitive:
+
+- `server_endpoint`
+- `game_port`
+- `vm_name`
+- `vm_zone`
+
+Do not add a generic `terraform output -json` command to logs or job summaries: JSON output
+prints sensitive values in cleartext.
+
+## State recovery
+
+### Refresh ADC
+
+If local administration fails because ADC expired, refresh it:
+
+```bash
+gcloud auth application-default login
+gcloud auth application-default set-quota-project relayoperations
+```
+
+### Inspect and restore an object version
+
+List all generations of a state object, identify the last known-good generation, then copy it
+back over the live object. Do this only after recording the current state and verifying no other
+apply is in progress.
+
+```bash
+gcloud storage ls --all-versions \
+  "gs://relayoperations-terraform-state-926404861741/production/"
+
+terraform -chdir=infra state pull > production-state-before-recovery.json
+
+gcloud storage cp \
+  "gs://relayoperations-terraform-state-926404861741/production/default.tfstate#GENERATION" \
+  "gs://relayoperations-terraform-state-926404861741/production/default.tfstate"
+```
+
+Replace `GENERATION` only after reviewing the object listing. The copy creates a new live
+generation and retains the previously live state as a noncurrent version.
+
+### Recover a soft-deleted bucket
+
+Object Versioning alone cannot recover a deleted bucket. Cloud Storage soft delete provides a
+separate recovery window. If the entire bucket is deleted, stop all Terraform work, use the
+Cloud Storage bucket-recovery procedure within the configured soft-delete window, recheck IAM
+and bucket configuration, and run a no-change plan with Alex's ADC before re-enabling CI.
+
+### Backend write failure or stale lock
+
+Terraform can write an emergency local state file when a remote backend write fails. Keep that
+file private. First repair backend access and run `terraform state pull`; compare it with the
+emergency file before considering `terraform state push`. State push overwrites remote state and
+is exceptional.
+
+Use `terraform force-unlock LOCK_ID` only when the lock is confirmed stale and `LOCK_ID` is the
+exact identifier reported by Terraform. It does not modify infrastructure, but unlocking an
+active operation can corrupt state.
+
+### Broken Workload Identity Federation
+
+If CI authentication fails, use Alex's ADC against `infra/bootstrap/identity/` to inspect and
+correct the trust configuration. Do not destroy and recreate the pool or provider as a first
+response; deleted identifiers can remain unavailable during the recovery period.
