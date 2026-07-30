@@ -12,7 +12,7 @@ pub const EXPOSURE_DURATION_TICKS: u32 = 8 * SIMULATION_HZ;
 pub const BREACH_PROGRESS_PER_TICK: u32 = 1;
 pub const BREACH_DECAY_PER_TICK: u32 = BREACH_DURATION_TICKS / DECAY_DURATION_TICKS;
 
-const _: () = assert!(BREACH_DURATION_TICKS % DECAY_DURATION_TICKS == 0);
+const _: () = assert!(BREACH_DURATION_TICKS.is_multiple_of(DECAY_DURATION_TICKS));
 const _: () = assert!(BREACH_DECAY_PER_TICK > 0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -2,6 +2,7 @@ name: HUD
 
 on:
   pull_request:
+    branches: [dev]
     paths: ["crates/spacegame2d/hud/**", "crates/spacegame2d/src/hud.rs", ".github/workflows/hud.yml"]
   push:
     branches: [dev, main]

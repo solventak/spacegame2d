@@ -1089,7 +1089,11 @@ impl ApplicationHandler<AppEvent> for App {
             self.combat_presentation.ingest(now, &events);
             self.combat_presentation.retain_active(now);
             if let Some(session) = self.network.as_mut()
-                && self.simulation.tick().0 % u64::from(SIMULATION_HZ) == 0
+                && self
+                    .simulation
+                    .tick()
+                    .0
+                    .is_multiple_of(u64::from(SIMULATION_HZ))
             {
                 let _ = session
                     .send_state_checksum(self.simulation.tick(), self.simulation.state_hash());

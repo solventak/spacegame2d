@@ -509,7 +509,7 @@ pub async fn run_with_config(
             simulation.commands.clear_pending();
         }
         let completed_tick = simulation.tick();
-        if completed_tick.0 % u64::from(SIMULATION_HZ) == 0 {
+        if completed_tick.0.is_multiple_of(u64::from(SIMULATION_HZ)) {
             state_hashes.insert(completed_tick, simulation.state_hash());
             let oldest = completed_tick - Tick::from(u64::from(SIMULATION_HZ) * 10);
             state_hashes.retain(|tick, _| *tick >= oldest);

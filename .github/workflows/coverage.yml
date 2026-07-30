@@ -4,6 +4,7 @@ on:
   push:
     branches: [dev, main]
   pull_request:
+    branches: [dev]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,6 +22,17 @@ jobs:
 
       - name: Install Rust toolchain (1.91)
         uses: dtolnay/rust-toolchain@1.91
+
+      - name: Install Node.js (22)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/spacegame2d/hud/package-lock.json
+
+      - name: Install HUD dependencies
+        working-directory: crates/spacegame2d/hud
+        run: npm ci
 
       - name: Install system dependencies for wgpu, Winit, and Wry
         run: |

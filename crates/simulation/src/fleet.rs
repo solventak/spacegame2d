@@ -291,7 +291,7 @@ mod tests {
         let mut fleet = Fleet::new();
         // Half the drones escape, half stay at the origin.
         for (i, unit) in fleet.units.iter_mut().enumerate() {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 unit.state.position = Vec2::new(WORLD_RADIUS_M + 1.0, 0.0);
             } else {
                 unit.state.position = Vec2::ZERO;
