@@ -11,44 +11,6 @@
 - Rust compiler pinned by `rustc 1.91` (MSRV `1.91`); Cargo edition `2024` (`Cargo.toml`).
 - All dependencies in `Cargo.toml` are pinned with exact versions (`=x.y.z`). Do not relax pinning without coordinating.
 
-## Source layout
-
-```
-crates/
-  simulation/
-    Cargo.toml
-    src/
-      lib.rs            re-exports simulation, flight_control, autopilot, fleet
-      simulation.rs      sim tick, drone state, neighbor interactions
-      autopilot.rs       velocity targeting
-      fleet.rs           drone collection (spawn, step, cull, reset)
-      flight_control/
-        mod.rs           facade re-exporting arrival public surface
-        arrival.rs       velocity arrival + predicted neighbor avoidance math
-  protocol/
-    Cargo.toml
-    src/
-      lib.rs             placeholder — wire-format and codec (future tickets)
-  server/
-    Cargo.toml
-    src/
-      main.rs            stub — banner + exit (no networking yet)
-  spacegame2d/
-    Cargo.toml
-    src/
-      main.rs            entry, wgpu setup, frame loop
-      input.rs           keyboard / mouse
-      geometry/
-        mod.rs            Vertex type + wgpu layout
-        overlay.rs        arena ring vertices
-        units.rs          ship sprite vertices
-      shader.wgsl         GPU shader
-docs/
-  plans/               milestone planning documents (one file per plan, dated slug)
-ui/
-  Fleet Design System/  canonical UI language, tokens, components, and HUD reference
-```
-
 ## UI design system
 
 For any UI, HUD, rendering, interaction, copy, icon, or visual-style work, inspect
@@ -110,16 +72,14 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
 
 ## Ticketing and plans
 
-- Active work is tracked in Linear (the configured workspace). Linear is for tracking only — state, assignment, priorities, requirements, acceptance criteria. Implementation plans live in Notion.
+- Active work is tracked in Linear (the configured workspace), including state, assignment,
+  priorities, requirements, acceptance criteria, and ticket-specific implementation plans.
 
 - Tickets use this template:
 
   ```
   ## Requirements
   - ...
-
-  ## Plan
-  See <Notion page URL>
 
   ## Acceptance Criteria
   - [ ] ...
@@ -131,18 +91,18 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
   - (optional)
   ```
 
-- The `## Plan` section in a Linear ticket is a one-line pointer to a Notion page in the **Implementation Plans** database. The Notion page is the canonical store for the implementation plan, files touched, API surface, and risk level.
+- Plan docs in `docs/plans/` are an optional historical archive. The implementer may commit a
+  final plan alongside the PR if a permanent git record is desired.
 
-- The Notion page has a **Status** property that drives the workflow:
-  - `Needs Review` — the `linear-planner` droid just wrote the plan; awaiting human review.
-  - `Approved` — a human has reviewed and signed off; the `linear-implementer` droid may proceed.
-  - `Implemented` — the PR has been merged; plan is complete.
+## Sol/Terra delivery flow
 
-- The `linear-planner` droid creates Notion pages with Status = `Needs Review`. The user flips Status to `Approved` when ready. The `linear-implementer` droid checks the Status before proceeding — it only runs if Status = `Approved`.
-
-- The `pr-reviewer` droid does NOT read the plan. It reviews code on its own merits against AGENTS.md conventions and the Linear ticket's acceptance criteria.
-
-- Plan docs in `docs/plans/` are an optional historical archive. The implementer may commit the final plan alongside the PR if a permanent git record is desired, but the canonical plan store is Notion.
+- **Sol plans each ticket independently.** A ticket plan names the files to change, IAM roles,
+  commands, tests, rollback behavior, and the exact interfaces it provides to the next ticket.
+- **Terra implements in merge order.** Keep Phase 1 and the main chains in later phases serial;
+  parallel work is allowed only when its plans do not overlap in files, infrastructure, or merge
+  dependencies.
+- Terra implements only an approved, ticket-specific plan. Do not replace the sequence with one
+  large milestone plan or an unplanned cross-ticket implementation.
 
 ## Stacked PRs
 
@@ -184,8 +144,3 @@ Follow existing module conventions: small focused files, `mod.rs` re-exporting o
 - Use `thiserror` for project error enums; use `Option` only for genuinely absent values and `Result` for conversion or validation failures.
 - Keep wire/protocol DTOs separate from simulation domain types when they serve different purposes: protocol types model serialized data, while simulation newtypes enforce domain invariants. Convert explicitly at the boundary.
 - Put domain arithmetic on domain types. For example, `Tick::increment(...)` owns tick advancement rather than repeating primitive arithmetic at call sites.
-
-## Documentation discipline
-
-- Update `docs/plans/` when kicking off a new milestone.
-- Keep plan docs alongside the work on `dev`; they do not belong on `main`.

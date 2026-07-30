@@ -1,0 +1,38 @@
+name: Terraform Plan
+
+on:
+  pull_request_target:
+    branches: [dev, main]
+    paths:
+      - ".github/workflows/terraform-plan.yml"
+      - "infra/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  authenticate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the trusted same-repository PR head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_TERRAFORM_PLAN_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_PLAN_SERVICE_ACCOUNT }}
+
+      - name: Install gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify the short-lived plan identity
+        run: |
+          test "$(gcloud config get-value account)" = "${{ vars.GCP_TERRAFORM_PLAN_SERVICE_ACCOUNT }}"
+          gcloud auth print-access-token >/dev/null

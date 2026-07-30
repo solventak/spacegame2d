@@ -1,4 +1,10 @@
 /target/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
 crates/spacegame2d/hud/node_modules/
 crates/spacegame2d/hud/.svelte-kit/
 *.log
