@@ -71,6 +71,9 @@ cargo clippy -- -D warnings
 
 See [`AGENTS.md`](./AGENTS.md) for branch, PR, and ticketing conventions. Both human contributors and background automated workers must follow them.
 
+When `dev` is ready for a release, use the [release-from-dev runbook](./docs/runbooks/release-from-dev.md)
+to open the promotion PR to `main`.
+
 For UI, HUD, visual, and interaction work, start with the
 [`Fleet Design System`](./ui/Fleet%20Design%20System/readme.md). It indexes the design tokens,
 components, visual guidelines, and interactive in-match HUD reference; the task-oriented lookup
