@@ -1,0 +1,152 @@
+syntax = "proto3";
+package spacegame2d.protocol.v1;
+
+message Envelope {
+  oneof payload {
+    ClientHello client_hello = 1;
+    ServerHello server_hello = 2;
+    CommandRequest command_request = 3;
+    AuthoritativeCommand authoritative_command = 4;
+    CommandRejected command_rejected = 5;
+    StateChecksum state_checksum = 6;
+    HandshakeRejected handshake_rejected = 7;
+    InitialWorldState initial_world_state = 8;
+    SessionSnapshot session_snapshot = 9;
+  }
+}
+message InitialWorldState {
+  uint32 snapshot_format_version = 1;
+  uint32 simulation_version = 2;
+  uint64 tick = 3;
+  uint32 world_radius_bits = 4;
+  uint32 next_unit_id = 5;
+  bool unit_id_exhausted = 6;
+  repeated WorldUnit units = 7;
+  bytes state_hash = 8;
+  repeated AuthoritativeCommand pending_commands = 9;
+}
+message WorldUnit {
+  uint32 id = 1;
+  uint32 owner = 2;
+  bool has_owner = 3;
+  fixed32 position_x = 4;
+  fixed32 position_y = 5;
+  fixed32 velocity_x = 6;
+  fixed32 velocity_y = 7;
+  fixed32 heading = 8;
+  fixed32 angular_velocity = 9;
+  bool active = 10;
+  bool has_destination = 11;
+  fixed32 destination_x = 12;
+  fixed32 destination_y = 13;
+  uint32 hull_current = 14;
+  uint32 hull_maximum = 15;
+  fixed32 turret_local_heading = 16;
+  uint32 turret_target_kind = 17;
+  uint32 turret_target_id = 18;
+  uint32 turret_cooldown_ticks_remaining = 19;
+}
+
+message ClientHello {
+  uint32 simulation_version = 1;
+  repeated Capability supported_capabilities = 2;
+  string display_name = 3;
+}
+message ServerHello {
+  uint32 simulation_version = 1;
+  uint32 simulation_hz = 2;
+  uint32 player_slot = 3;
+  uint64 server_tick = 4;
+  repeated Capability enabled_capabilities = 5;
+  uint32 fleet_size = 6;
+  uint32 world_radius_bits = 7;
+}
+message SessionSnapshot {
+  uint32 local_player_slot = 1;
+  repeated SessionParticipant participants = 2;
+  OpponentPresence opponent_presence = 3;
+  uint64 presence_revision = 4;
+  MatchTiming match_timing = 5;
+}
+message SessionParticipant {
+  uint32 player_slot = 1;
+  string display_name = 2;
+  PlayerColor color = 3;
+}
+enum PlayerColor {
+  PLAYER_COLOR_UNSPECIFIED = 0;
+  PLAYER_COLOR_CYAN = 1;
+  PLAYER_COLOR_CORAL = 2;
+}
+enum OpponentPresence {
+  OPPONENT_PRESENCE_UNSPECIFIED = 0;
+  OPPONENT_PRESENCE_WAITING = 1;
+  OPPONENT_PRESENCE_PRESENT = 2;
+  OPPONENT_PRESENCE_DISCONNECTED = 3;
+}
+message MatchTiming {
+  oneof state {
+    MatchTimingInactive inactive = 1;
+    ActiveMatchTiming active = 2;
+  }
+}
+message MatchTimingInactive {}
+message ActiveMatchTiming {
+  uint64 started_at_tick = 1;
+}
+message CommandRequest {
+  uint32 sequence = 1;
+  Command command = 2;
+}
+message AuthoritativeCommand {
+  uint64 execute_tick = 1;
+  uint32 player_slot = 2;
+  uint32 sequence = 3;
+  Command command = 4;
+}
+message Command {
+  oneof payload {
+    SetDestinationCommand set_destination = 1;
+    ResetSimulationCommand reset_simulation = 2;
+  }
+}
+message SetDestinationCommand {
+  reserved 1;
+  Vector2Bits destination = 2;
+}
+message ResetSimulationCommand {}
+message Vector2Bits {
+  fixed32 x = 1;
+  fixed32 y = 2;
+}
+message StateChecksum {
+  uint64 tick = 1;
+  bytes hash = 2;
+}
+message CommandRejected {
+  uint32 sequence = 1;
+  CommandRejectionReason reason = 2;
+}
+message HandshakeRejected {
+  HandshakeRejectionReason reason = 1;
+}
+enum HandshakeRejectionReason {
+  HANDSHAKE_REJECTION_REASON_UNSPECIFIED = 0;
+  HANDSHAKE_REJECTION_REASON_SERVER_FULL = 1;
+  HANDSHAKE_REJECTION_REASON_INCOMPATIBLE_VERSION = 2;
+  HANDSHAKE_REJECTION_REASON_MISSING_REQUIRED_CAPABILITY = 3;
+  HANDSHAKE_REJECTION_REASON_INVALID_HANDSHAKE = 4;
+}
+enum CommandRejectionReason {
+  COMMAND_REJECTION_REASON_UNSPECIFIED = 0;
+  COMMAND_REJECTION_REASON_INVALID_PLAYER = 1;
+  COMMAND_REJECTION_REASON_UNAUTHORIZED_FLEET = 2;
+  COMMAND_REJECTION_REASON_NON_FINITE_DESTINATION = 3;
+  COMMAND_REJECTION_REASON_DESTINATION_OUTSIDE_ARENA = 4;
+  COMMAND_REJECTION_REASON_INVALID_COMMAND = 5;
+}
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_STATE_CHECKSUMS = 1;
+  CAPABILITY_WORLD_SNAPSHOTS = 2;
+}

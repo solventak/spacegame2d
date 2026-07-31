@@ -1,0 +1,35 @@
+:root{
+--font-condensed:"Barlow Condensed","Oswald","Roboto Condensed",system-ui,sans-serif;
+--font-ui:"Barlow","Barlow Condensed",system-ui,sans-serif;
+--font-mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,monospace;
+
+/* type ramp — HUD is small and dense; nothing below 10px ever ships */
+--fs-micro:10px;   /* axis ticks, unit suffixes */
+--fs-label:11px;   /* ALL-CAPS panel + field labels */
+--fs-body:13px;    /* row text, chip text */
+--fs-readout:15px; /* primary numeric readout */
+--fs-title:18px;   /* panel titles */
+--fs-hero:28px;    /* objective timer, decisive number */
+--fs-display:44px; /* victory / warp commit moments only */
+
+--lh-tight:1.05; /* @kind other */
+--lh-snug:1.25; /* @kind other */
+--lh-body:1.45; /* @kind other */
+
+--tracking-caps:.14em;  /* ALL-CAPS labels */
+--tracking-wide:.06em;
+--tracking-normal:.01em;
+--tracking-num:.02em;
+
+--fw-regular:400; /* @kind other */
+--fw-medium:500; /* @kind other */
+--fw-semi:600; /* @kind other */
+--fw-bold:700; /* @kind other */
+
+/* composed roles */
+--type-label:var(--fw-semi) var(--fs-label)/var(--lh-tight) var(--font-condensed);
+--type-body:var(--fw-regular) var(--fs-body)/var(--lh-body) var(--font-ui);
+--type-readout:var(--fw-medium) var(--fs-readout)/var(--lh-tight) var(--font-mono);
+--type-title:var(--fw-semi) var(--fs-title)/var(--lh-snug) var(--font-condensed);
+--type-hero:var(--fw-semi) var(--fs-hero)/var(--lh-tight) var(--font-mono);
+}

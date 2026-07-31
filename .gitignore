@@ -1,2 +1,13 @@
 /target/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+gha-creds-*.json
+crates/spacegame2d/hud/node_modules/
+crates/spacegame2d/hud/.svelte-kit/
 *.log
+.factory/mcp.json
+docs/plans/2026-07-23-multiplayer-engine-reference.md

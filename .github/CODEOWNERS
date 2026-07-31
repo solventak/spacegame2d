@@ -1,0 +1,6 @@
+# Default code owners
+*       @solventak
+
+# Maintainer-only paths
+/dev/   @solventak
+/main/  @solventak

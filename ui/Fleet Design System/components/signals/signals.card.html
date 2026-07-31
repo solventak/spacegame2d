@@ -1,0 +1,16 @@
+<!-- @dsCard group="Components" viewport="700x230" name="Signals" subtitle="Capture ring, meters, readouts, glyphs, confidence" -->
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><style>body{padding:14px;background:var(--void-1);font:var(--type-body)}.g{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.lb{font:var(--type-label);letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-3)}.col{display:grid;gap:6px}</style><script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script><script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script><script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script><script src="../../_ds_bundle.js"></script></head><body><div id="r"></div><script type="text/babel">const {CaptureRing,Meter,Readout,ConfidenceTag,StateDot,Glyph} = window.FleetDesignSystem_d68ed7;
+const G=['core','relay','gate','outpost','drone','capital','aggressive','defensive','screen','wedge','dispersed','priorityCapital','warp','unknown'];
+ReactDOM.createRoot(document.getElementById('r')).render(<div style={{display:'grid',gap:14}}>
+<div style={{display:'flex',gap:18,alignItems:'center'}}>
+<CaptureRing value={.62} label="5.0" sub="capturing" size={104}/>
+<CaptureRing value={.5} mode="contested" tone="enemy" label="4.0" sub="contested" size={104}/>
+<CaptureRing value={.31} mode="decay" tone="neutral" label="2.5" sub="decaying" size={104}/>
+<div className="col" style={{flex:1}}>
+<Meter value={.72}/><Meter value={.48} tone="enemy" mode="contested"/><Meter value={.3} mode="decay" tone="neutral"/>
+<div className="g" style={{marginTop:4}}><Readout label="drones" value="2,480"/><Readout label="arrival" value="14.2" unit="s" tone="friendly"/><Readout label="last seen" value="32s" stale/></div>
+</div></div>
+<div className="g"><ConfidenceTag level="confirmed" tone="friendly">confirmed</ConfidenceTag><ConfidenceTag level="confirmed" tone="enemy">seen 2s ago</ConfidenceTag><ConfidenceTag level="estimated">~3 capitals</ConfidenceTag><ConfidenceTag level="stale">32s stale</ConfidenceTag><ConfidenceTag level="unknown">unscouted</ConfidenceTag>
+<span className="g" style={{gap:6,marginLeft:8}}><StateDot tone="friendly"/><StateDot tone="enemy"/><StateDot tone="enemy" certainty="estimated"/><StateDot tone="neutral" certainty="stale"/></span></div>
+<div className="g" style={{gap:14,color:'var(--text-2)'}}>{G.map(n=><span key={n} className="col" style={{justifyItems:'center',gap:4}}><Glyph name={n} size={18}/><em className="lb" style={{fontStyle:'normal',fontSize:9}}>{n}</em></span>)}</div>
+</div>);</script></body></html>

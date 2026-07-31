@@ -1,0 +1,96 @@
+name: Docs
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent docs build/deploy per ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-docs:
+    name: Build rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (1.91)
+        uses: dtolnay/rust-toolchain@1.91
+        with:
+          components: rust-docs
+
+      - name: Install Node.js (22)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/spacegame2d/hud/package-lock.json
+
+      - name: Install HUD dependencies
+        working-directory: crates/spacegame2d/hud
+        run: npm ci
+
+      - name: Install native GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxi-dev libxtst-dev libxkbcommon-dev \
+            libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Configure Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build API documentation
+        run: |
+          # Document every workspace crate without re-documenting dependencies.
+          # RUSTDOCFLAGS keeps broken intra-doc links from silently passing.
+          RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
+            cargo doc --no-deps --workspace --all-features
+
+      - name: Write landing page
+        run: |
+          cat > target/doc/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url=spacegame2d_simulation/index.html">
+            <title>spacegame2d API documentation</title>
+          </head>
+          <body>
+            <p>Redirecting to
+              <a href="spacegame2d_simulation/index.html">spacegame2d_simulation</a>&hellip;
+            </p>
+          </body>
+          </html>
+          HTML
+
+      - name: Upload docs artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy-docs:
+    name: Deploy to GitHub Pages
+    needs: build-docs
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

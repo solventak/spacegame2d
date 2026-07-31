@@ -1,0 +1,26 @@
+:root{
+/* 4px base. HUD chrome lives on 1/2/3/4 — 6+ is reserved for the playfield. */
+--sp-0:0px;
+--sp-1:4px;
+--sp-2:8px;
+--sp-3:12px;
+--sp-4:16px;
+--sp-5:20px;
+--sp-6:24px;
+--sp-8:32px;
+--sp-10:40px;
+--sp-12:48px;
+
+--pad-panel:12px;
+--pad-panel-tight:8px;
+--pad-row:6px 8px;
+--pad-chip:3px 8px;
+--gap-stack:8px;
+--gap-cluster:4px;
+
+/* HUD frame: the outer margin the chrome may never cross into */
+--hud-edge:14px;
+--hud-topbar-h:34px;
+--hud-panel-w:280px;
+--hud-order-w:520px;
+}
