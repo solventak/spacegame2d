@@ -31,6 +31,17 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install Node.js (22)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/spacegame2d/hud/package-lock.json
+
+      - name: Install HUD dependencies
+        working-directory: crates/spacegame2d/hud
+        run: npm ci
+
       - name: Install system dependencies for the workspace test gate
         run: |
           sudo apt-get update
