@@ -46,4 +46,6 @@ When tickets overlap, keep ownership and acceptance boundaries explicit rather t
 
 ## Handoff
 
-After an approved Linear mutation, report the affected issue identifier, resulting state, and untouched fields. Keep implementation plans in the canonical planning system referenced by `AGENTS.md`; do not duplicate full plans in Linear or this document.
+After an approved Linear mutation, report the affected issue identifier, resulting state, and
+untouched fields. Keep implementation plans in the active Codex task; do not duplicate them in
+Linear or this document.

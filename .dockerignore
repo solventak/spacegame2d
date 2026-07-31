@@ -1,0 +1,13 @@
+.git/
+.github/
+.factory/
+.terraform/
+target/
+logs/
+**/node_modules/
+**/.svelte-kit/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+gha-creds-*.json

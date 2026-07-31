@@ -140,6 +140,7 @@ they exist and Terraform marks them non-sensitive:
 - `game_port`
 - `vm_name`
 - `vm_zone`
+- `server_image_repository`
 
 Do not add a generic `terraform output -json` command to logs or job summaries: JSON output
 prints sensitive values in cleartext.

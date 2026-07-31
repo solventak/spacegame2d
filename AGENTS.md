@@ -41,7 +41,7 @@ enemy, gray is neutral/uncertain; tactical `Glyph` and interface `Icon` are dist
 | Format (check) | `cargo fmt --check` |
 | Lint | `cargo clippy -- -D warnings` |
 | Test | `cargo test` |
-| Coverage (local) | `cargo tarpaulin --workspace --exclude-files "*/main.rs" --fail-under 85` |
+| Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 85` |
 | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
 The implementer must run the **test gate** locally before opening a PR. If any step fails, do not push; instead comment on the Linear ticket with the failure and move it to "Blocked".
@@ -73,7 +73,9 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
 ## Ticketing and plans
 
 - Active work is tracked in Linear (the configured workspace), including state, assignment,
-  priorities, requirements, acceptance criteria, and ticket-specific implementation plans.
+  priorities, requirements, acceptance criteria, and dependencies. Implementation plans live
+  only in the active Codex task: do not create, require, or consult duplicate plan copies in
+  Linear or external systems.
 
 - Tickets use this template:
 
@@ -107,8 +109,6 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
           overlay.rs        arena ring vertices
           units.rs          ship sprite vertices
         shader.wgsl         GPU shader
-  docs/
-    plans/               milestone planning documents (one file per plan, dated slug)
   ui/
     Fleet Design System/  canonical UI language, tokens, components, and HUD reference
   ```
@@ -143,7 +143,7 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
   | Format (check) | `cargo fmt --check` |
   | Lint | `cargo clippy -- -D warnings` |
   | Test | `cargo test` |
-  | Coverage (local) | `cargo tarpaulin --workspace --exclude-files "*/main.rs" --fail-under 85` |
+  | Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 85` |
   | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
   The implementer must run the **test gate** locally before opening a PR. If any step fails, do not push; instead comment on the Linear ticket with the failure and move it to "Blocked".
@@ -174,16 +174,13 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
 
   ## Ticketing and plans
 
-  - Active work is tracked in Linear (the configured workspace). Linear is for tracking only — state, assignment, priorities, requirements, acceptance criteria. Implementation plans live in Notion.
+  - Active work is tracked in Linear (the configured workspace). Linear is for tracking only — state, assignment, priorities, requirements, acceptance criteria.
 
   - Tickets use this template:
 
     ```
     ## Requirements
     - ...
-
-    ## Plan
-    See <Notion page URL>
 
     ## Acceptance Criteria
     - [ ] ...
@@ -195,18 +192,8 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
     - (optional)
     ```
 
-  - The `## Plan` section in a Linear ticket is a one-line pointer to a Notion page in the **Implementation Plans** database. The Notion page is the canonical store for the implementation plan, files touched, API surface, and risk level.
 
-  - The Notion page has a **Status** property that drives the workflow:
-    - `Needs Review` — the `linear-planner` droid just wrote the plan; awaiting human review.
-    - `Approved` — a human has reviewed and signed off; the `linear-implementer` droid may proceed.
-    - `Implemented` — the PR has been merged; plan is complete.
-
-  - The `linear-planner` droid creates Notion pages with Status = `Needs Review`. The user flips Status to `Approved` when ready. The `linear-implementer` droid checks the Status before proceeding — it only runs if Status = `Approved`.
-
-  - The `pr-reviewer` droid does NOT read the plan. It reviews code on its own merits against AGENTS.md conventions and the Linear ticket's acceptance criteria.
-
-  - Plan docs in `docs/plans/` are an optional historical archive. The implementer may commit the final plan alongside the PR if a permanent git record is desired, but the canonical plan store is Notion.
+  - Plan docs in `docs/plans/` are a historical archive. The implementer should not commit the final plan alongside the PR.
 
   ## Stacked PRs
 

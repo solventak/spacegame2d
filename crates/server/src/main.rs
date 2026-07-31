@@ -25,6 +25,10 @@ use session::MatchSession;
 
 pub const COMMAND_INPUT_DELAY: Tick = Tick::new(2);
 
+fn build_git_sha(value: Option<&str>) -> &str {
+    value.unwrap_or("unknown")
+}
+
 struct Client {
     stream: TcpStream,
     address: SocketAddr,
@@ -649,7 +653,7 @@ async fn main() {
         .expect("failed to initialize logging");
     let address: SocketAddr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:4000".to_string())
+        .unwrap_or_else(|| "0.0.0.0:4000".to_string())
         .parse()
         .expect("invalid bind address");
     let config = match simulation_config_from_env() {
@@ -659,6 +663,13 @@ async fn main() {
             return;
         }
     };
+    tracing::info!(
+        event = "server_starting",
+        git_sha = build_git_sha(option_env!("SPACEGAME_GIT_SHA")),
+        simulation_version = SIMULATION_VERSION,
+        address = %address,
+        "server starting"
+    );
     let listener = match TcpListener::bind(address).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -806,6 +817,13 @@ mod tests {
             Tick::from(42)
         );
     }
+
+    #[test]
+    fn build_git_sha_uses_a_stable_local_fallback() {
+        assert_eq!(build_git_sha(Some("0123456789abcdef")), "0123456789abcdef");
+        assert_eq!(build_git_sha(None), "unknown");
+    }
+
     #[test]
     fn ownership_and_nan_are_rejected() {
         let sim = Simulation::default();
