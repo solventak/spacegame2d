@@ -97,7 +97,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           reported=false
-          for name in server_endpoint game_port vm_name vm_zone; do
+          for name in server_endpoint game_port vm_name vm_zone server_image_repository; do
             if jq -e --arg name "$name" \
               '.[$name] != null and .[$name].sensitive == false' "$outputs" >/dev/null; then
               value=$(jq -r --arg name "$name" \

@@ -14,3 +14,9 @@ variable "zone" {
   description = "Default Google Cloud zone for the game-server host."
   default     = "us-west1-a"
 }
+
+variable "server_image_repository_id" {
+  type        = string
+  description = "Artifact Registry repository ID for immutable game-server images."
+  default     = "spacegame2d-server"
+}
