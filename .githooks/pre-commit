@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[pre-commit] running test gate: cargo fmt --check && cargo clippy -- -D warnings && cargo test"
-cargo fmt --check
-cargo clippy -- -D warnings
-cargo test
+rust_gate_required=false
+while IFS= read -r path; do
+  case "$path" in
+    *.rs|Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|rustfmt.toml|clippy.toml|crates/spacegame2d/hud/*)
+      rust_gate_required=true
+      break
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ "$rust_gate_required" = true ]; then
+  echo "[pre-commit] running Rust test gate: cargo fmt --check && cargo clippy -- -D warnings && cargo test"
+  cargo fmt --check
+  cargo clippy -- -D warnings
+  cargo test
+else
+  echo "[pre-commit] no Rust, Cargo, or HUD lifecycle changes staged; Rust test gate deferred to CI"
+fi
