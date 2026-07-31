@@ -21,6 +21,17 @@ function renderHud() {
 describe('HUD IPC', () => {
   afterEach(() => { cleanup(); window.__SPACEGAME_HUD__ = undefined; vi.useRealTimers(); });
 
+  it('announces uiReady and accepts the initial complete match snapshot', async () => {
+    const { sendJson, publish } = renderHud();
+    expect(JSON.parse(sendJson.mock.calls[0]?.[0] ?? '{}')).toMatchObject({ kind: 'uiReady', protocolVersion: 3 });
+
+    await publish('connectionStateChanged', { stage: 'connected', requestId: 'request-1', address: 'server:4000', displayName: 'Rook', localPlayer: { schemaVersion: 1, playerSlot: 1, color: 'cyan', colorHex: '#22CFE8' } });
+    await publish('matchSessionStateChanged', { stage: 'waiting', sequence: 1, localPlayer: player('Rook', 'cyan'), opponentPresence: 'waiting', presenceRevision: 0 });
+
+    expect(screen.getByText('Waiting for opponent…')).toBeTruthy();
+    expect(screen.getByText('Rook')).toBeTruthy();
+  });
+
   it('uses a hostname-safe address field and sends a request-scoped connect command', async () => {
     const { sendJson } = renderHud();
     await fireEvent.input(screen.getByLabelText('Server address'), { target: { value: 'play.example:4000' } });
@@ -88,6 +99,11 @@ describe('HUD IPC', () => {
     expect(screen.queryByText('Vale')).toBeNull();
     expect(container.querySelector('.match-hud.compact')).toBeTruthy();
 
+    await publish('matchSessionStateChanged', { stage: 'active', sequence: 4, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Stale', 'coral'), opponentPresence: 'disconnected', presenceRevision: 2, clock: { startedAtTick: 60, currentTick: 240, ticksPerSecond: 60, elapsedWholeSeconds: 3 } });
+    expect(screen.getByText('Ash')).toBeTruthy();
+    expect(screen.queryByText('Stale')).toBeNull();
+    expect(screen.getByText('T+00:04')).toBeTruthy();
+
     await publish('matchSessionStateChanged', { stage: 'reset', sequence: 6, reason: 'userDisconnected' });
     expect(screen.queryByText('Ash')).toBeNull();
     expect(screen.getByText('CONNECT TO SERVER')).toBeTruthy();
@@ -107,9 +123,14 @@ describe('HUD IPC', () => {
     expect(container.querySelector('.bar-local svg.enemy')).toBeTruthy();
   });
 
-  it('rejects partial match state and accepts versioned directional messages', () => {
+  it('rejects incomplete and invalid match states', () => {
     expect(validEngineMessage({ kind: 'heartbeat', protocolVersion: 3, bridgeId, sequence: 1 })).toBe(true);
     expect(validEngineMessage({ kind: 'matchSessionStateChanged', protocolVersion: 3, bridgeId, state: { stage: 'active', sequence: 1 } })).toBe(false);
+    expect(validEngineMessage({ kind: 'matchSessionStateChanged', protocolVersion: 3, bridgeId, state: { stage: 'waiting', sequence: 1.5, localPlayer: player('Rook', 'cyan'), opponentPresence: 'waiting', presenceRevision: 0 } })).toBe(false);
+    expect(validEngineMessage({ kind: 'matchSessionStateChanged', protocolVersion: 3, bridgeId, state: { stage: 'waiting', sequence: 1, localPlayer: { ...player('Rook', 'cyan'), color: 'violet' }, opponentPresence: 'waiting', presenceRevision: 0 } })).toBe(false);
+    expect(validEngineMessage({ kind: 'matchSessionStateChanged', protocolVersion: 3, bridgeId, state: { stage: 'waiting', sequence: 1, localPlayer: player('Rook', 'cyan'), opponentPresence: 'present', presenceRevision: 0 } })).toBe(false);
+    expect(validEngineMessage({ kind: 'matchSessionStateChanged', protocolVersion: 3, bridgeId, state: { stage: 'active', sequence: 1, localPlayer: player('Rook', 'cyan'), opponentPlayer: player('Vale', 'coral'), opponentPresence: 'present', presenceRevision: 1, clock: { startedAtTick: 60, currentTick: 120.5, ticksPerSecond: 60, elapsedWholeSeconds: 1 } } })).toBe(false);
+    expect(validEngineMessage({ kind: 'matchSessionStateChanged', protocolVersion: 2, bridgeId, state: { stage: 'reset', sequence: 1, reason: 'startup' } })).toBe(false);
     expect(validUiMessage({ kind: 'disconnectRequested', protocolVersion: 3, bridgeId, requestId: 'request-1' })).toBe(true);
   });
 });

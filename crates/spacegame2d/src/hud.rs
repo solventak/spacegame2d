@@ -10,6 +10,7 @@ use wry::{
 };
 
 const HUD_ORIGIN: &str = "spacegame-hud://localhost";
+const REVEAL_WIDTH: f64 = 520.0;
 const REVEAL_BAND_HEIGHT: f64 = 112.0;
 const COMPACT_BAR_HEIGHT: f64 = 34.0;
 
@@ -58,15 +59,16 @@ impl HudBounds {
             };
         }
         if matches!(layout, HudLayout::Join | HudLayout::Docking) {
+            let width = REVEAL_WIDTH.min(parent_width.max(1.0));
             let height = REVEAL_BAND_HEIGHT.min(parent_height.max(1.0));
             return Self {
-                x: 0.0,
+                x: ((parent_width - width) / 2.0).max(0.0),
                 y: if layout == HudLayout::Join {
                     ((parent_height - height) / 2.0).max(0.0)
                 } else {
                     0.0
                 },
-                width: parent_width.max(1.0),
+                width,
                 height,
             };
         }
@@ -367,27 +369,28 @@ mod tests {
         assert_eq!(
             HudBounds::for_window(PhysicalSize::new(800, 600), 1.0, HudLayout::Join),
             HudBounds {
-                x: 0.0,
+                x: 140.0,
                 y: 244.0,
-                width: 800.0,
+                width: 520.0,
                 height: 112.0,
             }
         );
     }
 
     #[test]
-    fn docking_moves_the_fixed_reveal_band_without_resizing() {
+    fn docking_moves_the_bounded_reveal_without_resizing() {
         let size = PhysicalSize::new(1600, 900);
         let join = HudBounds::for_window(size, 1.0, HudLayout::Join);
         let halfway = HudBounds::move_vertical(join, 0.0, ease_out(0.5));
-        assert_eq!(halfway.x, 0.0);
-        assert_eq!(halfway.width, 1600.0);
+        assert_eq!(halfway.x, join.x);
+        assert_eq!(halfway.width, join.width);
         assert_eq!(halfway.height, REVEAL_BAND_HEIGHT);
         assert!(halfway.y > 0.0);
         assert!(halfway.y < join.y);
 
         let docked = HudBounds::move_vertical(join, 0.0, 1.0);
         assert_eq!(docked.y, 0.0);
+        assert_eq!(docked.x, join.x);
         assert_eq!(docked.width, join.width);
         assert_eq!(docked.height, join.height);
     }
