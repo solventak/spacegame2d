@@ -13,14 +13,10 @@ resource "google_artifact_registry_repository" "server_images" {
   depends_on = [google_project_service.artifact_registry]
 }
 
-data "google_service_account" "server_release" {
-  account_id = "projects/${var.project_id}/serviceAccounts/gha-server-release@${var.project_id}.iam.gserviceaccount.com"
-}
-
 resource "google_artifact_registry_repository_iam_member" "server_release_writer" {
   project    = var.project_id
   location   = google_artifact_registry_repository.server_images.location
   repository = google_artifact_registry_repository.server_images.name
   role       = "roles/artifactregistry.writer"
-  member     = "serviceAccount:${data.google_service_account.server_release.email}"
+  member     = "serviceAccount:gha-server-release@${var.project_id}.iam.gserviceaccount.com"
 }
