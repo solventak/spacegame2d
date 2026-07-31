@@ -23,6 +23,14 @@ jobs:
       - name: Install Rust toolchain (1.91)
         uses: dtolnay/rust-toolchain@1.91
 
+      - name: Restore Rust and coverage build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+          key: tarpaulin-0.37.0
+          workspaces: ". -> target/tarpaulin"
+          cache-on-failure: true
+
       - name: Install Node.js (22)
         uses: actions/setup-node@v5
         with:
@@ -49,6 +57,8 @@ jobs:
         run: |
           cargo tarpaulin \
             --workspace \
+            --target-dir target/tarpaulin \
+            --skip-clean \
             --exclude-files "*/main.rs" \
             --fail-under 85 \
             --out xml --out html \
