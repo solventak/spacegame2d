@@ -44,7 +44,15 @@ enemy, gray is neutral/uncertain; tactical `Glyph` and interface `Icon` are dist
 | Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 85` |
 | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
-The implementer must run the **test gate** locally before opening a PR. If any step fails, do not push; instead comment on the Linear ticket with the failure and move it to "Blocked".
+Run the **test gate** locally before opening a PR when the change includes Rust sources, Cargo
+configuration, or native/HUD lifecycle code. Infrastructure, workflow, documentation, and other
+non-Rust-only changes instead run their relevant local checks; CI remains the full repository
+quality gate. If a required local check fails, do not push; instead comment on the Linear ticket
+with the failure and move it to "Blocked".
+
+Terraform changes under `infra/` must run `terraform fmt -check -recursive infra`, validate both
+Terraform roots with `terraform init -backend=false -input=false` followed by `terraform validate`,
+and run `terraform -chdir=infra test` when Terraform test files are present.
 
 Changes under `crates/spacegame2d/hud/`, `crates/spacegame2d/src/hud.rs`, or native HUD lifecycle code must also run `./scripts/qa-hud.sh` after the Rust test gate.
 
@@ -146,7 +154,15 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
   | Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 85` |
   | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
-  The implementer must run the **test gate** locally before opening a PR. If any step fails, do not push; instead comment on the Linear ticket with the failure and move it to "Blocked".
+  Run the **test gate** locally before opening a PR when the change includes Rust sources, Cargo
+  configuration, or native/HUD lifecycle code. Infrastructure, workflow, documentation, and other
+  non-Rust-only changes instead run their relevant local checks; CI remains the full repository
+  quality gate. If a required local check fails, do not push; instead comment on the Linear ticket
+  with the failure and move it to "Blocked".
+
+  Terraform changes under `infra/` must run `terraform fmt -check -recursive infra`, validate both
+  Terraform roots with `terraform init -backend=false -input=false` followed by `terraform validate`,
+  and run `terraform -chdir=infra test` when Terraform test files are present.
 
   Changes under `crates/spacegame2d/hud/`, `crates/spacegame2d/src/hud.rs`, or native HUD lifecycle code must also run `./scripts/qa-hud.sh` after the Rust test gate.
 
@@ -215,7 +231,9 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
   git config core.hooksPath .githooks
   ```
 
-  The pre-commit hook runs the test gate and blocks the commit if any step fails. The hook is advisory for the droid; the implementer must run the gate explicitly before pushing regardless.
+  The pre-commit hook runs the Rust test gate only when staged files include Rust, Cargo, or native
+  HUD lifecycle code. The hook is advisory for the droid; the implementer must run the checks
+  required by the changed file types before pushing regardless.
 
   ## Style overrides
 
