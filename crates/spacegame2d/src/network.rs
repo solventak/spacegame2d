@@ -602,7 +602,18 @@ mod tests {
         let address = synthetic_server_with_messages(vec![Message::SessionSnapshot(malformed)]);
         let mut session = NetworkSession::connect(&address).unwrap();
 
-        let error = session.poll_events().unwrap_err();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let error = loop {
+            match session.poll_events() {
+                Err(error) => break error,
+                Ok(events) => assert!(events.is_empty()),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "malformed snapshot was not received"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
