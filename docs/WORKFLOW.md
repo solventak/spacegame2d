@@ -29,7 +29,8 @@ Implementation issues should include:
 - verification plan
 - owner and priority when known; estimates and cycles are optional
 
-The Linear ticket's `## Plan` section should point to the approved Notion implementation plan. Do not duplicate the full plan in the ticket.
+Implementation plans live only in the active Codex task. Linear holds the ticket context and
+acceptance criteria; do not add plan copies or external plan links to the ticket.
 
 ## Safe agent behavior
 

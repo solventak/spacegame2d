@@ -1,6 +1,7 @@
 # Software Development Lifecycle
 
-This repository uses a lightweight, outcome-focused lifecycle. Linear tracks work state; Notion is the canonical store for implementation plans, as described in [`AGENTS.md`](../AGENTS.md).
+This repository uses a lightweight, outcome-focused lifecycle. Linear tracks work state, while
+implementation plans live only in the active Codex task, as described in [`AGENTS.md`](../AGENTS.md).
 
 ## Lifecycle
 
