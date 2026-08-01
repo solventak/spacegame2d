@@ -20,10 +20,13 @@ printf '%s\n' "$command" >> "$FAKE_GCLOUD_LOG"
 scenario="$(<"$FAKE_SCENARIO")"
 
 if [[ "$command" == *"current-image"* ]]; then
+  printf '%s\n' __RELAY_CURRENT_IMAGE_START__
   if [[ "$scenario" == "first-external-failure" ]]; then
+    printf '%s\n' __RELAY_CURRENT_IMAGE_END__
     exit 0
   fi
   printf '%s\n' "$FAKE_IMAGE_PATH@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  printf '%s\n' __RELAY_CURRENT_IMAGE_END__
   exit 0
 fi
 

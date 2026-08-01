@@ -66,8 +66,12 @@ remote() {
   "$gcloud_bin" "${ssh_args[@]}" --command="$1"
 }
 
-current_image_command="if sudo test -s /var/lib/relay-operations/current-image; then sudo cat /var/lib/relay-operations/current-image; fi"
-previous_image="$(remote "$current_image_command")"
+current_image_command="printf '%s\\n' __RELAY_CURRENT_IMAGE_START__; if sudo test -s /var/lib/relay-operations/current-image; then sudo cat /var/lib/relay-operations/current-image; fi; printf '%s\\n' __RELAY_CURRENT_IMAGE_END__"
+previous_image="$(remote "$current_image_command" | awk '
+  /^__RELAY_CURRENT_IMAGE_START__$/ { inside = 1; next }
+  /^__RELAY_CURRENT_IMAGE_END__$/ { inside = 0; next }
+  inside { print }
+' | tr -d '\r')"
 if [[ -n "$previous_image" ]] && {
   [[ "$previous_image" != "$image_path@sha256:"* ]] || ! [[ "$previous_image" =~ @sha256:[0-9a-f]{64}$ ]];
 }; then
