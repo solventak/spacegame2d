@@ -44,6 +44,42 @@ or Workload Identity Federation permission:
    `gh run list --branch <branch>`. Confirm there is one intended Terraform Plan run and review
    its cloud-aware plan output; local `terraform test` cannot validate GitHub event semantics or
    live Google API access.
+## Low-cost playtest footprint and billing alerts
+
+The intended `relayoperations` playtest footprint is deliberately small:
+
+- one `e2-micro` Compute Engine VM;
+- one standard-tier regional static IPv4 address;
+- one 10 GB `pd-standard` persistent boot disk; and
+- the `spacegame2d-server` Artifact Registry Docker repository.
+
+Terraform creates a USD 5.00 calendar-month Google Cloud Billing budget scoped only to the
+playtest project. It sends 50%, 90%, and 100% current-spend alerts to the Google Cloud
+Monitoring email notification channel for `akennedy4155@gmail.com`.
+
+The Terraform workflows read the billing account from the `GCP_BILLING_ACCOUNT_ID` GitHub
+repository variable; no billing-account ID is stored in repository source. Populate that variable
+with the account attached to the project before planning this root. For a manual plan or apply,
+export `TF_VAR_billing_account_id` with the same ID.
+
+If the variable is absent, Terraform resolves the account with `gcloud billing projects describe`.
+That fallback requires authenticated `gcloud` and fails the plan when the project has no linked
+billing account, so the budget can never be silently omitted.
+
+Before the production root can plan or apply these resources, apply the matching
+`infra/bootstrap/identity/` changes with Alex's ADC. They grant the plan identity read-only access
+and the apply identity read/write access to the project-scoped budget and Monitoring notification
+channel.
+
+After the first apply, Google sends a one-time verification message to that address. Open the
+message and follow its verification link before treating budget-alert delivery as complete.
+If the channel remains unverified, budget notifications may not be delivered even though the
+Terraform resource exists.
+
+Likely charge sources outside the fixed footprint include network egress and Artifact Registry
+storage. Review every plan for accidental additions or changes such as a larger VM, additional
+disks, additional static IP addresses, or a non-free-tier region or service. The budget is an
+alert, not a hard spending cutoff, and does not eliminate every possible cloud charge.
 
 ## One-time bucket bootstrap
 

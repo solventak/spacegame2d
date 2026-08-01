@@ -74,6 +74,10 @@ Populate these repository variables from Terraform outputs. They are identifiers
 | `GCP_SERVER_RELEASE_SERVICE_ACCOUNT` | `service_account_email.release` |
 | `GCP_CLIENT_RELEASE_SERVICE_ACCOUNT` | `service_account_email.client_release` |
 
+Set `GCP_BILLING_ACCOUNT_ID` separately to the ID attached to `GCP_PROJECT_ID`, obtained with
+`gcloud billing projects describe`. Keep the ID in GitHub repository configuration rather than
+repository source.
+
 The bootstrap root also outputs `game_server_runtime_service_account_email`. It is attached to
 the VM by the production root and is not a GitHub Actions identity.
 
