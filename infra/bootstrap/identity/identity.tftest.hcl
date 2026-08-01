@@ -59,4 +59,9 @@ run "plans_game_server_identity_contract" {
     condition     = google_project_iam_member.terraform_apply_monitoring_channel.role == "roles/monitoring.notificationChannelEditor"
     error_message = "The Terraform apply identity must be able to manage monitoring notification channels."
   }
+
+  assert {
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github["plan"].attribute_condition, "assertion.event_name == 'pull_request'")
+    error_message = "The Terraform plan provider must accept the pull_request workflow event."
+  }
 }

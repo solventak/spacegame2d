@@ -15,7 +15,7 @@ locals {
       condition = join(" && ", [
         "assertion.repository_id == '${var.github_repository_id}'",
         "assertion.repository_owner_id == '${var.github_owner_id}'",
-        "assertion.event_name == 'pull_request_target'",
+        "assertion.event_name == 'pull_request'",
         "(assertion.base_ref == 'dev' || assertion.base_ref == 'main')",
         "assertion.workflow_ref.startsWith('${var.github_repository}/.github/workflows/terraform-plan.yml@')",
       ])
