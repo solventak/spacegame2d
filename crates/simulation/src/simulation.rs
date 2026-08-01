@@ -1,83 +1,21 @@
-use crate::combat::{
-    CombatTargetId, FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, ImpactEntityId,
-    MUZZLE_OFFSET_METERS, TURRET_TRACKING_RADIANS_PER_SECOND, WEAPON_DAMAGE, WEAPON_RANGE_METERS,
-};
-use crate::command::{CommandScheduler, PlayerId, UnitId, World};
+use crate::combat::CombatTargetId;
+use crate::command::{CommandScheduler, World};
 use crate::config::SimulationConfig;
-use crate::flight_control::{AvoidanceEntityId, NeighborObservation, NeighborRelationship};
-use crate::hitbox::{Hitbox, PositionedHitbox};
-use crate::objective::{
-    CAPTURE_RADIUS_SQUARED_METERS, ObjectivePresence, ObjectiveState, advance_pair,
-};
-use glam::Vec2;
+use crate::events::simulation_event_sort_key;
+use crate::systems::{combat, movement, objective};
 use spacegame2d_protocol::{AuthoritativeCommand, Tick};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Simulation tick rate in hertz. The integrator advances in fixed
-/// [`FIXED_DT_SECONDS`] steps regardless of wall-clock frame timing.
-pub const SIMULATION_HZ: u32 = 60;
-/// Fixed timestep derived from [`SIMULATION_HZ`], in seconds.
-pub const FIXED_DT_SECONDS: f32 = 1.0 / SIMULATION_HZ as f32;
-/// Ship mass in kilograms, used to convert thrust into linear acceleration.
-pub const SHIP_MASS_KG: f32 = 1.0;
-/// Forward thrust force in newtons applied while `thrust` is held.
-pub const FORWARD_THRUST_NEWTONS: f32 = 8.0;
-/// Hard cap on ship speed in meters per second.
-pub const MAX_SPEED_METERS_PER_SECOND: f32 = 8.0;
-/// Linear velocity damping rate per second; the ship coasts to a stop without
-/// active thrust.
-pub const LINEAR_DAMPING_PER_SECOND: f32 = 0.8;
-/// Ship moment of inertia in kg·m², used to convert torque into angular
-/// acceleration.
-pub const MOMENT_OF_INERTIA_KG_M2: f32 = 0.25;
-/// Angular thrust torque in newton-meters applied while turning.
-pub const ANGULAR_THRUST_NEWTON_METERS: f32 = 2.0;
-/// Hard cap on angular speed in radians per second.
-pub const MAX_ANGULAR_SPEED_RADIANS_PER_SECOND: f32 = 3.0;
-/// Angular velocity damping rate per second; rotation decays without active
-/// turn input.
-pub const ANGULAR_DAMPING_PER_SECOND: f32 = 2.5;
-const VELOCITY_EPSILON: f32 = 0.0001;
-/// Default radius kept as a convenience for callers that render the default
-/// prototype configuration. Authoritative simulation code reads the radius
-/// from [`SimulationConfig`].
-pub const WORLD_RADIUS_M: f32 = crate::config::DEFAULT_WORLD_RADIUS_METERS;
+#[cfg(test)]
+use crate::objective::ObjectiveState;
 
-/// Per-tick discrete input applied to a ship by the player or an autopilot.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FlightInput {
-    /// Apply forward thrust along the current heading.
-    pub thrust: bool,
-    /// Apply counterclockwise (left) angular thrust.
-    pub turn_left: bool,
-    /// Apply clockwise (right) angular thrust.
-    pub turn_right: bool,
-}
-
-/// Integrated kinematic state of a single ship.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ShipState {
-    /// Position in arena-space meters, origin at the arena center.
-    pub position: Vec2,
-    /// Velocity in meters per second.
-    pub velocity: Vec2,
-    /// Heading angle in radians. `0.0` points along +Y; positive is
-    /// counterclockwise.
-    pub heading_radians: f32,
-    /// Angular velocity in radians per second.
-    pub angular_velocity_radians_per_second: f32,
-}
-
-impl Default for ShipState {
-    fn default() -> Self {
-        Self {
-            position: Vec2::ZERO,
-            velocity: Vec2::ZERO,
-            heading_radians: 0.0,
-            angular_velocity_radians_per_second: 0.0,
-        }
-    }
-}
+pub use crate::events::{MatchResult, SimulationEvent};
+pub use crate::physics::{
+    ANGULAR_DAMPING_PER_SECOND, ANGULAR_THRUST_NEWTON_METERS, FIXED_DT_SECONDS,
+    FORWARD_THRUST_NEWTONS, FlightInput, LINEAR_DAMPING_PER_SECOND,
+    MAX_ANGULAR_SPEED_RADIANS_PER_SECOND, MAX_SPEED_METERS_PER_SECOND, MOMENT_OF_INERTIA_KG_M2,
+    SHIP_MASS_KG, SIMULATION_HZ, ShipState, WORLD_RADIUS_M, is_out_of_bounds, step_ship,
+};
 
 /// Fixed-timestep driver for the autopilot drone world.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -198,151 +136,9 @@ impl Simulation {
     /// authoritative World units, and deriving transient boundary events.
     pub fn step(&mut self) -> Result<Vec<SimulationEvent>, crate::command::CommandExecutionError> {
         self.commands.execute_pending(self.tick, &mut self.world)?;
-        let observations = avoidance_observations(&self.world);
-        for unit in self.world.units.iter_mut() {
-            let owner = unit.owner;
-            let neighbors = observations
-                .iter()
-                .filter(|neighbor| neighbor.entity_id != AvoidanceEntityId::Unit(unit.id))
-                .map(|neighbor| NeighborObservation {
-                    entity_id: neighbor.entity_id,
-                    position: neighbor.position,
-                    velocity: neighbor.velocity,
-                    hitbox: neighbor.hitbox,
-                    relationship: match neighbor.entity_id {
-                        AvoidanceEntityId::StaticStructure(_) => {
-                            NeighborRelationship::StaticStructure
-                        }
-                        AvoidanceEntityId::Unit(_)
-                            if owner.is_some() && owner == neighbor.owner =>
-                        {
-                            NeighborRelationship::Friendly
-                        }
-                        AvoidanceEntityId::Unit(_) => NeighborRelationship::Opposing,
-                    },
-                })
-                .collect::<Vec<_>>();
-            let input = unit.autopilot.controls_for_tick_with_hitbox(
-                &unit.state,
-                unit.hitbox(),
-                &neighbors,
-            );
-            step_ship(&mut unit.state, input);
-        }
-        let target_observations = target_observations(&self.world);
-        let hit_observations = hit_observations(&self.world);
+        movement::run(&mut self.world);
         let mut events = Vec::new();
-        let mut unit_damage = BTreeMap::new();
-        let mut core_damage = BTreeMap::new();
-        let mut shooters = self
-            .world
-            .units
-            .iter()
-            .map(|unit| unit.id)
-            .collect::<Vec<_>>();
-        shooters.sort_unstable();
-        for shooter_id in shooters {
-            let shooter_index = self
-                .world
-                .units
-                .iter()
-                .position(|unit| unit.id == shooter_id)
-                .expect("combat observation must reference a live unit");
-            let shooter = &mut self.world.units[shooter_index];
-            let previous_target = shooter.combat.turret.target;
-            let target = valid_target(
-                previous_target,
-                shooter.owner,
-                shooter.state.position,
-                &target_observations,
-            )
-            .or_else(|| {
-                nearest_hostile(shooter.owner, shooter.state.position, &target_observations)
-            });
-            if target != previous_target {
-                shooter.combat.turret.cooldown_ticks_remaining = 0;
-            }
-            shooter.combat.turret.target = target;
-            if shooter.combat.turret.cooldown_ticks_remaining > 0 {
-                shooter.combat.turret.cooldown_ticks_remaining -= 1;
-            }
-            let Some(target_id) = target else {
-                continue;
-            };
-            let target_position = target_observations
-                .iter()
-                .find(|observation| observation.id == target_id)
-                .expect("valid target must be observed")
-                .position;
-            let desired_world_heading = heading_toward(target_position - shooter.state.position);
-            let desired_local_heading =
-                wrap_angle(desired_world_heading - shooter.state.heading_radians);
-            let delta =
-                wrap_angle(desired_local_heading - shooter.combat.turret.local_heading_radians);
-            let max_turn = TURRET_TRACKING_RADIANS_PER_SECOND * FIXED_DT_SECONDS;
-            shooter.combat.turret.local_heading_radians = wrap_angle(
-                shooter.combat.turret.local_heading_radians + delta.clamp(-max_turn, max_turn),
-            );
-            let world_heading = wrap_angle(
-                shooter.state.heading_radians + shooter.combat.turret.local_heading_radians,
-            );
-            let aligned =
-                wrap_angle(desired_world_heading - world_heading).abs() <= FIRING_TOLERANCE_RADIANS;
-            if !aligned || shooter.combat.turret.cooldown_ticks_remaining != 0 {
-                continue;
-            }
-            let direction = forward_from_heading(world_heading);
-            let muzzle_origin = shooter.state.position + direction * MUZZLE_OFFSET_METERS;
-            let ray_endpoint = muzzle_origin + direction * WEAPON_RANGE_METERS;
-            let impact = first_impact(
-                shooter.id,
-                shooter.owner,
-                muzzle_origin,
-                direction,
-                &hit_observations,
-            );
-            let impact_entity = impact.map(|impact| impact.entity_id);
-            let impact_position = impact.map_or(ray_endpoint, |impact| impact.position);
-            if let Some(impact) = impact {
-                match impact.entity_id {
-                    ImpactEntityId::Unit(hit_unit_id) => {
-                        *unit_damage.entry(hit_unit_id).or_insert(0) += WEAPON_DAMAGE;
-                    }
-                    ImpactEntityId::StaticStructure(core_id)
-                        if impact.command_core_exposed
-                            && is_hostile(shooter.owner, impact.owner) =>
-                    {
-                        *core_damage.entry(core_id).or_insert(0) += WEAPON_DAMAGE;
-                    }
-                    ImpactEntityId::StaticStructure(core_id) if impact.command_core_protected => {
-                        events.push(SimulationEvent::CoreHitProtected {
-                            tick: self.tick,
-                            core_id,
-                        });
-                    }
-                    ImpactEntityId::StaticStructure(_) => {}
-                }
-            }
-            shooter.combat.turret.cooldown_ticks_remaining = FIRE_INTERVAL_TICKS;
-            events.push(SimulationEvent::ShotFired {
-                tick: self.tick,
-                shooter_id,
-                muzzle_origin,
-                ray_endpoint,
-                impact_position,
-                impact_entity,
-            });
-        }
-        for (unit_id, amount) in unit_damage {
-            if let Some(unit) = self.world.unit_mut(unit_id) {
-                unit.combat.hull.current = unit.combat.hull.current.saturating_sub(amount);
-            }
-        }
-        for (core_id, amount) in core_damage {
-            if let Some(pair) = self.world.home_objective_pair_mut(core_id) {
-                pair.apply_core_damage(amount);
-            }
-        }
+        combat::run(&mut self.world, self.tick, &mut events);
         let world_radius = self.world_radius();
         self.world.units.retain(|unit| {
             if unit.combat.hull.current == 0 {
@@ -363,41 +159,13 @@ impl Simulation {
                 true
             }
         });
-        let destroyed_cores = self
-            .world
-            .home_objective_pairs()
-            .iter()
-            .filter(|pair| pair.core_health_current() == 0)
-            .map(|pair| (pair.owner(), pair.core_id()))
-            .collect::<Vec<_>>();
-        if !destroyed_cores.is_empty() {
-            let outcome = if destroyed_cores.len() == 2 {
-                MatchResult::Draw {
-                    destroyed_cores: [destroyed_cores[0].1, destroyed_cores[1].1],
-                }
-            } else {
-                let (loser, destroyed_core) = destroyed_cores[0];
-                let winner = self
-                    .world
-                    .home_objective_pairs()
-                    .iter()
-                    .find(|pair| pair.owner() != loser)
-                    .expect("two-player match has an opposing Core")
-                    .owner();
-                MatchResult::Victory {
-                    winner,
-                    loser,
-                    destroyed_core,
-                }
-            };
+        if let Some(outcome) = objective::run(&mut self.world, self.tick, false, &mut events) {
             events.push(SimulationEvent::MatchResult {
                 tick: self.tick,
                 outcome,
             });
             self.commands.clear_pending();
             self.world.reset_match()?;
-        } else {
-            self.advance_objectives(false, &mut events);
         }
         let live_ids = self
             .world
@@ -418,389 +186,6 @@ impl Simulation {
     }
 }
 
-impl Simulation {
-    fn advance_objectives(&mut self, frozen: bool, events: &mut Vec<SimulationEvent>) {
-        let samples = self
-            .world
-            .home_objective_pairs()
-            .iter()
-            .map(|pair| {
-                let relay = self
-                    .world
-                    .structures()
-                    .iter()
-                    .find(|structure| structure.id() == pair.relay_id())
-                    .expect("home objective relay must exist");
-                let mut presence = ObjectivePresence::default();
-                for unit in &self.world.units {
-                    let Some(owner) = unit.owner else {
-                        continue;
-                    };
-                    if unit.state.position.distance_squared(relay.position())
-                        > CAPTURE_RADIUS_SQUARED_METERS
-                    {
-                        continue;
-                    }
-                    if owner == pair.owner() {
-                        presence.has_defender = true;
-                    } else {
-                        presence.has_attacker = true;
-                    }
-                }
-                (pair.owner(), pair.relay_id(), pair.core_id(), presence)
-            })
-            .collect::<Vec<_>>();
-        for ((owner, relay_id, core_id, presence), pair) in samples
-            .into_iter()
-            .zip(self.world.home_objective_pairs_mut())
-        {
-            if let Some((previous_state, next_state)) = advance_pair(pair, presence, frozen) {
-                events.push(SimulationEvent::ObjectiveTransition {
-                    tick: self.tick,
-                    owner,
-                    relay_id,
-                    core_id,
-                    previous_state,
-                    next_state,
-                });
-            }
-        }
-    }
-}
-
-/// Immutable unit state sampled at the start of a simulation tick.
-#[derive(Clone, Copy)]
-struct TickAvoidanceObservation {
-    entity_id: AvoidanceEntityId,
-    owner: Option<crate::command::PlayerId>,
-    position: Vec2,
-    velocity: Vec2,
-    hitbox: Hitbox,
-}
-
-fn avoidance_observations(world: &World) -> Vec<TickAvoidanceObservation> {
-    let mut observations: Vec<TickAvoidanceObservation> = world
-        .units
-        .iter()
-        .map(|unit| TickAvoidanceObservation {
-            entity_id: AvoidanceEntityId::Unit(unit.id),
-            owner: unit.owner,
-            position: unit.state.position,
-            velocity: unit.state.velocity,
-            hitbox: unit.hitbox(),
-        })
-        .collect();
-    observations.extend(
-        world
-            .structures()
-            .iter()
-            .map(|structure| TickAvoidanceObservation {
-                entity_id: AvoidanceEntityId::StaticStructure(structure.id()),
-                owner: Some(structure.owner()),
-                position: structure.position(),
-                velocity: Vec2::ZERO,
-                hitbox: structure.hitbox(),
-            }),
-    );
-    observations.sort_unstable_by_key(|observation| observation.entity_id);
-    observations
-}
-
-#[derive(Clone, Copy)]
-struct TargetObservation {
-    id: CombatTargetId,
-    owner: Option<crate::command::PlayerId>,
-    position: Vec2,
-}
-
-#[derive(Clone, Copy)]
-struct HitObservation {
-    entity_id: ImpactEntityId,
-    owner: Option<crate::command::PlayerId>,
-    hitbox: PositionedHitbox,
-    command_core_exposed: bool,
-    command_core_protected: bool,
-}
-
-#[derive(Clone, Copy)]
-struct ImpactResolution {
-    entity_id: ImpactEntityId,
-    position: Vec2,
-    owner: Option<PlayerId>,
-    command_core_exposed: bool,
-    command_core_protected: bool,
-}
-
-fn target_observations(world: &World) -> Vec<TargetObservation> {
-    let mut observations = world
-        .units
-        .iter()
-        .map(|unit| TargetObservation {
-            id: CombatTargetId::Unit(unit.id),
-            owner: unit.owner,
-            position: unit.state.position,
-        })
-        .collect::<Vec<_>>();
-    observations.extend(
-        world
-            .home_objective_pairs()
-            .iter()
-            .filter(|pair| pair.is_core_targetable())
-            .map(|pair| {
-                let core = world
-                    .structures()
-                    .iter()
-                    .find(|structure| structure.id() == pair.core_id())
-                    .expect("home objective Core must exist");
-                TargetObservation {
-                    id: CombatTargetId::CommandCore(core.id()),
-                    owner: Some(core.owner()),
-                    position: core.position(),
-                }
-            }),
-    );
-    observations.sort_unstable_by_key(|observation| observation.id);
-    observations
-}
-
-fn hit_observations(world: &World) -> Vec<HitObservation> {
-    let mut observations = world
-        .units
-        .iter()
-        .map(|unit| HitObservation {
-            entity_id: ImpactEntityId::Unit(unit.id),
-            owner: unit.owner,
-            hitbox: unit.positioned_hitbox(),
-            command_core_exposed: false,
-            command_core_protected: false,
-        })
-        .chain(world.structures().iter().map(|structure| {
-            let core_pair = world
-                .home_objective_pairs()
-                .iter()
-                .find(|pair| pair.core_id() == structure.id());
-            HitObservation {
-                entity_id: ImpactEntityId::StaticStructure(structure.id()),
-                owner: Some(structure.owner()),
-                hitbox: structure.positioned_hitbox(),
-                command_core_exposed: core_pair.is_some_and(|pair| pair.is_core_exposed()),
-                command_core_protected: core_pair.is_some_and(|pair| !pair.is_core_exposed()),
-            }
-        }))
-        .collect::<Vec<_>>();
-    observations.sort_unstable_by_key(|observation| observation.entity_id);
-    observations
-}
-
-fn is_hostile(
-    owner: Option<crate::command::PlayerId>,
-    other_owner: Option<crate::command::PlayerId>,
-) -> bool {
-    matches!((owner, other_owner), (Some(owner), Some(other_owner)) if owner != other_owner)
-}
-
-fn valid_target(
-    target: Option<CombatTargetId>,
-    owner: Option<crate::command::PlayerId>,
-    position: Vec2,
-    observations: &[TargetObservation],
-) -> Option<CombatTargetId> {
-    let target = target?;
-    observations
-        .iter()
-        .find(|observation| {
-            observation.id == target
-                && is_hostile(owner, observation.owner)
-                && (observation.position - position).length_squared()
-                    <= WEAPON_RANGE_METERS * WEAPON_RANGE_METERS
-        })
-        .map(|observation| observation.id)
-}
-
-fn nearest_hostile(
-    owner: Option<crate::command::PlayerId>,
-    position: Vec2,
-    observations: &[TargetObservation],
-) -> Option<CombatTargetId> {
-    observations
-        .iter()
-        .filter(|observation| is_hostile(owner, observation.owner))
-        .filter_map(|observation| {
-            let distance_squared = (observation.position - position).length_squared();
-            (distance_squared <= WEAPON_RANGE_METERS * WEAPON_RANGE_METERS).then_some((
-                distance_squared,
-                target_rank(observation.id),
-                observation.id,
-            ))
-        })
-        .min_by(|left, right| {
-            left.0
-                .total_cmp(&right.0)
-                .then(left.1.cmp(&right.1))
-                .then(left.2.cmp(&right.2))
-        })
-        .map(|(_, _, id)| id)
-}
-
-fn target_rank(target: CombatTargetId) -> u8 {
-    match target {
-        CombatTargetId::Unit(_) => 0,
-        CombatTargetId::CommandCore(_) => 1,
-    }
-}
-
-fn heading_toward(vector: Vec2) -> f32 {
-    (-vector.x).atan2(vector.y)
-}
-
-fn forward_from_heading(heading: f32) -> Vec2 {
-    Vec2::new(-heading.sin(), heading.cos())
-}
-
-fn first_impact(
-    shooter_id: UnitId,
-    owner: Option<crate::command::PlayerId>,
-    origin: Vec2,
-    direction: Vec2,
-    observations: &[HitObservation],
-) -> Option<ImpactResolution> {
-    observations
-        .iter()
-        .filter(|observation| match observation.entity_id {
-            ImpactEntityId::Unit(unit_id) => {
-                unit_id != shooter_id && is_hostile(owner, observation.owner)
-            }
-            ImpactEntityId::StaticStructure(_) => true,
-        })
-        .filter_map(|observation| {
-            observation
-                .hitbox
-                .ray_entry_distance(origin, direction, WEAPON_RANGE_METERS)
-                .map(|entry_distance| (entry_distance, *observation))
-        })
-        .min_by(|left, right| {
-            left.0
-                .total_cmp(&right.0)
-                .then(left.1.entity_id.cmp(&right.1.entity_id))
-        })
-        .map(|(entry_distance, observation)| ImpactResolution {
-            entity_id: observation.entity_id,
-            position: origin + direction * entry_distance,
-            owner: observation.owner,
-            command_core_exposed: observation.command_core_exposed,
-            command_core_protected: observation.command_core_protected,
-        })
-}
-
-fn simulation_event_sort_key(event: &SimulationEvent) -> (u8, u32, u32) {
-    match event {
-        SimulationEvent::ShotFired { shooter_id, .. } => (0, shooter_id.0, 0),
-        SimulationEvent::CoreHitProtected { core_id, .. } => (1, core_id.0, 0),
-        SimulationEvent::HullDepleted { unit_id, .. } => (2, unit_id.0, 0),
-        SimulationEvent::BoundaryCrossed { unit_id, .. } => (3, unit_id.0, 0),
-        SimulationEvent::ObjectiveTransition { owner, core_id, .. } => {
-            (4, owner.0 as u32, core_id.0)
-        }
-        SimulationEvent::MatchResult { .. } => (5, 0, 0),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SimulationEvent {
-    ShotFired {
-        tick: Tick,
-        shooter_id: UnitId,
-        muzzle_origin: Vec2,
-        ray_endpoint: Vec2,
-        impact_position: Vec2,
-        impact_entity: Option<ImpactEntityId>,
-    },
-    CoreHitProtected {
-        tick: Tick,
-        core_id: crate::structure::StaticStructureId,
-    },
-    HullDepleted {
-        tick: Tick,
-        unit_id: UnitId,
-        position: Vec2,
-    },
-    BoundaryCrossed {
-        tick: Tick,
-        unit_id: UnitId,
-        position: Vec2,
-    },
-    ObjectiveTransition {
-        tick: Tick,
-        owner: crate::command::PlayerId,
-        relay_id: crate::structure::StaticStructureId,
-        core_id: crate::structure::StaticStructureId,
-        previous_state: ObjectiveState,
-        next_state: ObjectiveState,
-    },
-    MatchResult {
-        tick: Tick,
-        outcome: MatchResult,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MatchResult {
-    Victory {
-        winner: PlayerId,
-        loser: PlayerId,
-        destroyed_core: crate::structure::StaticStructureId,
-    },
-    Draw {
-        destroyed_cores: [crate::structure::StaticStructureId; 2],
-    },
-}
-
-/// Returns `true` when `position` lies strictly outside a circle of
-/// `world_radius` centered at the origin.
-pub fn is_out_of_bounds(position: Vec2, world_radius: f32) -> bool {
-    position.length() > world_radius
-}
-
-/// Integrate one tick of ship physics from autopilot flight input into `ship`.
-pub fn step_ship(ship: &mut ShipState, input: FlightInput) {
-    let turn_axis = input.turn_left as i32 - input.turn_right as i32;
-    if turn_axis != 0 {
-        ship.angular_velocity_radians_per_second += turn_axis as f32
-            * (ANGULAR_THRUST_NEWTON_METERS / MOMENT_OF_INERTIA_KG_M2)
-            * FIXED_DT_SECONDS;
-    } else {
-        ship.angular_velocity_radians_per_second *=
-            (1.0 - ANGULAR_DAMPING_PER_SECOND * FIXED_DT_SECONDS).max(0.0);
-    }
-    ship.angular_velocity_radians_per_second = ship.angular_velocity_radians_per_second.clamp(
-        -MAX_ANGULAR_SPEED_RADIANS_PER_SECOND,
-        MAX_ANGULAR_SPEED_RADIANS_PER_SECOND,
-    );
-    ship.heading_radians = wrap_angle(
-        ship.heading_radians + ship.angular_velocity_radians_per_second * FIXED_DT_SECONDS,
-    );
-    if input.thrust {
-        let forward = Vec2::new(-ship.heading_radians.sin(), ship.heading_radians.cos());
-        ship.velocity += forward * (FORWARD_THRUST_NEWTONS / SHIP_MASS_KG) * FIXED_DT_SECONDS;
-    } else {
-        ship.velocity *= (1.0 - LINEAR_DAMPING_PER_SECOND * FIXED_DT_SECONDS).max(0.0);
-    }
-    if ship.velocity.length() > MAX_SPEED_METERS_PER_SECOND {
-        ship.velocity = ship.velocity.normalize() * MAX_SPEED_METERS_PER_SECOND;
-    }
-    if ship.velocity.length_squared() < VELOCITY_EPSILON * VELOCITY_EPSILON {
-        ship.velocity = Vec2::ZERO;
-    }
-    if ship.angular_velocity_radians_per_second.abs() < VELOCITY_EPSILON {
-        ship.angular_velocity_radians_per_second = 0.0;
-    }
-    ship.position += ship.velocity * FIXED_DT_SECONDS;
-}
-
-fn wrap_angle(angle: f32) -> f32 {
-    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,11 +194,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::autopilot::{Autopilot, AutopilotConfig};
-    use crate::command::PlayerId;
+    use crate::combat::{ImpactEntityId, WEAPON_DAMAGE};
+    use crate::command::{PlayerId, UnitId};
     use crate::flight_control::{
         ArrivalController, AvoidanceProfile, AvoidanceProfiles, NeighborRelationship,
     };
     use crate::objective::{BREACH_DURATION_TICKS, EXPOSURE_DURATION_TICKS};
+    use glam::Vec2;
 
     #[test]
     fn starts_without_player_ship() {
@@ -923,66 +310,13 @@ mod tests {
     fn frozen_objectives_do_not_change_or_emit_events() {
         let mut simulation = attacker_at_first_relay();
         let mut events = Vec::new();
-        simulation.advance_objectives(true, &mut events);
+        let tick = simulation.tick();
+        objective::run(&mut simulation.world, tick, true, &mut events);
         assert!(events.is_empty());
         assert_eq!(
             simulation.world.home_objective_pairs()[0].state(),
             ObjectiveState::Protected
         );
-    }
-
-    #[test]
-    fn owned_static_structures_remain_stationary_static_avoidance_observations() {
-        let mut simulation = Simulation::default();
-        simulation.world.units.truncate(1);
-        let nearby_structure = simulation.world.structures()[3];
-        let unit_position = nearby_structure.position() - Vec2::X * 4.0;
-        let destination = unit_position + Vec2::Y * 10.0;
-        simulation.world.units[0].state.position = unit_position;
-        simulation.world.units[0]
-            .autopilot
-            .set_destination(destination);
-
-        let observations = avoidance_observations(&simulation.world);
-        assert_eq!(
-            observations
-                .iter()
-                .map(|observation| observation.entity_id)
-                .collect::<Vec<_>>(),
-            vec![
-                AvoidanceEntityId::Unit(simulation.world.units[0].id),
-                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(1)),
-                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(2)),
-                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(3)),
-                AvoidanceEntityId::StaticStructure(crate::StaticStructureId(4)),
-            ]
-        );
-        for (observation, structure) in observations[1..].iter().zip(simulation.world.structures())
-        {
-            assert_eq!(observation.position, structure.position());
-            assert_eq!(observation.velocity, Vec2::ZERO);
-            assert_eq!(observation.owner, Some(structure.owner()));
-        }
-
-        let unit = &mut simulation.world.units[0];
-        let neighbors = observations[1..]
-            .iter()
-            .map(|observation| NeighborObservation {
-                entity_id: observation.entity_id,
-                position: observation.position,
-                velocity: observation.velocity,
-                hitbox: observation.hitbox,
-                relationship: NeighborRelationship::StaticStructure,
-            })
-            .collect::<Vec<_>>();
-        let with_structure =
-            unit.autopilot
-                .controls_for_tick_with_hitbox(&unit.state, unit.hitbox(), &neighbors);
-        unit.autopilot.set_destination(destination);
-        let without_structure =
-            unit.autopilot
-                .controls_for_tick_with_hitbox(&unit.state, unit.hitbox(), &[]);
-        assert_ne!(with_structure, without_structure);
     }
 
     #[test]
@@ -1514,18 +848,6 @@ mod tests {
     }
 
     #[test]
-    fn step_ship_damps_velocity_without_thrust() {
-        let mut ship = ShipState {
-            velocity: Vec2::new(4.0, 0.0),
-            ..Default::default()
-        };
-        let speed = ship.velocity.length();
-        step_ship(&mut ship, FlightInput::default());
-        assert!(ship.velocity.length() < speed);
-        assert!(ship.velocity.length() > 0.0);
-    }
-
-    #[test]
     fn reset_cutover_discards_future_commands_and_preserves_tick() {
         let mut sim = Simulation::new(crate::SimulationConfig::new(3).unwrap());
         sim.world.connect_player(PlayerId(1));
@@ -1796,60 +1118,5 @@ mod tests {
 
         assert_eq!(left.step().unwrap(), right.step().unwrap());
         assert_eq!(left.state_hash(), right.state_hash());
-    }
-
-    #[test]
-    fn equal_distance_impacts_use_type_then_numeric_id_tie_breaks() {
-        let circle = Hitbox::circle(1.0)
-            .unwrap()
-            .positioned_at(Vec2::new(0.0, 5.0));
-        let unit = HitObservation {
-            entity_id: ImpactEntityId::Unit(UnitId(9)),
-            owner: Some(PlayerId(2)),
-            hitbox: circle,
-            command_core_exposed: false,
-            command_core_protected: false,
-        };
-        let structure = HitObservation {
-            entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(1)),
-            owner: Some(PlayerId(1)),
-            hitbox: circle,
-            command_core_exposed: false,
-            command_core_protected: false,
-        };
-        let first = first_impact(
-            UnitId(1),
-            Some(PlayerId(1)),
-            Vec2::ZERO,
-            Vec2::Y,
-            &[structure, unit],
-        );
-        assert_eq!(first.unwrap().entity_id, ImpactEntityId::Unit(UnitId(9)));
-
-        let lower_id = HitObservation {
-            entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(2)),
-            owner: Some(PlayerId(1)),
-            hitbox: circle,
-            command_core_exposed: false,
-            command_core_protected: false,
-        };
-        let higher_id = HitObservation {
-            entity_id: ImpactEntityId::StaticStructure(crate::StaticStructureId(7)),
-            owner: Some(PlayerId(1)),
-            hitbox: circle,
-            command_core_exposed: false,
-            command_core_protected: false,
-        };
-        let first = first_impact(
-            UnitId(1),
-            Some(PlayerId(1)),
-            Vec2::ZERO,
-            Vec2::Y,
-            &[higher_id, lower_id],
-        );
-        assert_eq!(
-            first.unwrap().entity_id,
-            ImpactEntityId::StaticStructure(crate::StaticStructureId(2))
-        );
     }
 }
