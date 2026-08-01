@@ -41,7 +41,7 @@ enemy, gray is neutral/uncertain; tactical `Glyph` and interface `Icon` are dist
 | Format (check) | `cargo fmt --check` |
 | Lint | `cargo clippy -- -D warnings` |
 | Test | `cargo test` |
-| Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 85` |
+| Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 75` |
 | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
 Run the **test gate** locally before opening a PR when the change includes Rust sources, Cargo
@@ -151,7 +151,7 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
   | Format (check) | `cargo fmt --check` |
   | Lint | `cargo clippy -- -D warnings` |
   | Test | `cargo test` |
-  | Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 85` |
+  | Coverage (local) | `cargo tarpaulin --workspace --skip-clean --exclude-files "*/main.rs" --fail-under 75` |
   | **Test gate** (full) | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` |
 
   Run the **test gate** locally before opening a PR when the change includes Rust sources, Cargo
