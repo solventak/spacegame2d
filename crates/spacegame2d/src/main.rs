@@ -62,8 +62,8 @@ use crate::player_presentation::PLAYER_TWO_COLOR;
 use crate::player_presentation::{PLAYER_ONE_COLOR, PlayerColor};
 use crate::presentation::{DestinationMarker, DestinationPresentation, MarkerStatus};
 use crate::session::{
-    ConnectionOutcome, ConnectionProgress, DEFAULT_SERVER_ADDRESS, HandshakeOutcome,
-    SessionLifecycle,
+    ConnectionOutcome, ConnectionProgress, HandshakeOutcome, SessionLifecycle,
+    default_server_address,
 };
 use crate::ui_bridge::{BridgeHealthConfig, UiBridge};
 use spacegame2d_ui_protocol::{
@@ -660,7 +660,7 @@ impl App {
             modifiers: winit::keyboard::ModifiersState::default(),
             next_tick: Instant::now(),
             network: None,
-            lifecycle: SessionLifecycle::new(DEFAULT_SERVER_ADDRESS),
+            lifecycle: SessionLifecycle::new(default_server_address()),
             bridge: UiBridge::new(BridgeHealthConfig::default()),
             match_session: MatchSessionPresenter::default(),
             proxy,

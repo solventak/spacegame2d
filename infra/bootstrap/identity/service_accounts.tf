@@ -12,6 +12,10 @@ locals {
       account_id   = "gha-server-release"
       display_name = "GitHub Actions server release"
     }
+    client_release = {
+      account_id   = "gha-client-release"
+      display_name = "GitHub Actions client release"
+    }
   }
 }
 

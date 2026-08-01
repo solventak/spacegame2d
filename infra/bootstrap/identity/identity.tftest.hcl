@@ -41,6 +41,21 @@ run "plans_game_server_identity_contract" {
   }
 
   assert {
+    condition     = google_service_account.github_actions["client_release"].account_id == "gha-client-release"
+    error_message = "The client release must use a dedicated service account."
+  }
+
+  assert {
+    condition     = google_storage_bucket_iam_member.client_release_state_reader.role == "roles/storage.objectViewer"
+    error_message = "The client release identity must only read production Terraform state objects."
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github["client_release"].attribute_condition == "assertion.repository_id == '1310387780' && assertion.repository_owner_id == '155677178' && assertion.event_name == 'workflow_dispatch' && assertion.ref == 'refs/heads/main' && assertion.environment == 'production' && assertion.workflow_ref == 'solventak/spacegame2d/.github/workflows/release-client.yml@refs/heads/main'"
+    error_message = "The client release trust condition must be restricted to release-client.yml on main."
+  }
+
+  assert {
     condition     = toset(google_project_iam_custom_role.terraform_plan_billing_budget.permissions) == toset(["billing.resourcebudgets.read", "resourcemanager.projects.get"])
     error_message = "The Terraform plan identity must receive read-only project billing budget access."
   }

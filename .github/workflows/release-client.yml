@@ -1,0 +1,113 @@
+name: Release Client
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: client-release-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud for Terraform state read
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_CLIENT_RELEASE_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLIENT_RELEASE_SERVICE_ACCOUNT }}
+
+      - name: Install gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify the short-lived client release identity
+        run: |
+          test "$(gcloud config get-value account)" = "${{ vars.GCP_CLIENT_RELEASE_SERVICE_ACCOUNT }}"
+          gcloud auth print-access-token >/dev/null
+
+      - name: Read Terraform version
+        id: terraform-version
+        run: echo "value=$(tr -d '\n' < .terraform-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ steps.terraform-version.outputs.value }}
+          terraform_wrapper: false
+
+      - name: Resolve and validate the deployed server endpoint
+        id: endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra init -input=false -lock=false
+          endpoint="$(terraform -chdir=infra output -raw server_endpoint)"
+          test -n "$endpoint"
+          # Terraform's output is currently a static IPv4 plus the configured TCP port.
+          [[ "$endpoint" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[1-9][0-9]{0,4}$ ]]
+          address="${endpoint%%:*}"
+          IFS=. read -r -a octets <<< "$address"
+          for octet in "${octets[@]}"; do
+            test "$octet" -le 255
+          done
+          port="${endpoint##*:}"
+          test "$port" -le 65535
+          printf 'endpoint=%s\n' "$endpoint" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain (1.91)
+        uses: dtolnay/rust-toolchain@1.91
+
+      - name: Install Node.js (22)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/spacegame2d/hud/package-lock.json
+
+      - name: Install HUD dependencies
+        working-directory: crates/spacegame2d/hud
+        run: npm ci
+
+      - name: Install client build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Build the client with the deployed endpoint
+        env:
+          SPACEGAME_DEFAULT_SERVER_ADDRESS: ${{ steps.endpoint.outputs.endpoint }}
+        run: cargo build --release -p spacegame2d
+
+      - name: Upload the client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spacegame2d-client-${{ github.sha }}
+          path: target/release/spacegame2d
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summarize client release
+        if: always()
+        run: |
+          {
+            echo "## Client release"
+            echo
+            echo "- Endpoint: \`${{ steps.endpoint.outputs.endpoint }}\`"
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Build: \`${{ steps.endpoint.outcome == 'success' && 'completed' || 'not-run' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

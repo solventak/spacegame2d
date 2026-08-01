@@ -18,6 +18,32 @@ one-time backend bootstrap, normal administration, and recovery.
   TCP port. It deliberately has no public SSH rule. IAP/OS Login access is added by SWA-69,
   and the server runtime is added by SWA-65.
 
+## Terraform CI transition checklist
+
+Use this checklist when a Terraform change adds a GitHub variable, `gcloud` fallback, Google API,
+or Workload Identity Federation permission:
+
+1. Preserve the workflow's existing trusted GitHub event unless the trust model is deliberately
+   changing. In particular, `pull_request_target` evaluates the workflow from the PR base branch,
+   not the workflow file in the PR head.
+2. Account for that base-branch behavior during rollout: a repository-variable mapping added in a
+   PR is not available to that PR's existing `pull_request_target` workflow until the PR merges.
+   Keep a fail-loud fallback for the transition, or make the one-time prerequisite before opening
+   the PR.
+3. Enable every Google API the fallback calls before relying on it. For example, the
+   billing-account fallback requires the Cloud Billing API:
+
+   ```bash
+   gcloud services enable cloudbilling.googleapis.com --project=<project-id>
+   ```
+
+4. Check the full dependency chain in this order: GitHub event, Workload Identity Federation
+   attribute condition, repository-variable visibility, enabled Google APIs, then IAM roles for
+   the plan identity.
+5. After changing workflow triggers or authentication, inspect the runs with
+   `gh run list --branch <branch>`. Confirm there is one intended Terraform Plan run and review
+   its cloud-aware plan output; local `terraform test` cannot validate GitHub event semantics or
+   live Google API access.
 ## Low-cost playtest footprint and billing alerts
 
 The intended `relayoperations` playtest footprint is deliberately small:
@@ -208,6 +234,16 @@ The static address is a separate regional resource. Recreating only the VM there
 same client endpoint. To request a capacity fallback, set `TF_VAR_zone` for the approved
 Terraform command; it must remain within the configured region. Do not change the endpoint
 outside a reviewed infrastructure apply.
+
+### Refresh the public client endpoint
+
+After a reviewed production apply changes `server_endpoint`, dispatch **Release Client** from the
+corresponding `main` commit. The workflow reads the deployed value with
+`terraform -chdir=infra output -raw server_endpoint` using its dedicated read-only identity,
+validates it before compilation, and injects it only into the client build. Verify the workflow
+summary shows the expected endpoint and source commit before distributing its artifact. It fails
+before compiling if the output is missing or invalid; never replace it with localhost for a public
+release.
 
 ### Verify the host foundation
 

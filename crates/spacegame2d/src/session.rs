@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    time::{Duration, Instant},
+};
 
 use spacegame2d_ui_protocol::{
     ConnectionFailureReason, ConnectionStateSnapshot, DisconnectedReason, LocalPlayerHudModel,
@@ -7,6 +10,64 @@ use spacegame2d_ui_protocol::{
 
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:4000";
+
+pub fn default_server_address() -> String {
+    validated_server_address(option_env!("SPACEGAME_DEFAULT_SERVER_ADDRESS"))
+        .unwrap_or(DEFAULT_SERVER_ADDRESS)
+        .to_owned()
+}
+
+fn validated_server_address(value: Option<&str>) -> Option<&str> {
+    let value = value?;
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().any(char::is_whitespace)
+        || value
+            .chars()
+            .any(|character| matches!(character, '/' | '?' | '#' | '@'))
+        || value.contains("://")
+    {
+        return None;
+    }
+
+    if let Some(rest) = value.strip_prefix('[') {
+        let (host, port) = rest.split_once("]:")?;
+        if host.is_empty() || host.parse::<Ipv6Addr>().is_err() {
+            return None;
+        }
+        if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return (port.parse::<u16>().ok()? != 0).then_some(value);
+    }
+
+    let (host, port) = value.split_once(':')?;
+    if host.is_empty()
+        || host.contains(':')
+        || host.chars().any(|character| matches!(character, '[' | ']'))
+        || !valid_host(host)
+        || port.is_empty()
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    (port.parse::<u16>().ok()? != 0).then_some(value)
+}
+
+fn valid_host(host: &str) -> bool {
+    if host.parse::<Ipv4Addr>().is_ok() {
+        return true;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionAttempt {
@@ -323,6 +384,43 @@ mod tests {
     use super::*;
     fn id(value: &str) -> RequestId {
         RequestId::new(value.into()).unwrap()
+    }
+
+    #[test]
+    fn server_address_setting_accepts_bare_hosts_and_bracketed_ipv6() {
+        assert_eq!(
+            validated_server_address(Some("203.0.113.10:4000")),
+            Some("203.0.113.10:4000")
+        );
+        assert_eq!(
+            validated_server_address(Some("relay.example:65535")),
+            Some("relay.example:65535")
+        );
+        assert_eq!(
+            validated_server_address(Some("[2001:db8::1]:4000")),
+            Some("[2001:db8::1]:4000")
+        );
+    }
+
+    #[test]
+    fn server_address_setting_rejects_unsafe_or_invalid_values() {
+        for value in [
+            "",
+            " 203.0.113.10:4000",
+            "203.0.113.10:4000 ",
+            "http://host:4000",
+            "host:4000/path",
+            "user@host:4000",
+            "host",
+            "host:0",
+            "host:65536",
+            "host:four",
+            "2001:db8::1:4000",
+            "[not-an-ip]:4000",
+        ] {
+            assert_eq!(validated_server_address(Some(value)), None, "{value}");
+        }
+        assert_eq!(validated_server_address(None), None);
     }
     #[test]
     fn cancellation_and_stale_completion_are_ignored() {

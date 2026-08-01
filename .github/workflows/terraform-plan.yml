@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/terraform-plan.yml"
       - ".github/workflows/terraform-apply.yml"
+      - ".github/workflows/release-client.yml"
       - ".terraform-version"
       - "infra/**"
 

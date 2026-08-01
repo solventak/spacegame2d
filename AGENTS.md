@@ -231,9 +231,10 @@ When adding new logic, ensure it is accompanied by tests that keep coverage abov
   git config core.hooksPath .githooks
   ```
 
-  The pre-commit hook runs the Rust test gate only when staged files include Rust, Cargo, or native
-  HUD lifecycle code. The hook is advisory for the droid; the implementer must run the checks
-  required by the changed file types before pushing regardless.
+The pre-commit hook runs the Rust test gate only when staged files include Rust, Cargo, or native
+HUD lifecycle code. It also runs `terraform fmt -check -recursive infra` when staged files include
+Terraform configuration under `infra/`. The hook is advisory for the droid; the implementer must
+run the checks required by the changed file types before pushing regardless.
 
   ## Style overrides
 

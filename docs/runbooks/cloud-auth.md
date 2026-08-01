@@ -68,9 +68,11 @@ Populate these repository variables from Terraform outputs. They are identifiers
 | `GCP_TERRAFORM_PLAN_WIF_PROVIDER` | `workload_identity_provider.plan` |
 | `GCP_TERRAFORM_APPLY_WIF_PROVIDER` | `workload_identity_provider.apply` |
 | `GCP_SERVER_RELEASE_WIF_PROVIDER` | `workload_identity_provider.release` |
+| `GCP_CLIENT_RELEASE_WIF_PROVIDER` | `workload_identity_provider.client_release` |
 | `GCP_TERRAFORM_PLAN_SERVICE_ACCOUNT` | `service_account_email.plan` |
 | `GCP_TERRAFORM_APPLY_SERVICE_ACCOUNT` | `service_account_email.apply` |
 | `GCP_SERVER_RELEASE_SERVICE_ACCOUNT` | `service_account_email.release` |
+| `GCP_CLIENT_RELEASE_SERVICE_ACCOUNT` | `service_account_email.client_release` |
 
 Set `GCP_BILLING_ACCOUNT_ID` separately to the ID attached to `GCP_PROJECT_ID`, obtained with
 `gcloud billing projects describe`. Keep the ID in GitHub repository configuration rather than
