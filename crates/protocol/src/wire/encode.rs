@@ -8,14 +8,16 @@ use crate::wire;
 impl From<&CommandData> for wire::Command {
     fn from(value: &CommandData) -> Self {
         let payload = match value {
-            CommandData::SetDestination { destination } => {
-                wire::command::Payload::SetDestination(wire::SetDestinationCommand {
-                    destination: Some(wire::Vector2Bits {
-                        x: destination[0],
-                        y: destination[1],
-                    }),
-                })
-            }
+            CommandData::SetDestination {
+                destination,
+                target_unit_ids,
+            } => wire::command::Payload::SetDestination(wire::SetDestinationCommand {
+                destination: Some(wire::Vector2Bits {
+                    x: destination[0],
+                    y: destination[1],
+                }),
+                target_unit_ids: target_unit_ids.clone(),
+            }),
             CommandData::ResetSimulation => {
                 wire::command::Payload::ResetSimulation(wire::ResetSimulationCommand {})
             }

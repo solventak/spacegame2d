@@ -26,4 +26,4 @@ pub use session::{
 pub use snapshot::{InitialWorldState, StateChecksum, WorldUnit};
 pub use tick::Tick;
 
-pub const SIMULATION_VERSION: u32 = 19;
+pub const SIMULATION_VERSION: u32 = 20;

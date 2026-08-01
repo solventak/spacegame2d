@@ -7,6 +7,7 @@
 //! See the [`spacegame2d_simulation`] crate for the simulation model itself.
 
 mod camera;
+mod client;
 mod combat_presentation;
 mod combat_rendering;
 mod geometry;
@@ -25,7 +26,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
-use spacegame2d_protocol::{DisplayName, Tick};
+use spacegame2d_protocol::{CommandData, DisplayName, Tick};
 use spacegame2d_simulation::{
     SimulationConfig, StaticStructure,
     command::PlayerId,
@@ -44,10 +45,14 @@ use winit::{
 use crate::camera::Camera;
 #[cfg(test)]
 use crate::camera::VIEW_HEIGHT_METERS;
+use crate::client::{Client as GameClient, ClientControl, ClientEffect};
 use crate::combat_presentation::CombatPresentation;
 use crate::combat_rendering::{CombatFrame, CombatRenderer};
 use crate::geometry::{
-    Vertex, overlay::ring_vertices, structures::structure_vertices, units::notched_ship_vertices,
+    Vertex,
+    overlay::ring_vertices,
+    structures::structure_vertices,
+    units::{dotted_selection_vertices, notched_ship_vertices, selection_bracket_vertices},
 };
 use crate::hud::HudWebView;
 use crate::match_session::MatchSessionPresenter;
@@ -86,6 +91,7 @@ const CONFIRMED_MARKER_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ as u64);
 /// All current pipelines share this value so a future MSAA color target can change it centrally.
 const RENDER_SAMPLE_COUNT: u32 = 1;
+const SELECTION_OVERLAY_CAPACITY: usize = 12_288;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -132,6 +138,25 @@ fn scene_uniform(
     }
 }
 
+fn selection_bounds(
+    units: &[Unit],
+    selected: &std::collections::BTreeSet<spacegame2d_simulation::UnitId>,
+) -> Option<(Vec2, Vec2)> {
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    let mut any = false;
+    for unit in units.iter().filter(|unit| selected.contains(&unit.id)) {
+        let radius = match unit.hitbox().shape() {
+            spacegame2d_simulation::HitboxShape::Circle(circle) => circle.radius_meters(),
+        };
+        let extent = unit.state.position + Vec2::splat(radius + 0.2);
+        min = min.min(unit.state.position - Vec2::splat(radius + 0.2));
+        max = max.max(extent);
+        any = true;
+    }
+    any.then_some((min, max))
+}
+
 struct Renderer {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -140,6 +165,7 @@ struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    selection_vertex_buffer: wgpu::Buffer,
     ring_vertex_buffer: wgpu::Buffer,
     ring_vertex_count: u32,
     ring_scene_buffer: wgpu::Buffer,
@@ -148,8 +174,8 @@ struct Renderer {
     structure_vertex_count: u32,
     structure_scene_buffer: wgpu::Buffer,
     structure_bind_group: wgpu::BindGroup,
-    marker_scene_buffer: wgpu::Buffer,
-    marker_bind_group: wgpu::BindGroup,
+    marker_scene_buffers: Vec<wgpu::Buffer>,
+    marker_bind_groups: Vec<wgpu::BindGroup>,
     scene_buffers: Vec<wgpu::Buffer>,
     scene_bind_groups: Vec<wgpu::BindGroup>,
     combat_renderer: CombatRenderer,
@@ -277,6 +303,18 @@ impl Renderer {
             contents: bytemuck::cast_slice(&notched_ship_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let selection_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("selection overlay vertices"),
+                contents: bytemuck::cast_slice(&vec![
+                    Vertex {
+                        position: [0.0, 0.0],
+                        color: [0.0; 4],
+                    };
+                    SELECTION_OVERLAY_CAPACITY
+                ]),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
         let ring_vertices = ring_vertices(world_radius);
         let ring_vertex_count = ring_vertices.len() as u32;
         let ring_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -332,26 +370,35 @@ impl Renderer {
                 resource: structure_scene_buffer.as_entire_binding(),
             }],
         });
-        let marker_scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("destination marker scene uniform"),
-            contents: bytemuck::bytes_of(&scene_uniform(
-                config.width,
-                config.height,
-                Camera::new(world_radius),
-                &ShipState::default(),
-                Some(Vec2::ZERO),
-                PENDING_MARKER_COLOR,
-            )),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let marker_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("destination marker bind group"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: marker_scene_buffer.as_entire_binding(),
-            }],
-        });
+        let marker_scene_buffers = (0..units.len().max(1))
+            .map(|_| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("destination marker scene uniform"),
+                    contents: bytemuck::bytes_of(&scene_uniform(
+                        config.width,
+                        config.height,
+                        Camera::new(world_radius),
+                        &ShipState::default(),
+                        Some(Vec2::ZERO),
+                        PENDING_MARKER_COLOR,
+                    )),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+            })
+            .collect::<Vec<_>>();
+        let marker_bind_groups = marker_scene_buffers
+            .iter()
+            .map(|marker_scene_buffer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("destination marker bind group"),
+                    layout: &layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: marker_scene_buffer.as_entire_binding(),
+                    }],
+                })
+            })
+            .collect::<Vec<_>>();
         let scene_uniforms = render_unit_data(units)
             .into_iter()
             .map(|(ship, color)| {
@@ -391,6 +438,7 @@ impl Renderer {
             config,
             pipeline,
             vertex_buffer,
+            selection_vertex_buffer,
             ring_vertex_buffer,
             ring_vertex_count,
             ring_scene_buffer,
@@ -399,8 +447,8 @@ impl Renderer {
             structure_vertex_count,
             structure_scene_buffer,
             structure_bind_group,
-            marker_scene_buffer,
-            marker_bind_group,
+            marker_scene_buffers,
+            marker_bind_groups,
             scene_buffers: scene_uniforms,
             scene_bind_groups,
             combat_renderer,
@@ -414,10 +462,13 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
     }
+    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
         units: &[Unit],
-        marker: Option<DestinationMarker>,
+        selected: &std::collections::BTreeSet<spacegame2d_simulation::UnitId>,
+        drag: Option<(Vec2, Vec2)>,
+        markers: &[DestinationMarker],
         combat_presentation: &CombatPresentation,
         camera: Camera,
         now: Instant,
@@ -496,6 +547,27 @@ impl Renderer {
                 pass.set_bind_group(0, &self.scene_bind_groups[index], &[]);
                 pass.draw(0..24, 0..1);
             }
+            let selection_vertices = if let Some((anchor, cursor)) = drag {
+                dotted_selection_vertices(
+                    anchor.min(cursor).to_array(),
+                    anchor.max(cursor).to_array(),
+                )
+            } else {
+                selection_bounds(units, selected)
+                    .map(|(min, max)| selection_bracket_vertices(min.to_array(), max.to_array()))
+                    .unwrap_or_default()
+            };
+            if !selection_vertices.is_empty() {
+                debug_assert!(selection_vertices.len() <= SELECTION_OVERLAY_CAPACITY);
+                self.queue.write_buffer(
+                    &self.selection_vertex_buffer,
+                    0,
+                    bytemuck::cast_slice(&selection_vertices),
+                );
+                pass.set_vertex_buffer(0, self.selection_vertex_buffer.slice(..));
+                pass.set_bind_group(0, &self.ring_bind_group, &[]);
+                pass.draw(0..selection_vertices.len() as u32, 0..1);
+            }
             self.combat_renderer.draw_turrets(&mut pass);
             pass.set_pipeline(&self.pipeline);
             self.queue.write_buffer(
@@ -514,14 +586,18 @@ impl Renderer {
             pass.set_bind_group(0, &self.ring_bind_group, &[]);
             pass.draw(0..self.ring_vertex_count, 0..1);
             self.combat_renderer.draw_effects(&mut pass);
-            if let Some(marker) = marker {
+            for (index, marker) in markers
+                .iter()
+                .enumerate()
+                .take(self.marker_scene_buffers.len())
+            {
                 let color = match marker.status {
                     MarkerStatus::Pending => PENDING_MARKER_COLOR,
                     MarkerStatus::Confirmed => CONFIRMED_MARKER_COLOR,
                 };
                 pass.set_pipeline(&self.pipeline);
                 self.queue.write_buffer(
-                    &self.marker_scene_buffer,
+                    &self.marker_scene_buffers[index],
                     0,
                     bytemuck::bytes_of(&scene_uniform(
                         self.config.width,
@@ -533,7 +609,7 @@ impl Renderer {
                     )),
                 );
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                pass.set_bind_group(0, &self.marker_bind_group, &[]);
+                pass.set_bind_group(0, &self.marker_bind_groups[index], &[]);
                 pass.draw(24..30, 0..1);
             }
         }
@@ -551,7 +627,10 @@ struct App {
     renderer_config: SimulationConfig,
     simulation: Simulation,
     presentation: DestinationPresentation,
+    client: GameClient,
+    selection_anchor: Option<Vec2>,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
+    modifiers: winit::keyboard::ModifiersState,
     next_tick: Instant,
     network: Option<network::NetworkSession>,
     lifecycle: SessionLifecycle<()>,
@@ -575,7 +654,10 @@ impl App {
             renderer_config: SimulationConfig::default(),
             simulation: Simulation::default(),
             presentation: DestinationPresentation::default(),
+            client: GameClient::new(),
+            selection_anchor: None,
             cursor_position: None,
+            modifiers: winit::keyboard::ModifiersState::default(),
             next_tick: Instant::now(),
             network: None,
             lifecycle: SessionLifecycle::new(DEFAULT_SERVER_ADDRESS),
@@ -688,6 +770,8 @@ impl App {
         self.network = None;
         self.simulation = Simulation::default();
         self.presentation.clear();
+        self.client.clear();
+        self.selection_anchor = None;
         self.scheduled.clear();
         self.combat_presentation.clear();
         self.match_result = None;
@@ -699,6 +783,49 @@ impl App {
             .as_ref()
             .and_then(network::NetworkSession::match_started_at)
             .is_some()
+    }
+
+    fn handle_client_control(&mut self, control: ClientControl, event_loop: &ActiveEventLoop) {
+        let (Some(renderer), Some(session)) = (self.renderer.as_ref(), self.network.as_ref())
+        else {
+            return;
+        };
+        let Ok(player) = PlayerId::try_from(session.player_slot) else {
+            return;
+        };
+        let effect = self.client.handle(control, self.simulation.world(), player);
+        let Some(ClientEffect::Send(request)) = effect else {
+            return;
+        };
+        let CommandData::SetDestination {
+            destination,
+            target_unit_ids,
+        } = &request.command
+        else {
+            return;
+        };
+        let point = Vec2::new(
+            f32::from_bits(destination[0]),
+            f32::from_bits(destination[1]),
+        );
+        self.presentation
+            .begin(request.sequence, point, target_unit_ids.clone());
+        if let Some(session) = self.network.as_mut()
+            && let Err(error) = session.send_set_destination(
+                request.sequence,
+                *destination,
+                match request.command {
+                    CommandData::SetDestination {
+                        target_unit_ids, ..
+                    } => target_unit_ids,
+                    CommandData::ResetSimulation => Vec::new(),
+                },
+            )
+        {
+            tracing::error!(event = "destination_send_failed", %error);
+            event_loop.exit();
+        }
+        renderer.window.request_redraw();
     }
 }
 
@@ -1073,6 +1200,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.combat_presentation.clear();
             }
             let events = self.simulation.step().unwrap_or_default();
+            if let Some(session) = self.network.as_ref()
+                && let Ok(player) = PlayerId::try_from(session.player_slot)
+            {
+                self.client.world_advanced(self.simulation.world(), player);
+            }
             if let Some(spacegame2d_simulation::SimulationEvent::MatchResult { outcome, .. }) =
                 events.iter().find(|event| {
                     matches!(
@@ -1147,7 +1279,12 @@ impl ApplicationHandler<AppEvent> for App {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Focused(false) => self.camera.end_drag(),
+            WindowEvent::Focused(false) => {
+                self.camera.end_drag();
+                self.selection_anchor = None;
+                self.handle_client_control(ClientControl::CancelDrag, event_loop);
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
@@ -1171,6 +1308,32 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = Some(position);
+                if let (Some(anchor), Some(renderer), Some(session)) = (
+                    self.selection_anchor,
+                    self.renderer.as_ref(),
+                    self.network.as_ref(),
+                ) && let Ok(player) = PlayerId::try_from(session.player_slot)
+                {
+                    let cursor = Vec2::new(position.x as f32, position.y as f32);
+                    if cursor.distance_squared(anchor) > 36.0 {
+                        self.client.handle(
+                            ClientControl::DragSelect {
+                                anchor: self.camera.screen_to_world(
+                                    anchor,
+                                    renderer.config.width,
+                                    renderer.config.height,
+                                ),
+                                cursor: self.camera.screen_to_world(
+                                    cursor,
+                                    renderer.config.width,
+                                    renderer.config.height,
+                                ),
+                            },
+                            self.simulation.world(),
+                            player,
+                        );
+                    }
+                }
                 if let Some(renderer) = self.renderer.as_ref()
                     && self.camera.drag_to(
                         Vec2::new(position.x as f32, position.y as f32),
@@ -1179,6 +1342,40 @@ impl ApplicationHandler<AppEvent> for App {
                     )
                 {
                     renderer.window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(cursor) = self.cursor_position else {
+                    return;
+                };
+                let cursor = Vec2::new(cursor.x as f32, cursor.y as f32);
+                let in_playfield = self.renderer.as_ref().is_some_and(|renderer| {
+                    cursor.y >= 34.0 * renderer.window.scale_factor() as f32
+                });
+                if state == ElementState::Pressed && self.gameplay_available() && in_playfield {
+                    self.selection_anchor = Some(cursor);
+                } else if state == ElementState::Released {
+                    let Some(anchor) = self.selection_anchor.take() else {
+                        return;
+                    };
+                    if let Some(renderer) = self.renderer.as_ref() {
+                        if self.client.dragging() {
+                            self.handle_client_control(ClientControl::CommitDrag, event_loop);
+                        } else {
+                            self.handle_client_control(
+                                ClientControl::ClickSelect(self.camera.screen_to_world(
+                                    anchor,
+                                    renderer.config.width,
+                                    renderer.config.height,
+                                )),
+                                event_loop,
+                            );
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1200,7 +1397,7 @@ impl ApplicationHandler<AppEvent> for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                if !self.gameplay_available() {
+                if !self.gameplay_available() || self.client.dragging() {
                     return;
                 }
                 if let (Some(cursor), Some(renderer)) =
@@ -1211,18 +1408,23 @@ impl ApplicationHandler<AppEvent> for App {
                         renderer.config.width,
                         renderer.config.height,
                     );
-                    self.presentation.begin(self.next_sequence, destination);
-                    if let Some(session) = self.network.as_mut()
-                        && let Err(error) = session.send_set_destination(
-                            self.next_sequence,
-                            [destination.x.to_bits(), destination.y.to_bits()],
-                        )
-                    {
-                        eprintln!("failed to send destination: {error}");
-                        event_loop.exit();
-                    }
-                    self.next_sequence = self.next_sequence.saturating_add(1);
+                    self.handle_client_control(
+                        ClientControl::SetDestination(destination),
+                        event_loop,
+                    );
                 }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        ..
+                    },
+                ..
+            } => {
+                self.selection_anchor = None;
+                self.handle_client_control(ClientControl::CancelDrag, event_loop);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1244,11 +1446,24 @@ impl ApplicationHandler<AppEvent> for App {
                     self.next_sequence = self.next_sequence.saturating_add(1);
                 }
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyD),
+                        ..
+                    },
+                ..
+            } if self.modifiers.control_key() && !self.client.dragging() => {
+                self.handle_client_control(ClientControl::ClearSelection, event_loop);
+            }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     match renderer.render(
                         &self.simulation.world.units,
-                        self.presentation.marker(self.simulation.world()),
+                        self.client.selected(),
+                        self.client.drag(),
+                        &self.presentation.markers(self.simulation.world()),
                         &self.combat_presentation,
                         self.camera,
                         Instant::now(),
@@ -1344,11 +1559,23 @@ mod tests {
     }
 
     #[test]
+    fn selection_bounds_encloses_an_entire_unit_group() {
+        let mut world = spacegame2d_simulation::World::demo();
+        world.assign_player_fleet(PlayerId(1));
+        let ids = [world.units[0].id, world.units[1].id].into_iter().collect();
+        let (min, max) = selection_bounds(&world.units, &ids).expect("selected group has bounds");
+        for unit in &world.units[..2] {
+            assert!(unit.state.position.x >= min.x && unit.state.position.x <= max.x);
+            assert!(unit.state.position.y >= min.y && unit.state.position.y <= max.y);
+        }
+    }
+
+    #[test]
     fn destination_presentation_tracks_confirmation_rejection_and_reset() {
         let now = Instant::now();
         let world = spacegame2d_simulation::World::demo();
         let mut presentation = DestinationPresentation::default();
-        presentation.begin(4, Vec2::new(2.0, 3.0));
+        presentation.begin(4, Vec2::new(2.0, 3.0), vec![1]);
         assert_eq!(
             presentation.marker(&world).unwrap().status,
             MarkerStatus::Pending
@@ -1359,6 +1586,7 @@ mod tests {
             sequence: 4,
             command: spacegame2d_protocol::CommandData::SetDestination {
                 destination: [2.0f32.to_bits(), 3.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         presentation.authoritative(1, &command);
@@ -1366,7 +1594,7 @@ mod tests {
             presentation.marker(&world).unwrap().status,
             MarkerStatus::Confirmed
         );
-        presentation.begin(5, Vec2::new(40.0, 0.0));
+        presentation.begin(5, Vec2::new(40.0, 0.0), vec![1]);
         presentation.rejected(
             &CommandRejected {
                 sequence: 5,
@@ -1397,7 +1625,7 @@ mod tests {
         let world = spacegame2d_simulation::World::demo();
         let mut presentation = DestinationPresentation::default();
         let pending = world.structures()[0].position();
-        presentation.begin(4, pending);
+        presentation.begin(4, pending, vec![1]);
         assert_eq!(
             presentation.marker(&world),
             Some(DestinationMarker {
@@ -1417,6 +1645,7 @@ mod tests {
                         world.structures()[1].position().x.to_bits(),
                         0.0f32.to_bits(),
                     ],
+                    target_unit_ids: vec![1],
                 },
             },
         );
@@ -1427,6 +1656,69 @@ mod tests {
                 status: MarkerStatus::Confirmed,
             })
         );
+    }
+
+    #[test]
+    fn destination_presentation_keeps_independent_group_markers() {
+        let world = spacegame2d_simulation::World::demo();
+        let mut presentation = DestinationPresentation::default();
+        let first = Vec2::new(2.0, 3.0);
+        let second = Vec2::new(-4.0, 5.0);
+        presentation.begin(4, first, vec![1]);
+        presentation.begin(5, second, vec![2]);
+
+        presentation.authoritative(
+            1,
+            &spacegame2d_protocol::AuthoritativeCommand {
+                execute_tick: Tick::new(2),
+                player_slot: 1,
+                sequence: 4,
+                command: spacegame2d_protocol::CommandData::SetDestination {
+                    destination: [first.x.to_bits(), first.y.to_bits()],
+                    target_unit_ids: vec![1],
+                },
+            },
+        );
+
+        assert_eq!(
+            presentation.markers(&world),
+            vec![
+                DestinationMarker {
+                    position: world.project_destination(second),
+                    status: MarkerStatus::Pending,
+                },
+                DestinationMarker {
+                    position: world.project_destination(first),
+                    status: MarkerStatus::Confirmed,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn destination_marker_disappears_when_its_group_stops_routing() {
+        let mut world = spacegame2d_simulation::World::demo();
+        world.assign_player_fleet(PlayerId(1));
+        let unit_id = world.units[0].id;
+        let destination = Vec2::new(2.0, 3.0);
+        world.units[0].autopilot.set_destination(destination);
+        let mut presentation = DestinationPresentation::default();
+        presentation.authoritative(
+            1,
+            &spacegame2d_protocol::AuthoritativeCommand {
+                execute_tick: Tick::new(2),
+                player_slot: 1,
+                sequence: 4,
+                command: spacegame2d_protocol::CommandData::SetDestination {
+                    destination: [destination.x.to_bits(), destination.y.to_bits()],
+                    target_unit_ids: vec![unit_id.0],
+                },
+            },
+        );
+        assert_eq!(presentation.markers(&world).len(), 1);
+
+        world.units[0].autopilot.cancel_and_clear_destination();
+        assert!(presentation.markers(&world).is_empty());
     }
 
     #[test]
