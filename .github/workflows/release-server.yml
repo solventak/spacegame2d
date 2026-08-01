@@ -232,7 +232,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image_ref="${{ steps.push.outputs.image_ref }}@${{ steps.push.outputs.digest }}"
+          image_ref="$IMAGE_PATH@${{ steps.push.outputs.digest }}"
           scripts/deploy-server-release.sh \
             "$image_ref" \
             "$IMAGE_PATH" \
