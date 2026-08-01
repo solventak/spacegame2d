@@ -1091,14 +1091,17 @@ mod tests {
         execute_tick: u64,
         player_slot: u32,
         sequence: u32,
-        _unit_id: u32,
+        unit_id: u32,
         destination: [u32; 2],
     ) -> AuthoritativeCommand {
         AuthoritativeCommand {
             execute_tick: Tick::from(execute_tick),
             player_slot,
             sequence,
-            command: CommandData::SetDestination { destination },
+            command: CommandData::SetDestination {
+                destination,
+                target_unit_ids: vec![unit_id],
+            },
         }
     }
 
@@ -1143,13 +1146,14 @@ mod tests {
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         assert!(!sim.schedule_authoritative(&bad_slot));
 
         let unknown_unit =
             authoritative_set_destination(0, 2, 2, 999, [1.0f32.to_bits(), 2.0f32.to_bits()]);
-        assert!(!sim.schedule_authoritative(&unknown_unit));
+        assert!(sim.schedule_authoritative(&unknown_unit));
 
         let nan_destination = AuthoritativeCommand {
             execute_tick: Tick::default(),
@@ -1157,6 +1161,7 @@ mod tests {
             sequence: 3,
             command: CommandData::SetDestination {
                 destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         assert!(!sim.schedule_authoritative(&nan_destination));
@@ -1164,7 +1169,7 @@ mod tests {
         let events = sim.step().unwrap();
         assert_eq!(unit_snapshot(&sim.world), snapshot_before);
         assert!(events.is_empty());
-        assert!(sim.commands.history().is_empty());
+        assert_eq!(sim.commands.history().len(), 1);
     }
 
     #[test]
@@ -1537,6 +1542,7 @@ mod tests {
             sequence: 2,
             command: CommandData::SetDestination {
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         let mut scheduled = BTreeMap::from([

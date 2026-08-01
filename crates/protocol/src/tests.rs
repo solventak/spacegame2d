@@ -7,7 +7,7 @@ use crate::*;
 
 #[test]
 fn handshake_rejections_bump_simulation_version() {
-    assert_eq!(SIMULATION_VERSION, 19);
+    assert_eq!(SIMULATION_VERSION, 20);
 }
 
 #[test]
@@ -37,6 +37,7 @@ fn display_names_are_canonicalized_and_validated() {
 fn destination() -> CommandData {
     CommandData::SetDestination {
         destination: [0x8000_0000, 0x0000_0001],
+        target_unit_ids: vec![9, 3, 9],
     }
 }
 
@@ -192,6 +193,7 @@ fn exact_float_bits_and_unknown_capabilities_survive() {
         sequence: 2,
         command: CommandData::SetDestination {
             destination: [f32::NAN.to_bits(), f32::INFINITY.to_bits()],
+            target_unit_ids: vec![4, 2],
         },
     });
     let decoded = Message::read(&mut message.encode().unwrap().as_slice()).unwrap();

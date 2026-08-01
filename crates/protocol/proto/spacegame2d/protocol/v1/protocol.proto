@@ -113,6 +113,7 @@ message Command {
 message SetDestinationCommand {
   reserved 1;
   Vector2Bits destination = 2;
+  repeated uint32 target_unit_ids = 3;
 }
 message ResetSimulationCommand {}
 message Vector2Bits {

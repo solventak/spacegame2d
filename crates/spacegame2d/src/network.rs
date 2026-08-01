@@ -169,8 +169,19 @@ impl NetworkSession {
         Ok(())
     }
 
-    pub fn send_set_destination(&mut self, sequence: u32, destination: [u32; 2]) -> io::Result<()> {
-        self.send(sequence, CommandData::SetDestination { destination })
+    pub fn send_set_destination(
+        &mut self,
+        sequence: u32,
+        destination: [u32; 2],
+        target_unit_ids: Vec<u32>,
+    ) -> io::Result<()> {
+        self.send(
+            sequence,
+            CommandData::SetDestination {
+                destination,
+                target_unit_ids,
+            },
+        )
     }
 
     pub fn send_reset_simulation(&mut self, sequence: u32) -> io::Result<()> {
@@ -744,7 +755,7 @@ mod tests {
         let (address, received) = synthetic_server_collecting(3);
         let mut session = NetworkSession::connect(&address).unwrap();
         session.set_local_tick(Tick::from(200));
-        session.send_set_destination(4, [10, 20]).unwrap();
+        session.send_set_destination(4, [10, 20], vec![1]).unwrap();
         session.send_reset_simulation(5).unwrap();
         session
             .send_state_checksum(Tick::from(200), [7; 32])
@@ -756,7 +767,8 @@ mod tests {
                 Message::CommandRequest(CommandRequest {
                     sequence: 4,
                     command: CommandData::SetDestination {
-                        destination: [10, 20]
+                        destination: [10, 20],
+                        target_unit_ids: vec![1],
                     }
                 }),
                 Message::CommandRequest(CommandRequest {
@@ -848,6 +860,7 @@ mod tests {
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         let mut scheduled = BTreeMap::from([(Tick::from(2), vec![command])]);
@@ -868,6 +881,7 @@ mod tests {
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [0.0f32.to_bits(), 100.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         let address = synthetic_server_with_authoritative(command);

@@ -12,7 +12,7 @@ use spacegame2d_protocol::{
 };
 use spacegame2d_simulation::{
     MAX_PLAYERS, SimulationConfig,
-    command::{Command, PlayerId},
+    command::{AuthoritativeCommandError, Command, PlayerId},
     simulation::SIMULATION_HZ,
     simulation::Simulation,
 };
@@ -44,40 +44,59 @@ struct Client {
 }
 
 impl Client {
-    fn rejection_reason(
+    fn canonical_command(
         simulation: &Simulation,
         slot: u32,
         request: &CommandRequest,
-    ) -> Option<CommandRejectionReason> {
+    ) -> Result<CommandData, CommandRejectionReason> {
+        let mut command_data = request.command.clone();
         let command = AuthoritativeCommand {
             execute_tick: Tick::default(),
             player_slot: slot,
             sequence: request.sequence,
-            command: request.command.clone(),
+            command: command_data.clone(),
         };
-        if simulation.world().validate_authoritative(&command).is_err() {
-            return Some(CommandRejectionReason::UnauthorizedFleet);
+        if let Err(error) = simulation.world().validate_authoritative(&command) {
+            return Err(match error {
+                AuthoritativeCommandError::InvalidPlayerSlot => {
+                    CommandRejectionReason::InvalidPlayer
+                }
+                AuthoritativeCommandError::UnauthorizedTarget
+                | AuthoritativeCommandError::PlayerNotConnected => {
+                    CommandRejectionReason::UnauthorizedFleet
+                }
+                AuthoritativeCommandError::EmptyTargets
+                | AuthoritativeCommandError::TooManyTargets
+                | AuthoritativeCommandError::DuplicateTarget => {
+                    CommandRejectionReason::InvalidCommand
+                }
+            });
         }
-        let CommandData::SetDestination { destination } = &request.command else {
-            return None;
+        let CommandData::SetDestination {
+            destination,
+            target_unit_ids,
+        } = &mut command_data
+        else {
+            return Ok(command_data);
         };
         let x = f32::from_bits(destination[0]);
         let y = f32::from_bits(destination[1]);
         if !x.is_finite() || !y.is_finite() {
-            return Some(CommandRejectionReason::NonFiniteDestination);
+            return Err(CommandRejectionReason::NonFiniteDestination);
         }
         if x.hypot(y) > simulation.world_radius() {
-            return Some(CommandRejectionReason::DestinationOutsideArena);
+            return Err(CommandRejectionReason::DestinationOutsideArena);
         }
         if Box::<dyn Command>::try_from(&command).is_err() {
-            return Some(CommandRejectionReason::InvalidCommand);
+            return Err(CommandRejectionReason::InvalidCommand);
         }
-        None
+        target_unit_ids.sort_unstable();
+        Ok(command_data)
     }
 
     #[cfg(test)]
     fn valid_request(simulation: &Simulation, slot: u32, request: &CommandRequest) -> bool {
-        Self::rejection_reason(simulation, slot, request).is_none()
+        Self::canonical_command(simulation, slot, request).is_ok()
     }
 
     fn read_messages(&mut self) -> io::Result<Vec<Message>> {
@@ -328,18 +347,23 @@ pub async fn run_with_config(
                             let receive_tick = simulation.tick();
                             let cmd = format!("{}:{}", client.slot, request.sequence);
                             tracing::info!(event = "command_received", cmd = %cmd, tick = ?receive_tick, kind = ?request.command, address = %client.address, slot = client.slot);
-                            if let Some(reason) =
-                                Client::rejection_reason(&simulation, client.slot, &request)
-                            {
-                                tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, reason = ?reason, "invalid command");
-                                client.queue(&Message::CommandRejected(CommandRejected {
-                                    sequence: request.sequence,
-                                    reason,
-                                }))?;
-                                continue;
-                            }
+                            let command = match Client::canonical_command(
+                                &simulation,
+                                client.slot,
+                                &request,
+                            ) {
+                                Ok(command) => command,
+                                Err(reason) => {
+                                    tracing::warn!(event = "command_rejected", cmd = %cmd, tick = ?receive_tick, address = %client.address, slot = client.slot, reason = ?reason, "invalid command");
+                                    client.queue(&Message::CommandRejected(CommandRejected {
+                                        sequence: request.sequence,
+                                        reason,
+                                    }))?;
+                                    continue;
+                                }
+                            };
                             let is_reset = matches!(
-                                request.command,
+                                &command,
                                 spacegame2d_protocol::CommandData::ResetSimulation
                             );
                             let authoritative = AuthoritativeCommand {
@@ -350,7 +374,7 @@ pub async fn run_with_config(
                                 },
                                 player_slot: client.slot,
                                 sequence: request.sequence,
-                                command: request.command,
+                                command,
                             };
                             if is_reset {
                                 scheduled.clear();
@@ -831,6 +855,7 @@ mod tests {
             sequence: 1,
             command: spacegame2d_protocol::CommandData::SetDestination {
                 destination: [f32::NAN.to_bits(), 0],
+                target_unit_ids: vec![1],
             },
         };
         assert!(!Client::valid_request(&sim, 1, &request));
@@ -946,6 +971,7 @@ mod tests {
                             sequence: 1,
                             command: CommandData::SetDestination {
                                 destination: [40.0f32.to_bits(), 10.0f32.to_bits()],
+                                target_unit_ids: vec![1],
                             },
                         })
                         .encode()
@@ -1097,6 +1123,7 @@ mod tests {
                     sequence: 6,
                     command: spacegame2d_protocol::CommandData::SetDestination {
                         destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                        target_unit_ids: vec![1],
                     },
                 });
                 first
@@ -1115,6 +1142,7 @@ mod tests {
                     owned_command.command,
                     spacegame2d_protocol::CommandData::SetDestination {
                         destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                        target_unit_ids: vec![1],
                     }
                 );
                 let Message::AuthoritativeCommand(_) =
@@ -1131,6 +1159,7 @@ mod tests {
                     sequence: 10,
                     command: spacegame2d_protocol::CommandData::SetDestination {
                         destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
+                        target_unit_ids: vec![FLEET_SIZE as u32 + 1],
                     },
                 });
                 second
@@ -1149,6 +1178,7 @@ mod tests {
                     p2_command.command,
                     spacegame2d_protocol::CommandData::SetDestination {
                         destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
+                        target_unit_ids: vec![FLEET_SIZE as u32 + 1],
                     }
                 );
                 let Message::AuthoritativeCommand(_) =
@@ -1175,6 +1205,7 @@ mod tests {
                     sequence: 9,
                     command: spacegame2d_protocol::CommandData::SetDestination {
                         destination: [80.0f32.to_bits(), 0.0f32.to_bits()],
+                        target_unit_ids: vec![1],
                     },
                 });
                 first
