@@ -172,6 +172,16 @@ same client endpoint. To request a capacity fallback, set `TF_VAR_zone` for the 
 Terraform command; it must remain within the configured region. Do not change the endpoint
 outside a reviewed infrastructure apply.
 
+### Refresh the public client endpoint
+
+After a reviewed production apply changes `server_endpoint`, dispatch **Release Client** from the
+corresponding `main` commit. The workflow reads the deployed value with
+`terraform -chdir=infra output -raw server_endpoint` using its dedicated read-only identity,
+validates it before compilation, and injects it only into the client build. Verify the workflow
+summary shows the expected endpoint and source commit before distributing its artifact. It fails
+before compiling if the output is missing or invalid; never replace it with localhost for a public
+release.
+
 ### Verify the host foundation
 
 After apply, inspect the outputs and Compute resources with Alex's authenticated `gcloud` CLI:

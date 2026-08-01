@@ -42,6 +42,17 @@ locals {
         "assertion.workflow_ref == '${var.github_repository}/.github/workflows/release-server.yml@refs/heads/main'",
       ])
     }
+    client_release = {
+      id = "client-release"
+      condition = join(" && ", [
+        "assertion.repository_id == '${var.github_repository_id}'",
+        "assertion.repository_owner_id == '${var.github_owner_id}'",
+        "assertion.event_name == 'workflow_dispatch'",
+        "assertion.ref == 'refs/heads/main'",
+        "assertion.environment == 'production'",
+        "assertion.workflow_ref == '${var.github_repository}/.github/workflows/release-client.yml@refs/heads/main'",
+      ])
+    }
   }
 }
 
