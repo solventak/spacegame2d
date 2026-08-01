@@ -18,6 +18,32 @@ one-time backend bootstrap, normal administration, and recovery.
   TCP port. It deliberately has no public SSH rule. IAP/OS Login access is added by SWA-69,
   and the server runtime is added by SWA-65.
 
+## Terraform CI transition checklist
+
+Use this checklist when a Terraform change adds a GitHub variable, `gcloud` fallback, Google API,
+or Workload Identity Federation permission:
+
+1. Preserve the workflow's existing trusted GitHub event unless the trust model is deliberately
+   changing. In particular, `pull_request_target` evaluates the workflow from the PR base branch,
+   not the workflow file in the PR head.
+2. Account for that base-branch behavior during rollout: a repository-variable mapping added in a
+   PR is not available to that PR's existing `pull_request_target` workflow until the PR merges.
+   Keep a fail-loud fallback for the transition, or make the one-time prerequisite before opening
+   the PR.
+3. Enable every Google API the fallback calls before relying on it. For example, the
+   billing-account fallback requires the Cloud Billing API:
+
+   ```bash
+   gcloud services enable cloudbilling.googleapis.com --project=<project-id>
+   ```
+
+4. Check the full dependency chain in this order: GitHub event, Workload Identity Federation
+   attribute condition, repository-variable visibility, enabled Google APIs, then IAM roles for
+   the plan identity.
+5. After changing workflow triggers or authentication, inspect the runs with
+   `gh run list --branch <branch>`. Confirm there is one intended Terraform Plan run and review
+   its cloud-aware plan output; local `terraform test` cannot validate GitHub event semantics or
+   live Google API access.
 ## One-time bucket bootstrap
 
 Set the values below in a shell that is authenticated as Alex. The bucket name is globally
