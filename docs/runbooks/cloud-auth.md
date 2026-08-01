@@ -72,6 +72,9 @@ Populate these repository variables from Terraform outputs. They are identifiers
 | `GCP_TERRAFORM_APPLY_SERVICE_ACCOUNT` | `service_account_email.apply` |
 | `GCP_SERVER_RELEASE_SERVICE_ACCOUNT` | `service_account_email.release` |
 
+The bootstrap root also outputs `game_server_runtime_service_account_email`. It is attached to
+the VM by the production root and is not a GitHub Actions identity.
+
 ## Verification and recovery
 
 After the credentials variables and environment are configured:

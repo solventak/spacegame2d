@@ -44,6 +44,55 @@ run "plans_the_default_public_host" {
     condition     = output.game_port == 4000 && output.vm_zone == "us-west1-a"
     error_message = "The machine-readable defaults must report the configured port and zone."
   }
+
+  assert {
+    condition     = google_compute_firewall.iap_ssh.source_ranges == toset(["35.235.240.0/20"])
+    error_message = "SSH must be reachable only from the IAP TCP forwarding range."
+  }
+
+  assert {
+    condition = anytrue([
+      for rule in google_compute_firewall.iap_ssh.allow :
+      rule.protocol == "tcp" && contains(rule.ports, "22")
+    ])
+    error_message = "The IAP firewall rule must expose TCP port 22."
+  }
+
+  assert {
+    condition     = google_compute_instance.game_server.metadata["enable-oslogin"] == "TRUE"
+    error_message = "The VM must enforce OS Login."
+  }
+
+  assert {
+    condition     = google_compute_instance.game_server.service_account[0].email == "relay-server-runtime@relayoperations.iam.gserviceaccount.com"
+    error_message = "The VM must use the dedicated runtime service account."
+  }
+
+  assert {
+    condition = strcontains(google_compute_instance.game_server.metadata_startup_script, "relay-operations-deploy") && strcontains(
+      google_compute_instance.game_server.metadata_startup_script,
+      "GAME_PORT=4000",
+    )
+    error_message = "The VM startup contract must install the deployment helper and port configuration."
+  }
+
+  assert {
+    condition = strcontains(google_compute_instance.game_server.metadata_startup_script, "--log-driver=journald") && strcontains(
+      google_compute_instance.game_server.metadata_startup_script,
+      "7d",
+    )
+    error_message = "The runtime must preserve container logs in journald and bound failed-release files to seven days."
+  }
+
+  assert {
+    condition     = length(google_compute_instance_iam_member.os_admin_login) == 2 && length(google_iap_tunnel_instance_iam_member.tunnel_access) == 2
+    error_message = "Alex and the release identity must receive VM-scoped OS Login and IAP access."
+  }
+
+  assert {
+    condition     = google_artifact_registry_repository_iam_member.game_server_runtime_reader.member == "serviceAccount:relay-server-runtime@relayoperations.iam.gserviceaccount.com"
+    error_message = "The runtime identity must have repository-scoped Artifact Registry reader access."
+  }
 }
 
 run "accepts_a_capacity_zone_override" {

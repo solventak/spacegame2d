@@ -25,3 +25,7 @@ SHA. Credentials are never part of a Docker build layer or cache entry.
 
 This workflow never deletes images. The deployed image and the immediately previous image remain
 available as digest-addressed rollback inputs.
+
+SWA-66 passes the selected digest to the VM-side deployment helper described in the [managed
+game-server runtime runbook](game-server-runtime.md). Image publication and VM deployment remain
+separate operations.

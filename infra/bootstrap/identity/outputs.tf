@@ -15,3 +15,8 @@ output "service_account_email" {
     key => service_account.email
   }
 }
+
+output "game_server_runtime_service_account_email" {
+  description = "Service account attached to the public game-server VM."
+  value       = google_service_account.game_server_runtime.email
+}

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_root="${RELAY_OPERATIONS_ROOT:-/}"
+docker_bin="${DOCKER_BIN:-/usr/bin/docker}"
+image_file="${runtime_root}/var/lib/relay-operations/current-image"
+config_file="${runtime_root}/etc/relay-operations/server.env"
+
+test -s "$image_file"
+test -r "$config_file"
+
+# This file is root-owned and installed by the Terraform startup contract.
+source "$config_file"
+
+: "${GAME_PORT:?GAME_PORT is required}"
+: "${SERVER_LISTEN_ADDRESS:?SERVER_LISTEN_ADDRESS is required}"
+image_reference=$(<"$image_file")
+
+[[ "$GAME_PORT" =~ ^[0-9]+$ ]]
+[[ "$image_reference" == "$ALLOWED_IMAGE_PREFIX@sha256:"* ]]
+
+exec "$docker_bin" run \
+  --name relay-operations-server \
+  --rm \
+  --pull never \
+  --log-driver=journald \
+  --publish "0.0.0.0:${GAME_PORT}:${GAME_PORT}/tcp" \
+  --env "SPACEGAME_LOG_FORMAT=${SPACEGAME_LOG_FORMAT:-json}" \
+  "$image_reference" \
+  "$SERVER_LISTEN_ADDRESS"

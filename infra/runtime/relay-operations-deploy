@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_root="${RELAY_OPERATIONS_ROOT:-/}"
+docker_bin="${DOCKER_BIN:-/usr/bin/docker}"
+curl_bin="${CURL_BIN:-/usr/bin/curl}"
+python_bin="${PYTHON_BIN:-/usr/bin/python3}"
+systemctl_bin="${SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+health_bin="${HEALTH_BIN:-/usr/local/sbin/relay-operations-health}"
+journalctl_bin="${JOURNALCTL_BIN:-/usr/bin/journalctl}"
+logger_bin="${LOGGER_BIN:-/usr/bin/logger}"
+flock_bin="${FLOCK_BIN:-/usr/bin/flock}"
+date_bin="${DATE_BIN:-/usr/bin/date}"
+mkdir_bin="${MKDIR_BIN:-/usr/bin/mkdir}"
+install_bin="${INSTALL_BIN:-/usr/bin/install}"
+rm_bin="${RM_BIN:-/usr/bin/rm}"
+mktemp_bin="${MKTEMP_BIN:-/usr/bin/mktemp}"
+mv_bin="${MV_BIN:-/usr/bin/mv}"
+
+config_file="${runtime_root}/etc/relay-operations/server.env"
+state_dir="${runtime_root}/var/lib/relay-operations"
+log_dir="${runtime_root}/var/log/relay-operations/failed-releases"
+current_file="${state_dir}/current-image"
+previous_file="${state_dir}/previous-image"
+lock_file="${runtime_root}/run/lock/relay-operations-deploy.lock"
+
+source "$config_file"
+: "${ALLOWED_IMAGE_PREFIX:?ALLOWED_IMAGE_PREFIX is required}"
+: "${HEALTH_TIMEOUT_SECONDS:?HEALTH_TIMEOUT_SECONDS is required}"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: relay-operations-deploy <repository>@sha256:<64 lowercase hex>" >&2
+  exit 64
+fi
+
+candidate="$1"
+if [[ "$candidate" != "$ALLOWED_IMAGE_PREFIX@sha256:"* ]] || ! [[ "$candidate" =~ @sha256:[0-9a-f]{64}$ ]]; then
+  echo "image must be an immutable digest from the configured Artifact Registry repository" >&2
+  exit 64
+fi
+
+"$mkdir_bin" --parents "$(dirname "$lock_file")" "$state_dir" "$log_dir"
+exec 9>"$lock_file"
+"$flock_bin" 9
+
+deployment_started=$("$date_bin" --iso-8601=seconds --utc)
+registry_host="${candidate%%/*}"
+
+archive_failure() {
+  local reason="$1"
+  local log_file="${log_dir}/failed-$(${date_bin} +%Y%m%dT%H%M%SZ).log"
+  "$install_bin" --mode=0640 --owner=root --group=adm /dev/null "$log_file"
+  {
+    printf 'reason=%s\n' "$reason"
+    printf 'candidate=%s\n' "$candidate"
+    printf 'started=%s\n' "$deployment_started"
+    "$journalctl_bin" --no-pager --unit relay-operations-server.service --since "$deployment_started" || true
+  } > "$log_file"
+  printf '%s\n' "$log_file"
+}
+
+write_state() {
+  local target="$1"
+  local value="$2"
+  local temporary
+  temporary=$("$mktemp_bin" "${target}.tmp.XXXXXX")
+  printf '%s\n' "$value" > "$temporary"
+  chmod 0640 "$temporary"
+  "$mv_bin" -f "$temporary" "$target"
+}
+
+pull_candidate() {
+  local token
+  token=$("$curl_bin" --fail --silent --show-error \
+    --header 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
+    | "$python_bin" -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+  if ! printf '%s' "$token" | "$docker_bin" login "$registry_host" \
+    --username oauth2accesstoken --password-stdin >/dev/null; then
+    return 1
+  fi
+  if ! "$docker_bin" pull "$candidate"; then
+    "$docker_bin" logout "$registry_host" >/dev/null 2>&1 || true
+    return 1
+  fi
+  "$docker_bin" logout "$registry_host" >/dev/null 2>&1 || true
+}
+
+wait_for_health() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if "$health_bin"; then
+      return 0
+    fi
+    sleep 2
+  done
+  "$health_bin"
+}
+
+if ! pull_candidate; then
+  archive_failure image_pull_failed >/dev/null
+  "$logger_bin" --tag relay-operations-deploy "image pull failed candidate=$candidate"
+  exit 1
+fi
+
+previous_image=''
+if [[ -s "$current_file" ]]; then
+  previous_image=$(<"$current_file")
+fi
+
+if [[ "$previous_image" != "$candidate" ]]; then
+  if [[ -n "$previous_image" ]]; then
+    write_state "$previous_file" "$previous_image"
+  fi
+  write_state "$current_file" "$candidate"
+fi
+
+if "$systemctl_bin" restart relay-operations-server.service && wait_for_health; then
+  "$logger_bin" --tag relay-operations-deploy "release active image=$candidate"
+  exit 0
+fi
+
+failed_log=$(archive_failure deployment_verification_failed)
+"$logger_bin" --tag relay-operations-deploy "release verification failed candidate=$candidate log=$failed_log"
+
+if [[ -z "$previous_image" ]]; then
+  "$systemctl_bin" stop relay-operations-server.service || true
+  "$rm_bin" -f "$current_file"
+  exit 1
+fi
+
+write_state "$current_file" "$previous_image"
+if "$systemctl_bin" restart relay-operations-server.service && wait_for_health; then
+  "$logger_bin" --tag relay-operations-deploy "previous release restored image=$previous_image"
+else
+  "$logger_bin" --tag relay-operations-deploy "previous release failed health check image=$previous_image"
+fi
+exit 1

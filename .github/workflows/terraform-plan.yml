@@ -47,6 +47,12 @@ jobs:
           terraform -chdir=infra/bootstrap/identity init -backend=false -input=false
           terraform -chdir=infra/bootstrap/identity validate
 
+      - name: Run production Terraform plan tests
+        run: terraform -chdir=infra test
+
+      - name: Run identity bootstrap Terraform plan tests
+        run: terraform -chdir=infra/bootstrap/identity test
+
   plan:
     needs: validate
     if: github.event.pull_request.head.repo.full_name == github.repository
