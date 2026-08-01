@@ -97,6 +97,12 @@ jobs:
           test "$(gcloud config get-value account)" = "${{ vars.GCP_TERRAFORM_PLAN_SERVICE_ACCOUNT }}"
           gcloud auth print-access-token >/dev/null
 
+      - name: Resolve the project billing account
+        run: |
+          billing_account="$(gcloud billing projects describe "$TF_VAR_project_id" --format='value(billingAccountName)')"
+          test -n "$billing_account"
+          echo "TF_VAR_billing_account_id=${billing_account#billingAccounts/}" >> "$GITHUB_ENV"
+
       - name: Create speculative cloud-aware plans
         shell: bash
         run: |

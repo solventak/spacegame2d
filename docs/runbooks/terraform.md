@@ -18,6 +18,33 @@ one-time backend bootstrap, normal administration, and recovery.
   TCP port. It deliberately has no public SSH rule. IAP/OS Login access is added by SWA-69,
   and the server runtime is added by SWA-65.
 
+## Low-cost playtest footprint and billing alerts
+
+The intended `relayoperations` playtest footprint is deliberately small:
+
+- one `e2-micro` Compute Engine VM;
+- one standard-tier regional static IPv4 address;
+- one 10 GB `pd-standard` persistent boot disk; and
+- the `spacegame2d-server` Artifact Registry Docker repository.
+
+Terraform creates a USD 5.00 calendar-month Google Cloud Billing budget scoped only to the
+playtest project. It sends 50%, 90%, and 100% current-spend alerts to the Google Cloud
+Monitoring email notification channel for `akennedy4155@gmail.com`.
+
+The Terraform workflows resolve the project’s billing account at runtime with
+`gcloud billing projects describe`; no billing-account ID is stored in the repository. For a
+manual plan or apply, export `TF_VAR_billing_account_id` with the ID returned by that command.
+
+After the first apply, Google sends a one-time verification message to that address. Open the
+message and follow its verification link before treating budget-alert delivery as complete.
+If the channel remains unverified, budget notifications may not be delivered even though the
+Terraform resource exists.
+
+Likely charge sources outside the fixed footprint include network egress and Artifact Registry
+storage. Review every plan for accidental additions or changes such as a larger VM, additional
+disks, additional static IP addresses, or a non-free-tier region or service. The budget is an
+alert, not a hard spending cutoff, and does not eliminate every possible cloud charge.
+
 ## One-time bucket bootstrap
 
 Set the values below in a shell that is authenticated as Alex. The bucket name is globally

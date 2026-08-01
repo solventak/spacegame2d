@@ -4,7 +4,8 @@ run "plans_the_default_public_host" {
   command = plan
 
   variables {
-    project_id = "relayoperations"
+    project_id         = "relayoperations"
+    billing_account_id = "test-billing-account"
   }
 
   assert {
@@ -93,14 +94,45 @@ run "plans_the_default_public_host" {
     condition     = google_artifact_registry_repository_iam_member.game_server_runtime_reader.member == "serviceAccount:relay-server-runtime@relayoperations.iam.gserviceaccount.com"
     error_message = "The runtime identity must have repository-scoped Artifact Registry reader access."
   }
+
+  assert {
+    condition     = google_billing_budget.playtest[0].budget_filter[0].calendar_period == "MONTH" && google_billing_budget.playtest[0].budget_filter[0].projects == toset(["projects/relayoperations"])
+    error_message = "The monthly budget must be scoped only to the playtest project."
+  }
+
+  assert {
+    condition     = google_billing_budget.playtest[0].amount[0].specified_amount[0].currency_code == "USD" && google_billing_budget.playtest[0].amount[0].specified_amount[0].units == "5"
+    error_message = "The playtest budget must be five US dollars."
+  }
+
+  assert {
+    condition     = toset([for rule in google_billing_budget.playtest[0].threshold_rules : rule.threshold_percent]) == toset([0.5, 0.9, 1])
+    error_message = "The budget must alert at 50%, 90%, and 100% of current spend."
+  }
+
+  assert {
+    condition     = google_monitoring_notification_channel.billing_email.type == "email" && google_monitoring_notification_channel.billing_email.labels["email_address"] == "akennedy4155@gmail.com"
+    error_message = "Budget alerts must use the playtest operator's email notification channel."
+  }
+
+  assert {
+    condition     = length([for policy in google_artifact_registry_repository.server_images.cleanup_policies : policy if policy.id == "keep-two-most-recent" && policy.action == "KEEP" && policy.most_recent_versions[0].keep_count == 2]) == 1
+    error_message = "The repository must explicitly keep the two newest image versions."
+  }
+
+  assert {
+    condition     = length([for policy in google_artifact_registry_repository.server_images.cleanup_policies : policy if policy.id == "delete-older-than-thirty-days" && policy.action == "DELETE" && policy.condition[0].older_than == "2592000s"]) == 1
+    error_message = "Non-current repository versions older than 30 days must be eligible for deletion."
+  }
 }
 
 run "accepts_a_capacity_zone_override" {
   command = plan
 
   variables {
-    project_id = "relayoperations"
-    zone       = "us-west1-b"
+    project_id         = "relayoperations"
+    billing_account_id = "test-billing-account"
+    zone               = "us-west1-b"
   }
 
   assert {
