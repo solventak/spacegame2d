@@ -2,7 +2,10 @@ use crate::tick::Tick;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandData {
-    SetDestination { destination: [u32; 2] },
+    SetDestination {
+        destination: [u32; 2],
+        target_unit_ids: Vec<u32>,
+    },
     ResetSimulation,
 }
 

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use spacegame2d_protocol::{CommandRejected, CommandRejectionReason};
-use spacegame2d_simulation::World;
+use spacegame2d_simulation::{UnitId, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MarkerStatus {
@@ -16,16 +16,30 @@ pub(crate) struct DestinationMarker {
     pub(crate) status: MarkerStatus,
 }
 
+#[derive(Debug)]
+struct RouteMarker {
+    position: Vec2,
+    targets: Vec<UnitId>,
+    activated: bool,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct DestinationPresentation {
-    pending: Option<(u32, Vec2)>,
-    confirmed: Option<Vec2>,
+    pending: Vec<(u32, RouteMarker)>,
+    confirmed: Vec<RouteMarker>,
     rejection: Option<(String, Instant)>,
 }
 
 impl DestinationPresentation {
-    pub(crate) fn begin(&mut self, sequence: u32, destination: Vec2) {
-        self.pending = Some((sequence, destination));
+    pub(crate) fn begin(&mut self, sequence: u32, destination: Vec2, target_unit_ids: Vec<u32>) {
+        self.pending.push((
+            sequence,
+            RouteMarker {
+                position: destination,
+                targets: target_unit_ids.into_iter().map(UnitId).collect(),
+                activated: false,
+            },
+        ));
         self.rejection = None;
     }
 
@@ -41,7 +55,10 @@ impl DestinationPresentation {
         if command.player_slot != local_slot {
             return;
         }
-        let spacegame2d_protocol::CommandData::SetDestination { destination } = &command.command
+        let spacegame2d_protocol::CommandData::SetDestination {
+            destination,
+            target_unit_ids,
+        } = &command.command
         else {
             return;
         };
@@ -49,22 +66,18 @@ impl DestinationPresentation {
             f32::from_bits(destination[0]),
             f32::from_bits(destination[1]),
         );
-        self.confirmed = Some(point);
-        if self
-            .pending
-            .is_some_and(|(sequence, _)| sequence == command.sequence)
-        {
-            self.pending = None;
-        }
+        self.confirmed.push(RouteMarker {
+            position: point,
+            targets: target_unit_ids.iter().copied().map(UnitId).collect(),
+            activated: false,
+        });
+        self.pending
+            .retain(|(sequence, _)| *sequence != command.sequence);
     }
 
     pub(crate) fn rejected(&mut self, rejection: &CommandRejected, now: Instant) {
-        if self
-            .pending
-            .is_some_and(|(sequence, _)| sequence == rejection.sequence)
-        {
-            self.pending = None;
-        }
+        self.pending
+            .retain(|(sequence, _)| *sequence != rejection.sequence);
         self.rejection = Some((
             rejection_message(rejection.reason).to_owned(),
             now + Duration::from_secs(2),
@@ -72,23 +85,38 @@ impl DestinationPresentation {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.pending = None;
-        self.confirmed = None;
+        self.pending.clear();
+        self.confirmed.clear();
         self.rejection = None;
     }
 
-    pub(crate) fn marker(&self, world: &World) -> Option<DestinationMarker> {
+    pub(crate) fn markers(&mut self, world: &World) -> Vec<DestinationMarker> {
+        self.confirmed.retain_mut(|marker| {
+            let destination = world.project_destination(marker.position);
+            let routing = marker.targets.iter().any(|id| {
+                world.unit(*id).is_some_and(|unit| {
+                    unit.autopilot.is_active() && unit.autopilot.destination() == Some(destination)
+                })
+            });
+            marker.activated |= routing;
+            !marker.activated || routing
+        });
         self.pending
-            .map(|(_, position)| DestinationMarker {
-                position: world.project_destination(position),
+            .iter()
+            .map(|(_, marker)| DestinationMarker {
+                position: world.project_destination(marker.position),
                 status: MarkerStatus::Pending,
             })
-            .or_else(|| {
-                self.confirmed.map(|position| DestinationMarker {
-                    position: world.project_destination(position),
-                    status: MarkerStatus::Confirmed,
-                })
-            })
+            .chain(self.confirmed.iter().map(|marker| DestinationMarker {
+                position: world.project_destination(marker.position),
+                status: MarkerStatus::Confirmed,
+            }))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn marker(&mut self, world: &World) -> Option<DestinationMarker> {
+        self.markers(world).into_iter().next()
     }
 
     pub(crate) fn rejection_text(&mut self, now: Instant) -> Option<&str> {

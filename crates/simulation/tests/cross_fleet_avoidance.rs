@@ -2,13 +2,14 @@ use glam::Vec2;
 use spacegame2d_protocol::{AuthoritativeCommand, CommandData, Tick};
 use spacegame2d_simulation::simulation::Simulation;
 
-fn destination(slot: u32, sequence: u32, point: Vec2) -> AuthoritativeCommand {
+fn destination(slot: u32, sequence: u32, point: Vec2, targets: Vec<u32>) -> AuthoritativeCommand {
     AuthoritativeCommand {
         execute_tick: Tick::default(),
         player_slot: slot,
         sequence,
         command: CommandData::SetDestination {
             destination: [point.x.to_bits(), point.y.to_bits()],
+            target_unit_ids: targets,
         },
     }
 }
@@ -21,8 +22,18 @@ fn run_crossing() -> (Simulation, f32, Vec<Vec<Vec2>>) {
         unit.combat.hull.current = u32::MAX;
         unit.combat.hull.maximum = u32::MAX;
     }
-    assert!(simulation.schedule_authoritative_trusted(&destination(1, 1, Vec2::new(8.0, 0.0))));
-    assert!(simulation.schedule_authoritative_trusted(&destination(2, 2, Vec2::new(-8.0, 0.0))));
+    assert!(simulation.schedule_authoritative_trusted(&destination(
+        1,
+        1,
+        Vec2::new(8.0, 0.0),
+        (1..=fleet_size as u32).collect()
+    )));
+    assert!(simulation.schedule_authoritative_trusted(&destination(
+        2,
+        2,
+        Vec2::new(-8.0, 0.0),
+        ((fleet_size as u32 + 1)..=(fleet_size as u32 * 2)).collect()
+    )));
     let initial = simulation
         .world
         .units

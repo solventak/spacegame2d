@@ -37,6 +37,7 @@ impl TryFrom<wire::command::Payload> for CommandData {
                     .ok_or_else(|| invalid("missing destination"))?;
                 Ok(Self::SetDestination {
                     destination: [destination.x, destination.y],
+                    target_unit_ids: value.target_unit_ids,
                 })
             }
             wire::command::Payload::ResetSimulation(_) => Ok(Self::ResetSimulation),

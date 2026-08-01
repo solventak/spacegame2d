@@ -319,9 +319,26 @@ impl World {
         let player = PlayerId::try_from(cmd.player_slot)
             .map_err(|_| AuthoritativeCommandError::InvalidPlayerSlot)?;
         match &cmd.command {
-            CommandData::SetDestination { .. } => {
-                if !self.units.iter().any(|unit| unit.owner == Some(player)) {
-                    return Err(AuthoritativeCommandError::NoOwnedFleet);
+            CommandData::SetDestination {
+                target_unit_ids, ..
+            } => {
+                if target_unit_ids.is_empty() {
+                    return Err(AuthoritativeCommandError::EmptyTargets);
+                }
+                if target_unit_ids.len() > self.config.fleet_size() as usize {
+                    return Err(AuthoritativeCommandError::TooManyTargets);
+                }
+                let mut targets = BTreeSet::new();
+                for target in target_unit_ids {
+                    let target = UnitId(*target);
+                    if !targets.insert(target) {
+                        return Err(AuthoritativeCommandError::DuplicateTarget);
+                    }
+                    if let Some(unit) = self.unit(target)
+                        && unit.owner != Some(player)
+                    {
+                        return Err(AuthoritativeCommandError::UnauthorizedTarget);
+                    }
                 }
                 Ok(())
             }
@@ -340,8 +357,14 @@ impl World {
 pub enum AuthoritativeCommandError {
     #[error("player slot is invalid")]
     InvalidPlayerSlot,
-    #[error("player owns no fleet units")]
-    NoOwnedFleet,
+    #[error("destination command has no targets")]
+    EmptyTargets,
+    #[error("destination command has too many targets")]
+    TooManyTargets,
+    #[error("destination command has duplicate targets")]
+    DuplicateTarget,
+    #[error("destination command targets a unit not owned by the player")]
+    UnauthorizedTarget,
     #[error("player is not connected")]
     PlayerNotConnected,
 }
@@ -357,6 +380,7 @@ pub enum RecordedCommand {
         execute_tick: Tick,
         player: PlayerId,
         destination: [u32; 2],
+        targets: Vec<UnitId>,
     },
     ResetSimulation {
         execute_tick: Tick,
@@ -387,14 +411,14 @@ pub trait Command: Send {
 pub struct SetDestination {
     pub player: PlayerId,
     pub destination: Vec2,
+    pub targets: BTreeSet<UnitId>,
 }
 
 impl Command for SetDestination {
     fn execute(&self, world: &mut World) -> Result<(), CommandExecutionError> {
         let destination = world.project_destination(self.destination);
-        let has_owners = world.units.iter().any(|unit| unit.owner.is_some());
         for unit in &mut world.units {
-            if !has_owners || unit.owner == Some(self.player) {
+            if unit.owner == Some(self.player) && self.targets.contains(&unit.id) {
                 unit.autopilot.set_destination(destination);
             }
         }
@@ -406,6 +430,7 @@ impl Command for SetDestination {
             execute_tick,
             player: self.player,
             destination: [self.destination.x.to_bits(), self.destination.y.to_bits()],
+            targets: self.targets.iter().copied().collect(),
         }
     }
 }
@@ -522,7 +547,10 @@ impl TryFrom<&AuthoritativeCommand> for Box<dyn Command> {
         let player =
             PlayerId::try_from(cmd.player_slot).map_err(|_| CommandDataError::InvalidPlayerSlot)?;
         match &cmd.command {
-            CommandData::SetDestination { destination } => {
+            CommandData::SetDestination {
+                destination,
+                target_unit_ids,
+            } => {
                 let coordinates = [
                     f32::from_bits(destination[0]),
                     f32::from_bits(destination[1]),
@@ -533,6 +561,7 @@ impl TryFrom<&AuthoritativeCommand> for Box<dyn Command> {
                 Ok(Box::new(SetDestination {
                     player,
                     destination: Vec2::from_array(coordinates),
+                    targets: target_unit_ids.iter().copied().map(UnitId).collect(),
                 }))
             }
             CommandData::ResetSimulation => Ok(Box::new(ResetSimulation)),
@@ -546,6 +575,7 @@ impl From<&RecordedCommand> for Box<dyn Command> {
             RecordedCommand::SetDestination {
                 player,
                 destination,
+                targets,
                 ..
             } => Box::new(SetDestination {
                 player: *player,
@@ -553,6 +583,7 @@ impl From<&RecordedCommand> for Box<dyn Command> {
                     f32::from_bits(destination[0]),
                     f32::from_bits(destination[1]),
                 ]),
+                targets: targets.iter().copied().collect(),
             }),
             RecordedCommand::ResetSimulation { .. } => Box::new(ResetSimulation),
         }
@@ -571,13 +602,14 @@ mod tests {
         assert_eq!(unit.hitbox(), Hitbox::default_ship());
     }
 
-    fn destination(slot: u32, _unit_id: u32, execute_tick: u64) -> AuthoritativeCommand {
+    fn destination(slot: u32, unit_id: u32, execute_tick: u64) -> AuthoritativeCommand {
         AuthoritativeCommand {
             execute_tick: Tick::from(execute_tick),
             player_slot: slot,
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [5.0f32.to_bits(), 6.0f32.to_bits()],
+                target_unit_ids: vec![unit_id],
             },
         }
     }
@@ -632,6 +664,7 @@ mod tests {
         );
 
         let mut replay = Simulation::default();
+        replay.world.assign_player_fleet(PlayerId(1));
         let events = CommandScheduler::replay(&[record], &mut replay, Tick::default());
         assert_eq!(replay.tick(), Tick::new(1));
         assert_eq!(
@@ -750,12 +783,14 @@ mod tests {
     #[test]
     fn trusted_authoritative_commands_apply_on_unowned_mirrors() {
         let mut sim = Simulation::default();
+        sim.world.assign_mirror_owners();
         let command = AuthoritativeCommand {
             execute_tick: Tick::default(),
             player_slot: 1,
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [0.0f32.to_bits(), 15.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
 
@@ -806,6 +841,10 @@ mod tests {
         let command = SetDestination {
             player: PlayerId(1),
             destination: requested,
+            targets: world.units[..FLEET_SIZE]
+                .iter()
+                .map(|unit| unit.id)
+                .collect(),
         };
 
         command.execute(&mut world).unwrap();
@@ -826,6 +865,10 @@ mod tests {
                 execute_tick: Tick::new(7),
                 player: PlayerId(1),
                 destination: [requested.x.to_bits(), requested.y.to_bits()],
+                targets: world.units[..FLEET_SIZE]
+                    .iter()
+                    .map(|unit| unit.id)
+                    .collect(),
             }
         );
     }
@@ -897,6 +940,7 @@ mod tests {
             Box::new(SetDestination {
                 player: PlayerId(1),
                 destination: Vec2::new(1.0, 2.0),
+                targets: [world.units[0].id].into_iter().collect(),
             }),
         );
         scheduler.schedule(
@@ -904,6 +948,7 @@ mod tests {
             Box::new(SetDestination {
                 player: PlayerId(1),
                 destination: Vec2::new(3.0, 4.0),
+                targets: [world.units[0].id].into_iter().collect(),
             }),
         );
         scheduler
@@ -928,6 +973,7 @@ mod tests {
         SetDestination {
             player: PlayerId(1),
             destination: Vec2::new(100.0, 100.0),
+            targets: [world.units[0].id].into_iter().collect(),
         }
         .execute(&mut world)
         .unwrap();
@@ -940,18 +986,21 @@ mod tests {
         assert!(
             Box::<dyn Command>::try_from(&CommandData::SetDestination {
                 destination: [f32::NAN.to_bits(), 0.0f32.to_bits()],
+                target_unit_ids: vec![1],
             })
             .is_err()
         );
         assert!(
             Box::<dyn Command>::try_from(&CommandData::SetDestination {
                 destination: [f32::INFINITY.to_bits(), 0.0f32.to_bits()],
+                target_unit_ids: vec![1],
             })
             .is_err()
         );
         assert!(
             Box::<dyn Command>::try_from(&CommandData::SetDestination {
                 destination: [f32::NEG_INFINITY.to_bits(), 0.0f32.to_bits()],
+                target_unit_ids: vec![1],
             })
             .is_err()
         );

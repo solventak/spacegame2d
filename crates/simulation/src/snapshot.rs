@@ -618,6 +618,7 @@ mod tests {
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [1.0f32.to_bits(), 2.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         assert!(left.schedule_authoritative_trusted(&command));
@@ -646,6 +647,7 @@ mod tests {
             sequence: 2,
             command: CommandData::SetDestination {
                 destination: [3.0f32.to_bits(), (-2.0f32).to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         for simulation in [&mut left, &mut right] {
@@ -669,6 +671,7 @@ mod tests {
             sequence: 1,
             command: CommandData::SetDestination {
                 destination: [0.0f32.to_bits(), 20.0f32.to_bits()],
+                target_unit_ids: vec![1],
             },
         };
         assert!(authoritative.schedule_authoritative_trusted(&command));
