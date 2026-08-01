@@ -1,3 +1,7 @@
+data "google_project" "playtest" {
+  project_id = var.project_id
+}
+
 resource "google_project_service" "billing_budgets" {
   project            = var.project_id
   service            = "billingbudgets.googleapis.com"
@@ -22,13 +26,13 @@ resource "google_monitoring_notification_channel" "billing_email" {
 }
 
 resource "google_billing_budget" "playtest" {
-  count           = var.billing_account_id == null ? 0 : 1
   billing_account = var.billing_account_id
   display_name    = "Relay Operations playtest monthly budget"
+  ownership_scope = "ALL_USERS"
 
   budget_filter {
     calendar_period = "MONTH"
-    projects        = ["projects/${var.project_id}"]
+    projects        = ["projects/${data.google_project.playtest.number}"]
   }
 
   amount {

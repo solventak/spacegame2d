@@ -31,9 +31,15 @@ Terraform creates a USD 5.00 calendar-month Google Cloud Billing budget scoped o
 playtest project. It sends 50%, 90%, and 100% current-spend alerts to the Google Cloud
 Monitoring email notification channel for `akennedy4155@gmail.com`.
 
-The Terraform workflows resolve the project’s billing account at runtime with
-`gcloud billing projects describe`; no billing-account ID is stored in the repository. For a
-manual plan or apply, export `TF_VAR_billing_account_id` with the ID returned by that command.
+The Terraform workflows read the billing account from the `GCP_BILLING_ACCOUNT_ID` GitHub
+repository variable; no billing-account ID is stored in repository source. Populate that variable
+with the account attached to the project before planning this root. For a manual plan or apply,
+export `TF_VAR_billing_account_id` with the same ID.
+
+Before the production root can plan or apply these resources, apply the matching
+`infra/bootstrap/identity/` changes with Alex's ADC. They grant the plan identity read-only access
+and the apply identity read/write access to the project-scoped budget and Monitoring notification
+channel.
 
 After the first apply, Google sends a one-time verification message to that address. Open the
 message and follow its verification link before treating budget-alert delivery as complete.

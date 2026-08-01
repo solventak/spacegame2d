@@ -5,7 +5,6 @@ variable "project_id" {
 
 variable "billing_account_id" {
   type        = string
-  default     = null
   description = "Billing account ID associated with the playtest project, supplied by the deployment environment."
 }
 

@@ -39,4 +39,24 @@ run "plans_game_server_identity_contract" {
     )
     error_message = "The Terraform apply identity must be able to manage per-instance IAP policy."
   }
+
+  assert {
+    condition     = toset(google_project_iam_custom_role.terraform_plan_billing_budget.permissions) == toset(["billing.resourcebudgets.read", "resourcemanager.projects.get"])
+    error_message = "The Terraform plan identity must receive read-only project billing budget access."
+  }
+
+  assert {
+    condition     = toset(google_project_iam_custom_role.terraform_apply_billing_budget.permissions) == toset(["billing.resourcebudgets.read", "billing.resourcebudgets.write", "resourcemanager.projects.get"])
+    error_message = "The Terraform apply identity must be able to manage project billing budgets."
+  }
+
+  assert {
+    condition     = google_project_iam_member.terraform_plan_monitoring_channel.role == "roles/monitoring.notificationChannelViewer"
+    error_message = "The Terraform plan identity must be able to read monitoring notification channels."
+  }
+
+  assert {
+    condition     = google_project_iam_member.terraform_apply_monitoring_channel.role == "roles/monitoring.notificationChannelEditor"
+    error_message = "The Terraform apply identity must be able to manage monitoring notification channels."
+  }
 }

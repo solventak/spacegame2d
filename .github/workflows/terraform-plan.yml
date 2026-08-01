@@ -1,7 +1,7 @@
 name: Terraform Plan
 
 on:
-  pull_request_target:
+  pull_request:
     branches: [dev, main]
     paths:
       - ".github/workflows/terraform-plan.yml"
@@ -64,6 +64,7 @@ jobs:
       group: terraform-production
       cancel-in-progress: false
     env:
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Check out the trusted same-repository pull request head
@@ -96,12 +97,6 @@ jobs:
         run: |
           test "$(gcloud config get-value account)" = "${{ vars.GCP_TERRAFORM_PLAN_SERVICE_ACCOUNT }}"
           gcloud auth print-access-token >/dev/null
-
-      - name: Resolve the project billing account
-        run: |
-          billing_account="$(gcloud billing projects describe "$TF_VAR_project_id" --format='value(billingAccountName)')"
-          test -n "$billing_account"
-          echo "TF_VAR_billing_account_id=${billing_account#billingAccounts/}" >> "$GITHUB_ENV"
 
       - name: Create speculative cloud-aware plans
         shell: bash

@@ -1,4 +1,10 @@
-mock_provider "google" {}
+mock_provider "google" {
+  mock_data "google_project" {
+    defaults = {
+      number = "926404861741"
+    }
+  }
+}
 
 run "plans_the_default_public_host" {
   command = plan
@@ -96,17 +102,22 @@ run "plans_the_default_public_host" {
   }
 
   assert {
-    condition     = google_billing_budget.playtest[0].budget_filter[0].calendar_period == "MONTH" && google_billing_budget.playtest[0].budget_filter[0].projects == toset(["projects/relayoperations"])
+    condition     = google_billing_budget.playtest.budget_filter[0].calendar_period == "MONTH" && google_billing_budget.playtest.budget_filter[0].projects == toset(["projects/926404861741"])
     error_message = "The monthly budget must be scoped only to the playtest project."
   }
 
   assert {
-    condition     = google_billing_budget.playtest[0].amount[0].specified_amount[0].currency_code == "USD" && google_billing_budget.playtest[0].amount[0].specified_amount[0].units == "5"
+    condition     = google_billing_budget.playtest.ownership_scope == "ALL_USERS"
+    error_message = "The single-project budget must permit access through project-scoped billing IAM."
+  }
+
+  assert {
+    condition     = google_billing_budget.playtest.amount[0].specified_amount[0].currency_code == "USD" && google_billing_budget.playtest.amount[0].specified_amount[0].units == "5"
     error_message = "The playtest budget must be five US dollars."
   }
 
   assert {
-    condition     = toset([for rule in google_billing_budget.playtest[0].threshold_rules : rule.threshold_percent]) == toset([0.5, 0.9, 1])
+    condition     = toset([for rule in google_billing_budget.playtest.threshold_rules : rule.threshold_percent]) == toset([0.5, 0.9, 1])
     error_message = "The budget must alert at 50%, 90%, and 100% of current spend."
   }
 
