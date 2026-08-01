@@ -28,6 +28,12 @@ variable "github_repository_id" {
   description = "Immutable numeric GitHub repository identifier."
 }
 
+variable "production_state_bucket" {
+  type        = string
+  description = "Production Terraform state bucket readable by the client release identity."
+  default     = "relayoperations-terraform-state-926404861741"
+}
+
 variable "operator_identity" {
   type        = string
   description = "Alex's Google identity in IAM member form."

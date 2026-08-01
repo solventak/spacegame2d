@@ -20,6 +20,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Check out main

@@ -3,6 +3,12 @@ variable "project_id" {
   description = "Google Cloud project that owns the playtest infrastructure."
 }
 
+variable "billing_account_id" {
+  type        = string
+  default     = null
+  description = "Billing account ID associated with the playtest project, supplied by the deployment environment when available."
+}
+
 variable "region" {
   type        = string
   description = "Google Cloud region for playtest infrastructure."

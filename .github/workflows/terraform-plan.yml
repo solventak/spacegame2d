@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/terraform-plan.yml"
       - ".github/workflows/terraform-apply.yml"
+      - ".github/workflows/release-client.yml"
       - ".terraform-version"
       - "infra/**"
 
@@ -64,6 +65,7 @@ jobs:
       group: terraform-production
       cancel-in-progress: false
     env:
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Check out the trusted same-repository pull request head

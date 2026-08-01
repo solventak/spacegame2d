@@ -10,6 +10,24 @@ resource "google_artifact_registry_repository" "server_images" {
   format        = "DOCKER"
   description   = "Immutable production images for the Relay Operations server."
 
+  cleanup_policies {
+    id     = "keep-two-most-recent"
+    action = "KEEP"
+
+    most_recent_versions {
+      keep_count = 2
+    }
+  }
+
+  cleanup_policies {
+    id     = "delete-older-than-thirty-days"
+    action = "DELETE"
+
+    condition {
+      older_than = "2592000s"
+    }
+  }
+
   depends_on = [google_project_service.artifact_registry]
 }
 

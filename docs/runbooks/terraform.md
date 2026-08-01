@@ -18,6 +18,69 @@ one-time backend bootstrap, normal administration, and recovery.
   TCP port. It deliberately has no public SSH rule. IAP/OS Login access is added by SWA-69,
   and the server runtime is added by SWA-65.
 
+## Terraform CI transition checklist
+
+Use this checklist when a Terraform change adds a GitHub variable, `gcloud` fallback, Google API,
+or Workload Identity Federation permission:
+
+1. Preserve the workflow's existing trusted GitHub event unless the trust model is deliberately
+   changing. In particular, `pull_request_target` evaluates the workflow from the PR base branch,
+   not the workflow file in the PR head.
+2. Account for that base-branch behavior during rollout: a repository-variable mapping added in a
+   PR is not available to that PR's existing `pull_request_target` workflow until the PR merges.
+   Keep a fail-loud fallback for the transition, or make the one-time prerequisite before opening
+   the PR.
+3. Enable every Google API the fallback calls before relying on it. For example, the
+   billing-account fallback requires the Cloud Billing API:
+
+   ```bash
+   gcloud services enable cloudbilling.googleapis.com --project=<project-id>
+   ```
+
+4. Check the full dependency chain in this order: GitHub event, Workload Identity Federation
+   attribute condition, repository-variable visibility, enabled Google APIs, then IAM roles for
+   the plan identity.
+5. After changing workflow triggers or authentication, inspect the runs with
+   `gh run list --branch <branch>`. Confirm there is one intended Terraform Plan run and review
+   its cloud-aware plan output; local `terraform test` cannot validate GitHub event semantics or
+   live Google API access.
+## Low-cost playtest footprint and billing alerts
+
+The intended `relayoperations` playtest footprint is deliberately small:
+
+- one `e2-micro` Compute Engine VM;
+- one standard-tier regional static IPv4 address;
+- one 10 GB `pd-standard` persistent boot disk; and
+- the `spacegame2d-server` Artifact Registry Docker repository.
+
+Terraform creates a USD 5.00 calendar-month Google Cloud Billing budget scoped only to the
+playtest project. It sends 50%, 90%, and 100% current-spend alerts to the Google Cloud
+Monitoring email notification channel for `akennedy4155@gmail.com`.
+
+The Terraform workflows read the billing account from the `GCP_BILLING_ACCOUNT_ID` GitHub
+repository variable; no billing-account ID is stored in repository source. Populate that variable
+with the account attached to the project before planning this root. For a manual plan or apply,
+export `TF_VAR_billing_account_id` with the same ID.
+
+If the variable is absent, Terraform resolves the account with `gcloud billing projects describe`.
+That fallback requires authenticated `gcloud` and fails the plan when the project has no linked
+billing account, so the budget can never be silently omitted.
+
+Before the production root can plan or apply these resources, apply the matching
+`infra/bootstrap/identity/` changes with Alex's ADC. They grant the plan identity read-only access
+and the apply identity read/write access to the project-scoped budget and Monitoring notification
+channel.
+
+After the first apply, Google sends a one-time verification message to that address. Open the
+message and follow its verification link before treating budget-alert delivery as complete.
+If the channel remains unverified, budget notifications may not be delivered even though the
+Terraform resource exists.
+
+Likely charge sources outside the fixed footprint include network egress and Artifact Registry
+storage. Review every plan for accidental additions or changes such as a larger VM, additional
+disks, additional static IP addresses, or a non-free-tier region or service. The budget is an
+alert, not a hard spending cutoff, and does not eliminate every possible cloud charge.
+
 ## One-time bucket bootstrap
 
 Set the values below in a shell that is authenticated as Alex. The bucket name is globally
@@ -171,6 +234,16 @@ The static address is a separate regional resource. Recreating only the VM there
 same client endpoint. To request a capacity fallback, set `TF_VAR_zone` for the approved
 Terraform command; it must remain within the configured region. Do not change the endpoint
 outside a reviewed infrastructure apply.
+
+### Refresh the public client endpoint
+
+After a reviewed production apply changes `server_endpoint`, dispatch **Release Client** from the
+corresponding `main` commit. The workflow reads the deployed value with
+`terraform -chdir=infra output -raw server_endpoint` using its dedicated read-only identity,
+validates it before compilation, and injects it only into the client build. Verify the workflow
+summary shows the expected endpoint and source commit before distributing its artifact. It fails
+before compiling if the output is missing or invalid; never replace it with localhost for a public
+release.
 
 ### Verify the host foundation
 

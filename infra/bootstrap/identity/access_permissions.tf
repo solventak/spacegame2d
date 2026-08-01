@@ -51,3 +51,9 @@ resource "google_project_iam_member" "iap_policy_admin" {
   role    = google_project_iam_custom_role.iap_policy_admin.name
   member  = "serviceAccount:${google_service_account.github_actions["apply"].email}"
 }
+
+resource "google_storage_bucket_iam_member" "client_release_state_reader" {
+  bucket = var.production_state_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.github_actions["client_release"].email}"
+}

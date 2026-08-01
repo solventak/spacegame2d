@@ -31,6 +31,10 @@ pub mod simulation;
 pub mod snapshot;
 pub mod structure;
 
+mod events;
+mod physics;
+mod systems;
+
 pub use combat::{
     CombatState, CombatTargetId, FIRE_INTERVAL_TICKS, FIRING_TOLERANCE_RADIANS, HullState,
     ImpactEntityId, MAX_CORE_HEALTH, MAX_HULL, MUZZLE_OFFSET_METERS,

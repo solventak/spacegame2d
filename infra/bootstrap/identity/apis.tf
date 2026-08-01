@@ -4,6 +4,7 @@ locals {
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
+    "storage.googleapis.com",
   ])
 }
 
