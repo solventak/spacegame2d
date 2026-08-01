@@ -6,6 +6,16 @@ mock_provider "google" {
   }
 }
 
+mock_provider "external" {
+  mock_data "external" {
+    defaults = {
+      result = {
+        billing_account_id = "fallback-billing-account"
+      }
+    }
+  }
+}
+
 run "plans_the_default_public_host" {
   command = plan
 
@@ -149,5 +159,18 @@ run "accepts_a_capacity_zone_override" {
   assert {
     condition     = output.vm_zone == "us-west1-b"
     error_message = "An explicit zone override within the configured region must be preserved."
+  }
+}
+
+run "falls_back_to_the_project_billing_account" {
+  command = plan
+
+  variables {
+    project_id = "relayoperations"
+  }
+
+  assert {
+    condition     = google_billing_budget.playtest.billing_account == "fallback-billing-account"
+    error_message = "A plan without an injected billing account must resolve the account attached to the project."
   }
 }

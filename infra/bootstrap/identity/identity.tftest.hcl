@@ -61,7 +61,7 @@ run "plans_game_server_identity_contract" {
   }
 
   assert {
-    condition     = strcontains(google_iam_workload_identity_pool_provider.github["plan"].attribute_condition, "assertion.event_name == 'pull_request'")
-    error_message = "The Terraform plan provider must accept the pull_request workflow event."
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github["plan"].attribute_condition, "assertion.event_name == 'pull_request_target'")
+    error_message = "The Terraform plan provider must accept the trusted pull_request_target workflow event."
   }
 }

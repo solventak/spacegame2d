@@ -36,6 +36,10 @@ repository variable; no billing-account ID is stored in repository source. Popul
 with the account attached to the project before planning this root. For a manual plan or apply,
 export `TF_VAR_billing_account_id` with the same ID.
 
+If the variable is absent, Terraform resolves the account with `gcloud billing projects describe`.
+That fallback requires authenticated `gcloud` and fails the plan when the project has no linked
+billing account, so the budget can never be silently omitted.
+
 Before the production root can plan or apply these resources, apply the matching
 `infra/bootstrap/identity/` changes with Alex's ADC. They grant the plan identity read-only access
 and the apply identity read/write access to the project-scoped budget and Monitoring notification

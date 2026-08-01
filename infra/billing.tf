@@ -2,6 +2,20 @@ data "google_project" "playtest" {
   project_id = var.project_id
 }
 
+data "external" "project_billing_account" {
+  count = var.billing_account_id == null ? 1 : 0
+
+  program = ["bash", "${path.module}/scripts/resolve-billing-account.sh"]
+
+  query = {
+    project_id = var.project_id
+  }
+}
+
+locals {
+  billing_account_id = var.billing_account_id != null ? var.billing_account_id : data.external.project_billing_account[0].result.billing_account_id
+}
+
 resource "google_project_service" "billing_budgets" {
   project            = var.project_id
   service            = "billingbudgets.googleapis.com"
@@ -26,7 +40,7 @@ resource "google_monitoring_notification_channel" "billing_email" {
 }
 
 resource "google_billing_budget" "playtest" {
-  billing_account = var.billing_account_id
+  billing_account = local.billing_account_id
   display_name    = "Relay Operations playtest monthly budget"
   ownership_scope = "ALL_USERS"
 

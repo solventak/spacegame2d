@@ -5,7 +5,8 @@ variable "project_id" {
 
 variable "billing_account_id" {
   type        = string
-  description = "Billing account ID associated with the playtest project, supplied by the deployment environment."
+  default     = null
+  description = "Billing account ID associated with the playtest project, supplied by the deployment environment when available."
 }
 
 variable "region" {
