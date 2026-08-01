@@ -14,6 +14,9 @@ one-time backend bootstrap, normal administration, and recovery.
 - The production apply workflow manages only `infra/`. Keep
   `infra/bootstrap/identity/` personal-ADC administered so the production identity cannot
   modify its own Workload Identity Federation trust.
+- The public host uses a dedicated VPC. It has one public ingress rule: the configured game
+  TCP port. It deliberately has no public SSH rule. IAP/OS Login access is added by SWA-69,
+  and the server runtime is added by SWA-65.
 
 ## One-time bucket bootstrap
 
@@ -143,6 +146,68 @@ they exist and Terraform marks them non-sensitive:
 
 Do not add a generic `terraform output -json` command to logs or job summaries: JSON output
 prints sensitive values in cleartext.
+
+## Public game-server host
+
+SWA-62 provisions the network foundation only: an `e2-micro` Ubuntu 24.04 LTS VM, a regional
+static IPv4 address, a dedicated custom VPC/subnet, and the public game-port firewall rule. The
+VM has no startup script, Docker installation, server process, or attached runtime service
+account in this stage.
+
+Before the production workflow can create Compute Engine resources, apply the matching
+`infra/bootstrap/identity/` change with Alex's ADC. This grants the existing Terraform plan
+identity Compute Viewer and the existing apply identity the Compute instance, network, and
+firewall administration roles. It does not change the Workload Identity Federation setup or
+the GitHub workflows.
+
+After the infrastructure PR is merged to `main`, run **Terraform Apply** from `main` and approve
+the protected `production` environment. The workflow reports these non-sensitive outputs:
+
+- `server_endpoint` — the reserved `static-ip:port` value for a future client build.
+- `game_port` — the configured public TCP port, defaulting to `4000`.
+- `vm_name` and `vm_zone` — the host location for the later IAP/OS Login runbook.
+
+The static address is a separate regional resource. Recreating only the VM therefore retains the
+same client endpoint. To request a capacity fallback, set `TF_VAR_zone` for the approved
+Terraform command; it must remain within the configured region. Do not change the endpoint
+outside a reviewed infrastructure apply.
+
+### Verify the host foundation
+
+After apply, inspect the outputs and Compute resources with Alex's authenticated `gcloud` CLI:
+
+```bash
+terraform -chdir=infra output server_endpoint
+terraform -chdir=infra output game_port
+terraform -chdir=infra output vm_name
+terraform -chdir=infra output vm_zone
+
+gcloud compute instances describe relay-operations-server \
+  --project=relayoperations \
+  --zone=us-west1-a
+
+gcloud compute firewall-rules describe relay-operations-public-game-port \
+  --project=relayoperations
+```
+
+Confirm that the instance uses `e2-micro`, the Ubuntu 24.04 LTS image family, the static address,
+and only the public TCP game-port rule. A connection to port 4000 cannot be accepted until SWA-65
+installs and starts the server service; SWA-62 verifies that the public network path is configured.
+Do not add a public TCP/22 rule as a diagnostic shortcut.
+
+### Controlled destroy and recreation
+
+Before publishing the endpoint to clients, inspect a destroy plan to confirm every host resource
+can be removed cleanly:
+
+```bash
+terraform -chdir=infra plan -destroy -input=false
+```
+
+Only run `terraform destroy` during an approved test window: it removes the VM, network, firewall,
+and static address, so a subsequent apply receives a new endpoint. To test VM replacement without
+changing the endpoint, replace only `google_compute_instance.game_server`; the separate static
+address must remain in place.
 
 ## State recovery
 
