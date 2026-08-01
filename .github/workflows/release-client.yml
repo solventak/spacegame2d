@@ -14,15 +14,32 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     environment: production
     permissions:
       contents: read
       id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            architecture: x86_64
+            runner: ubuntu-24.04
+          - platform: linux
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+          - platform: macos
+            architecture: x86_64
+            runner: macos-15-intel
+          - platform: macos
+            architecture: arm64
+            runner: macos-latest
     steps:
-      - name: Check out main
+      - name: Check out released main
         uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Authenticate to Google Cloud for Terraform state read
@@ -84,6 +101,7 @@ jobs:
         run: npm ci
 
       - name: Install client build dependencies
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwebkit2gtk-4.1-dev pkg-config
@@ -96,7 +114,7 @@ jobs:
       - name: Upload the client artifact
         uses: actions/upload-artifact@v4
         with:
-          name: spacegame2d-client-${{ github.sha }}
+          name: spacegame2d-client-${{ matrix.platform }}-${{ matrix.architecture }}-${{ github.sha }}
           path: target/release/spacegame2d
           if-no-files-found: error
           retention-days: 14
@@ -107,6 +125,8 @@ jobs:
           {
             echo "## Client release"
             echo
+            echo "- Platform: \`${{ matrix.platform }}\`"
+            echo "- Architecture: \`${{ matrix.architecture }}\`"
             echo "- Endpoint: \`${{ steps.endpoint.outputs.endpoint }}\`"
             echo "- Source commit: \`${GITHUB_SHA}\`"
             echo "- Build: \`${{ steps.endpoint.outcome == 'success' && 'completed' || 'not-run' }}\`"
