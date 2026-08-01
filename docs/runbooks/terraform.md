@@ -44,6 +44,7 @@ or Workload Identity Federation permission:
    `gh run list --branch <branch>`. Confirm there is one intended Terraform Plan run and review
    its cloud-aware plan output; local `terraform test` cannot validate GitHub event semantics or
    live Google API access.
+
 ## One-time bucket bootstrap
 
 Set the values below in a shell that is authenticated as Alex. The bucket name is globally
