@@ -27,3 +27,14 @@ variable "github_repository_id" {
   type        = string
   description = "Immutable numeric GitHub repository identifier."
 }
+
+variable "operator_identity" {
+  type        = string
+  description = "Alex's Google identity in IAM member form."
+  default     = "user:akennedy4155@gmail.com"
+
+  validation {
+    condition     = can(regex("^(user|group):[^ ]+$", var.operator_identity))
+    error_message = "operator_identity must be an IAM user:/group: member."
+  }
+}

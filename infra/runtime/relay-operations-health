@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_root="${RELAY_OPERATIONS_ROOT:-/}"
+systemctl_bin="${SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+timeout_bin="${TIMEOUT_BIN:-/usr/bin/timeout}"
+config_file="${runtime_root}/etc/relay-operations/server.env"
+
+source "$config_file"
+: "${GAME_PORT:?GAME_PORT is required}"
+[[ "$GAME_PORT" =~ ^[0-9]+$ ]]
+
+"$systemctl_bin" is-active --quiet relay-operations-server.service
+"$timeout_bin" 2 bash -c ":</dev/tcp/127.0.0.1/${GAME_PORT}"

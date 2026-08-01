@@ -35,3 +35,27 @@ resource "google_service_account_iam_member" "github_actions_workload_identity_u
     each.key,
   ])
 }
+
+resource "google_service_account" "game_server_runtime" {
+  account_id   = "relay-server-runtime"
+  display_name = "Relay Operations game-server VM runtime"
+  description  = "Read-only Artifact Registry identity attached to the game-server VM."
+
+  depends_on = [google_project_service.required]
+}
+
+locals {
+  game_server_runtime_users = {
+    operator = var.operator_identity
+    apply    = "serviceAccount:${google_service_account.github_actions["apply"].email}"
+    release  = "serviceAccount:${google_service_account.github_actions["release"].email}"
+  }
+}
+
+resource "google_service_account_iam_member" "game_server_runtime_user" {
+  for_each = local.game_server_runtime_users
+
+  service_account_id = google_service_account.game_server_runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = each.value
+}

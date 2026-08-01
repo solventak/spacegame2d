@@ -29,10 +29,10 @@ gcloud auth login
 gcloud auth application-default login
 gcloud auth application-default set-quota-project relayoperations
 
-STATE_BUCKET=relayoperations-terraform-state-926404861741
-GCP_PROJECT=relayoperations
-PLAN_SERVICE_ACCOUNT=gha-tf-plan@relayoperations.iam.gserviceaccount.com
-APPLY_SERVICE_ACCOUNT=gha-tf-apply@relayoperations.iam.gserviceaccount.com
+export STATE_BUCKET=relayoperations-terraform-state-926404861741
+export GCP_PROJECT=relayoperations
+export PLAN_SERVICE_ACCOUNT=gha-tf-plan@relayoperations.iam.gserviceaccount.com
+export APPLY_SERVICE_ACCOUNT=gha-tf-apply@relayoperations.iam.gserviceaccount.com
 
 gcloud storage buckets create "gs://${STATE_BUCKET}" \
   --project="${GCP_PROJECT}" \
@@ -143,7 +143,6 @@ they exist and Terraform marks them non-sensitive:
 - `game_port`
 - `vm_name`
 - `vm_zone`
-- `server_image_repository`
 
 Do not add a generic `terraform output -json` command to logs or job summaries: JSON output
 prints sensitive values in cleartext.

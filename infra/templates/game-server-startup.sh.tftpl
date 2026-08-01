@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Runtime contract: containers use --log-driver=journald and failed-release files are retained 7d.
+
+apt-get update
+apt-get install --yes ca-certificates curl docker.io jq python3
+
+install --directory --owner=root --group=root --mode=0750 /etc/relay-operations
+install --directory --owner=root --group=adm --mode=0750 /var/lib/relay-operations
+install --directory --owner=root --group=adm --mode=0750 /var/log/relay-operations/failed-releases
+install --directory --owner=root --group=root --mode=0755 /usr/local/sbin
+install --directory --owner=root --group=root --mode=0755 /etc/systemd/system
+install --directory --owner=root --group=root --mode=0755 /etc/tmpfiles.d
+
+write_runtime_file() {
+  local encoded="$1"
+  local target="$2"
+  local mode="$3"
+  printf '%s' "$encoded" | base64 --decode > "$target"
+  chown root:root "$target"
+  chmod "$mode" "$target"
+}
+
+write_runtime_file "${run_script_b64}" /usr/local/sbin/relay-operations-run 0755
+write_runtime_file "${health_script_b64}" /usr/local/sbin/relay-operations-health 0755
+write_runtime_file "${deploy_script_b64}" /usr/local/sbin/relay-operations-deploy 0755
+write_runtime_file "${service_unit_b64}" /etc/systemd/system/relay-operations-server.service 0644
+write_runtime_file "${tmpfiles_b64}" /etc/tmpfiles.d/relay-operations.conf 0644
+
+cat > /etc/relay-operations/server.env <<'EOF'
+GAME_PORT=${game_port}
+SERVER_LISTEN_ADDRESS=0.0.0.0:${game_port}
+SPACEGAME_LOG_FORMAT=json
+ALLOWED_IMAGE_PREFIX=${image_prefix}
+HEALTH_TIMEOUT_SECONDS=60
+EOF
+chown root:root /etc/relay-operations/server.env
+chmod 0640 /etc/relay-operations/server.env
+
+systemctl enable --now docker.service
+systemd-tmpfiles --create /etc/tmpfiles.d/relay-operations.conf
+systemctl daemon-reload
+systemctl enable relay-operations-server.service
+
+# The service intentionally remains inactive until SWA-66 supplies the first digest.
+printf '%s\n' 'runtime_ready=true' > /var/lib/relay-operations/runtime-ready
+chown root:adm /var/lib/relay-operations/runtime-ready
+chmod 0640 /var/lib/relay-operations/runtime-ready

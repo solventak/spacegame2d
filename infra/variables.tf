@@ -53,3 +53,36 @@ variable "server_image_repository_id" {
   description = "Artifact Registry repository ID for immutable game-server images."
   default     = "spacegame2d-server"
 }
+
+variable "server_image_name" {
+  type        = string
+  description = "Artifact Registry image name for the game-server container."
+  default     = "spacegame2d-server"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._-]*$", var.server_image_name))
+    error_message = "server_image_name must be a valid Artifact Registry image name."
+  }
+}
+
+variable "runtime_service_account_id" {
+  type        = string
+  description = "Existing bootstrap-created service-account ID attached to the game-server VM."
+  default     = "relay-server-runtime"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.runtime_service_account_id))
+    error_message = "runtime_service_account_id must be a valid Google service-account ID."
+  }
+}
+
+variable "operator_identity" {
+  type        = string
+  description = "Alex's Google identity in IAM member form."
+  default     = "user:akennedy4155@gmail.com"
+
+  validation {
+    condition     = can(regex("^(user|group):[^ ]+$", var.operator_identity))
+    error_message = "operator_identity must be an IAM user:/group: member."
+  }
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Relay Operations managed game server
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/relay-operations/current-image
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm --force relay-operations-server
+ExecStart=/usr/local/sbin/relay-operations-run
+ExecStop=-/usr/bin/docker stop --time=10 relay-operations-server
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
