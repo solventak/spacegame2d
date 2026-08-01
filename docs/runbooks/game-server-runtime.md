@@ -1,7 +1,7 @@
 # Managed game-server runtime
 
-SWA-65 and SWA-69 provision the VM runtime and access boundary. SWA-66 owns the GitHub Actions
-workflow that publishes an existing immutable image and invokes the VM deployment helper.
+SWA-65 and SWA-69 provision the VM runtime and access boundary. SWA-66 owns the manually dispatched
+GitHub Actions workflow that verifies, publishes, and deploys the immutable server image.
 
 ## Apply order
 
@@ -42,7 +42,7 @@ public SSH rule for diagnosis or recovery.
 
 ## Deployment contract
 
-SWA-66 invokes only this VM-side command over IAP/OS Login:
+SWA-66 invokes this VM-side command over IAP/OS Login:
 
 ```bash
 sudo /usr/local/sbin/relay-operations-deploy \
@@ -50,8 +50,9 @@ sudo /usr/local/sbin/relay-operations-deploy \
 ```
 
 The helper rejects mutable tags, obtains short-lived Artifact Registry credentials from the VM
-runtime identity, pulls the digest, and restarts the systemd service. Runtime configuration lives
-in `/etc/relay-operations/server.env`; the container has no persistent game-data volume and logs
+runtime identity, pulls the digest, and restarts the systemd service. The workflow follows that
+with a second local health check and an external TCP 4000 check. Runtime configuration lives in
+`/etc/relay-operations/server.env`; the container has no persistent game-data volume and logs
 through journald.
 
 Deployment health requires systemd active status and local TCP 4000 acceptance within 60 seconds.
@@ -63,8 +64,10 @@ The current digest is recorded as the preceding digest before each replacement. 
 deployment leaves the service stopped and stores diagnostics in journald plus
 `/var/log/relay-operations/failed-releases/`. That archive is bounded to seven days.
 
-A later failed deployment restores the preceding digest, reruns health verification, and returns a
-failure result even when rollback succeeds. There is no manual rollback command in this scope.
+A later failed deployment restores the preceding digest, reruns local and external health
+verification, and returns a failure result even when rollback succeeds. A failed first deployment
+stops the service and removes the current-image marker. There is no manual rollback command in
+this scope.
 
 Recovery uses Alex's personal IAP/OS Login access and, if necessary, a Terraform revert. It never
 requires public SSH.

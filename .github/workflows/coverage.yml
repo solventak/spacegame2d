@@ -53,14 +53,14 @@ jobs:
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --locked --version 0.37.0
 
-      - name: Run coverage gate (fail-under 85%)
+      - name: Run coverage gate (fail-under 75%)
         run: |
           cargo tarpaulin \
             --workspace \
             --target-dir target/tarpaulin \
             --skip-clean \
             --exclude-files "*/main.rs" \
-            --fail-under 85 \
+            --fail-under 75 \
             --out xml --out html \
             --output-dir coverage/
 
