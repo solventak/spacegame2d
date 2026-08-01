@@ -31,6 +31,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
       - name: Install Node.js (22)
         uses: actions/setup-node@v5
         with:
