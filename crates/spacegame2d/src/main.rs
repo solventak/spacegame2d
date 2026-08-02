@@ -462,6 +462,7 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
     }
+
     #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
@@ -473,16 +474,6 @@ impl Renderer {
         camera: Camera,
         now: Instant,
     ) -> Result<(), wgpu::CurrentSurfaceTexture> {
-        self.combat_renderer.prepare(
-            &self.device,
-            &self.queue,
-            CombatFrame {
-                viewport: camera.viewport(self.config.width, self.config.height),
-                units,
-                presentation: combat_presentation,
-                now,
-            },
-        );
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -496,6 +487,20 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("ship encoder"),
             });
+        if let Err(error) = self.device.poll(wgpu::PollType::Poll) {
+            tracing::warn!(event = "gpu_poll_failed", %error);
+        }
+        let combat_vertices_staged = self.combat_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            CombatFrame {
+                viewport: camera.viewport(self.config.width, self.config.height),
+                units,
+                presentation: combat_presentation,
+                now,
+            },
+        );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ship pass"),
@@ -612,6 +617,9 @@ impl Renderer {
                 pass.set_bind_group(0, &self.marker_bind_groups[index], &[]);
                 pass.draw(24..30, 0..1);
             }
+        }
+        if combat_vertices_staged {
+            self.combat_renderer.finish_vertex_upload(&encoder);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
