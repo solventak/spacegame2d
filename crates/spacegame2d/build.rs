@@ -1,7 +1,12 @@
 use std::process::Command;
 
 fn main() {
-    let status = Command::new("npm")
+    let npm = if cfg!(target_os = "windows") {
+        "npm.cmd"
+    } else {
+        "npm"
+    };
+    let status = Command::new(npm)
         .args(["run", "build"])
         .current_dir("hud")
         .status()
