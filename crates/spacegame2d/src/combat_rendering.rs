@@ -6,7 +6,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 use spacegame2d_simulation::{MUZZLE_OFFSET_METERS, PlayerId, Unit};
-use wgpu::util::DeviceExt;
+use wgpu::util::{DeviceExt, StagingBelt};
 
 use crate::combat_presentation::CombatPresentation;
 
@@ -24,6 +24,7 @@ const TRACER_OUTER_WIDTH: f32 = 0.06;
 const TRACER_CORE_WIDTH: f32 = 0.018;
 const FLASH_RADIUS: f32 = 0.25;
 const MOUNT_SEGMENTS: usize = 12;
+const COMBAT_STAGING_CHUNK_SIZE: wgpu::BufferAddress = 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
@@ -245,6 +246,7 @@ pub(crate) struct CombatRenderer {
     bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     capacity: u64,
+    staging_belt: StagingBelt,
     mesh: CombatMesh,
 }
 
@@ -337,6 +339,7 @@ impl CombatRenderer {
             bind_group,
             vertex_buffer,
             capacity,
+            staging_belt: StagingBelt::new(device.clone(), COMBAT_STAGING_CHUNK_SIZE),
             mesh: CombatMesh::default(),
         }
     }
@@ -345,19 +348,36 @@ impl CombatRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         frame: CombatFrame<'_>,
-    ) {
+    ) -> bool {
+        self.prepare_mesh(&frame);
+        self.upload_uniform(queue, frame.viewport);
+        self.stage_vertices(device, encoder)
+    }
+
+    fn prepare_mesh(&mut self, frame: &CombatFrame<'_>) {
         self.mesh = build_mesh(frame.units, frame.presentation, frame.now);
+    }
+
+    fn upload_uniform(&self, queue: &wgpu::Queue, viewport: [f32; 4]) {
         queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::bytes_of(&CombatUniform {
-                viewport: frame.viewport,
-            }),
+            bytemuck::bytes_of(&CombatUniform { viewport }),
         );
+    }
+
+    fn stage_vertices(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> bool {
         let bytes = bytemuck::cast_slice(&self.mesh.vertices);
-        if bytes.len() as u64 > self.capacity {
-            self.capacity = (bytes.len() as u64).next_power_of_two();
+        let required_bytes = bytes.len() as u64;
+        let required_capacity = vertex_buffer_capacity(self.capacity, required_bytes);
+        if required_capacity != self.capacity {
+            self.capacity = required_capacity;
             self.vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("combat vertices"),
                 size: self.capacity,
@@ -365,9 +385,18 @@ impl CombatRenderer {
                 mapped_at_creation: false,
             });
         }
-        if !bytes.is_empty() {
-            queue.write_buffer(&self.vertex_buffer, 0, bytes);
-        }
+        let Some(size) = wgpu::BufferSize::new(required_bytes) else {
+            return false;
+        };
+        let mut staging = self
+            .staging_belt
+            .write_buffer(encoder, &self.vertex_buffer, 0, size);
+        staging.copy_from_slice(bytes);
+        true
+    }
+
+    pub(crate) fn finish_vertex_upload(&mut self, encoder: &wgpu::CommandEncoder) {
+        self.staging_belt.finish_and_recall_on_submit(encoder);
     }
 
     pub(crate) fn draw_turrets(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -385,6 +414,14 @@ impl CombatRenderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(range, 0..1);
+    }
+}
+
+fn vertex_buffer_capacity(current: u64, required: u64) -> u64 {
+    if required > current {
+        required.next_power_of_two()
+    } else {
+        current
     }
 }
 
@@ -450,6 +487,26 @@ mod tests {
             Vec2::from_array(vertex.position).is_finite()
                 && vertex.color.iter().all(|component| component.is_finite())
         }));
+    }
+
+    #[test]
+    fn default_fleet_combat_upload_fits_the_staging_chunk_and_copy_alignment() {
+        let units: Vec<_> = (0..200).map(|_| unit(Some(PlayerId(1)))).collect();
+        let mesh = build_mesh(&units, &CombatPresentation::default(), Instant::now());
+        let upload_bytes = std::mem::size_of_val(mesh.vertices.as_slice()) as u64;
+
+        assert_eq!(mesh.vertices.len(), 16_800);
+        assert_eq!(upload_bytes, 403_200);
+        assert!(upload_bytes.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT));
+        assert!(upload_bytes < COMBAT_STAGING_CHUNK_SIZE);
+    }
+
+    #[test]
+    fn vertex_buffer_capacity_only_grows_when_required() {
+        let initial = std::mem::size_of::<CombatVertex>() as u64;
+        assert_eq!(vertex_buffer_capacity(initial, 0), initial);
+        assert_eq!(vertex_buffer_capacity(524_288, 403_200), 524_288);
+        assert_eq!(vertex_buffer_capacity(initial, 403_200), 524_288);
     }
 
     #[test]
