@@ -19,6 +19,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -26,15 +29,23 @@ jobs:
           - platform: linux
             architecture: x86_64
             runner: ubuntu-24.04
+            executable: spacegame2d
           - platform: linux
             architecture: arm64
             runner: ubuntu-24.04-arm
+            executable: spacegame2d
           - platform: macos
             architecture: x86_64
             runner: macos-15-intel
+            executable: spacegame2d
           - platform: macos
             architecture: arm64
             runner: macos-latest
+            executable: spacegame2d
+          - platform: windows
+            architecture: x86_64
+            runner: windows-2025
+            executable: spacegame2d.exe
     steps:
       - name: Check out released main
         uses: actions/checkout@v5
@@ -115,7 +126,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: spacegame2d-client-${{ matrix.platform }}-${{ matrix.architecture }}-${{ github.sha }}
-          path: target/release/spacegame2d
+          path: target/release/${{ matrix.executable }}
           if-no-files-found: error
           retention-days: 14
 
